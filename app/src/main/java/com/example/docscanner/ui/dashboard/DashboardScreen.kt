@@ -1,5 +1,10 @@
 package com.example.docscanner.ui.dashboard
 
+import android.content.Context
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -23,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -31,7 +37,13 @@ import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.model.Document
 import com.example.docscanner.model.DocumentSortOption
 import com.example.docscanner.model.Folder
+import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.ui.common.PageThumbnail
+import com.example.docscanner.util.DocumentNaming
+import com.example.docscanner.util.ImageStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -41,10 +53,46 @@ fun DashboardScreen(
     repository: ScannerRepository,
     onNavigateToCamera: (String?) -> Unit,
     onNavigateToDetail: (String) -> Unit,
-    onNavigateToTrash: () -> Unit
+    onNavigateToTrash: () -> Unit,
+    onNavigateToSettings: () -> Unit
 ) {
     val documents by repository.documents.collectAsState()
     val folders by repository.folders.collectAsState()
+    val settings by repository.settings.collectAsState()
+
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // Settings → Scan → "Use in-app camera" off: scanning goes straight to the
+    // system photo picker and each picked image becomes a page. Same import path
+    // as the camera screen's gallery button, so quality settings apply here too.
+    val systemPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        val quality = settings.imageQuality
+        scope.launch {
+            val pages = withContext(Dispatchers.IO) {
+                uris.mapNotNull { uri -> importPickedImage(context, uri, quality.maxDimension, quality.jpegQuality) }
+            }
+            if (pages.isEmpty()) {
+                Toast.makeText(context, "Could not import the selected images", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            val created = repository.addDocument(DocumentNaming.defaultScanTitle(), null, pages)
+            onNavigateToDetail(created.id)
+        }
+    }
+
+    val startScan: () -> Unit = {
+        if (settings.useInAppCamera) {
+            onNavigateToCamera(null)
+        } else {
+            systemPickerLauncher.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+            )
+        }
+    }
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedFolderId by remember { mutableStateOf<String?>(null) }
@@ -118,6 +166,9 @@ fun DashboardScreen(
                             }
                         }
                     }
+                    IconButton(onClick = onNavigateToSettings) {
+                        Icon(Icons.Outlined.Settings, contentDescription = "Settings")
+                    }
                     IconButton(onClick = onNavigateToTrash) {
                         BadgedBox(
                             badge = {
@@ -137,7 +188,7 @@ fun DashboardScreen(
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                onClick = { onNavigateToCamera(null) },
+                onClick = startScan,
                 icon = { Icon(Icons.Default.CameraAlt, contentDescription = null) },
                 text = { Text("Scan Document", fontWeight = FontWeight.SemiBold) },
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -195,7 +246,7 @@ fun DashboardScreen(
             if (activeDocs.isEmpty()) {
                 EmptyStateView(
                     isSearch = searchQuery.isNotBlank(),
-                    onStartScan = { onNavigateToCamera(null) }
+                    onStartScan = startScan
                 )
             } else if (isGridView) {
                 LazyVerticalGrid(
@@ -764,4 +815,28 @@ private fun FolderOptionRow(
             )
         }
     }
+}
+
+/**
+ * Decodes one picked image into a page file at the configured quality.
+ *
+ * Nothing is downscaled behind the user's back beyond the quality preset they
+ * chose in Settings, and the returned page carries a real on-disk path — the same
+ * contract [com.example.docscanner.ui.camera.ScannerCameraScreen] uses.
+ */
+private fun importPickedImage(
+    context: Context,
+    uri: android.net.Uri,
+    maxDimension: Int,
+    jpegQuality: Int
+): ScannedPage? {
+    val pageId = UUID.randomUUID().toString()
+    val path = ImageStore.importFromUri(context, uri, pageId, maxDimension, jpegQuality)
+        ?: return null
+    return ScannedPage(
+        id = pageId,
+        documentId = "",
+        pageIndex = 0,
+        imageUri = path
+    )
 }

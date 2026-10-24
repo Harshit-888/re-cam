@@ -1,6 +1,7 @@
 package com.example.docscanner.ui.camera
 
 import android.Manifest
+import android.media.MediaActionSound
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -80,6 +81,7 @@ import androidx.core.content.ContextCompat
 import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.util.DocumentNaming
+import com.example.docscanner.util.GalleryExporter
 import com.example.docscanner.util.ImageStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -112,6 +114,13 @@ fun ScannerCameraScreen(
     val scope = rememberCoroutineScope()
 
     val capturedPages = remember { mutableStateListOf<ScannedPage>() }
+    // Settings are read through repository.currentSettings() at the moment of use
+    // (not copied into composition state) so a change made on the Settings screen
+    // applies to the very next shutter press.
+    val shutterSound = remember { runCatching { MediaActionSound() }.getOrNull() }
+    DisposableEffect(Unit) {
+        onDispose { runCatching { shutterSound?.release() } }
+    }
     var isBatchMode by remember { mutableStateOf(true) }
     var flashMode by remember { mutableStateOf(FlashMode.AUTO) }
     var isCapturing by remember { mutableStateOf(false) }
@@ -238,8 +247,15 @@ fun ScannerCameraScreen(
         scope.launch {
             uris.forEach { uri ->
                 val pageId = UUID.randomUUID().toString()
+                val quality = repository.currentSettings().imageQuality
                 val savedPath = withContext(Dispatchers.IO) {
-                    ImageStore.importFromUri(context, uri, pageId)
+                    ImageStore.importFromUri(
+                        context = context,
+                        uri = uri,
+                        pageId = pageId,
+                        maxDimension = quality.maxDimension,
+                        quality = quality.jpegQuality
+                    )
                 }
                 if (savedPath != null) {
                     capturedPages.add(
@@ -286,6 +302,12 @@ fun ScannerCameraScreen(
         isCapturing = true
         statusMessage = null
 
+        // Settings → Scan → Shutter sound. Many devices play their own click that
+        // an app cannot suppress; this only adds ours when the row is on.
+        if (repository.currentSettings().shutterSound) {
+            runCatching { shutterSound?.play(MediaActionSound.SHUTTER_CLICK) }
+        }
+
         val pageId = UUID.randomUUID().toString()
         val tempFile = File(context.cacheDir, "capture_$pageId.jpg")
         val options = ImageCapture.OutputFileOptions.Builder(tempFile).build()
@@ -296,8 +318,15 @@ fun ScannerCameraScreen(
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
                     scope.launch {
+                        val quality = repository.currentSettings().imageQuality
                         val savedPath = withContext(Dispatchers.IO) {
-                            ImageStore.importFromFile(context, tempFile, pageId)
+                            ImageStore.importFromFile(
+                                context = context,
+                                sourceFile = tempFile,
+                                pageId = pageId,
+                                maxDimension = quality.maxDimension,
+                                quality = quality.jpegQuality
+                            )
                         }
                         if (savedPath == null) {
                             statusMessage = "Capture failed: could not save image"
@@ -312,6 +341,23 @@ fun ScannerCameraScreen(
                                 imageUri = savedPath
                             )
                         )
+
+                        // Settings → Scan → Auto-save to Gallery. A gallery copy is a
+                        // courtesy, never a reason to fail the capture: GalleryExporter
+                        // swallows its own errors and reports success as a Boolean.
+                        if (repository.currentSettings().autoSaveToGallery) {
+                            val copied = withContext(Dispatchers.IO) {
+                                GalleryExporter.saveToGallery(
+                                    context,
+                                    File(savedPath),
+                                    GalleryExporter.pageFileName()
+                                )
+                            }
+                            if (!copied) {
+                                statusMessage = "Page saved, but the gallery copy failed"
+                            }
+                        }
+
                         isCapturing = false
                         if (!isBatchMode) commitScan()
                     }

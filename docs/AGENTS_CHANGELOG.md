@@ -6,6 +6,67 @@ Newest entry at the top.
 
 ---
 
+## 2026-10-25 (h) — Arena.ai — Working Settings screen
+
+### Why
+The app had no settings screen at all: the legacy APK's Settings (Theme / Scan /
+PDF / Default Email / OCR / Sync) had never been ported, and the dashboard had no
+entry point to one. This adds the page **and** the behaviour behind every row.
+
+### New files
+- `model/AppSettings.kt` — `@Serializable` settings model plus `ThemeMode`,
+  `AccentColor`, `ImageQuality`, `ExportResolution`, `PageOrientation`,
+  `ImageScale`.
+- `data/SettingsStore.kt` — `settings.json`, same debounced + atomic write
+  pattern as `LibraryStore`. Separate file so a theme toggle never rewrites the
+  document library, and so the theme is available before the first frame.
+- `ui/settings/SettingsScreen.kt` — sectioned page matching the legacy layout.
+- `util/GalleryExporter.kt` — MediaStore insert (API 29+, `IS_PENDING`) and a
+  legacy `Pictures/DocScanner` + `MediaScannerConnection` path for API 26–28.
+- `app/src/test/.../model/AppSettingsTest.kt` — defaults, JSON round-trip,
+  unknown-key tolerance (upgrade safety), accent contrast, preset ordering.
+
+### Every row does something
+| Row | Effect |
+|---|---|
+| Choose theme | `DocScannerTheme(darkTheme = …)`; status/nav bar icon polarity stays in sync via `enableEdgeToEdge(SystemBarStyle…)` |
+| Color | Overrides the four primary slots of the scheme; six hand-checked palettes |
+| Use in-app camera | Off = dashboard scan opens the **system photo picker** and imports into a new document |
+| Shutter sound | `MediaActionSound.SHUTTER_CLICK` on capture |
+| Image quality | Capture downscale target + JPEG quality, applied on capture, gallery import and editor bakes |
+| Auto-save to Gallery | Copies each captured page to `Pictures/DocScanner` |
+| Document Name | PDF file-name prefix (`Document_<title>_<ts>.pdf`) |
+| Page Size | Initial selection in the export sheet |
+| Resolution | Embedded bitmap longest edge (150/200/300 DPI) |
+| Page Orientation | Per-page axis: auto swaps landscape pages |
+| Image Scale | Fit (contain) / Fill (cover + clip) / Original (1 px = 1 pt) |
+| Default Email To / Subject | `EXTRA_EMAIL` / `EXTRA_SUBJECT` on the share intent |
+
+### Deliberately **not** added
+*OCR Language* (no OCR yet), *Camera Engine* (CameraX is the only engine),
+*Image Picker for Scanning* (we always use the system picker), *Sync to Cloud*
+(no transport). A row that persists a value nothing reads is a fake control —
+`AGENTS.md` §2.7. They are listed under roadmap Priority 0.
+
+### Signature changes (update call sites)
+- `PdfExportSheet(document, settings, onDismiss)` — new `settings` parameter.
+- `PdfExportConfig(+ pageOrientation, imageScale, fileBaseName)`.
+- `ImageStore.importFromUri / importFromFile / createPageFromUri /
+  saveEditedPage` gained `maxDimension` / `quality` parameters with defaults
+  equal to the previous constants, so existing call sites are unchanged.
+- `PageRenderer.bake / bakeBlocking(…, jpegQuality = ImageStore.JPEG_QUALITY)`.
+- `DocScannerTheme(+ accent: AccentColor = AccentColor.BLUE)`.
+- `DashboardScreen(+ onNavigateToSettings: () -> Unit)`.
+- `ScannerRepository(+ settings: StateFlow<AppSettings>, + updateSettings(),
+  + currentSettings())`.
+
+### Manifest
+`WRITE_EXTERNAL_STORAGE` with `maxSdkVersion="28"`, requested from the
+auto-save row only, on Android 8/9 only.
+
+### Version
+**1.4 (code 5)**.
+
 ## 2026-10-25 (g) — Arena.ai — Shared-axis screen transitions
 
 - `Navigation.kt`: `NavDisplay` was using its default transition, which reads as a

@@ -140,7 +140,13 @@ data class PdfExportConfig(
     val paperSize: PaperSize = PaperSize.A4,
     val margins: PdfMargin = PdfMargin.STANDARD,
     val maxImageDimensionPx: Int = 2000,
-    val includePageNumbers: Boolean = true
+    val includePageNumbers: Boolean = true,
+    /** Per-page axis. [PageOrientation.AUTO] follows the scanned image's shape. */
+    val pageOrientation: PageOrientation = PageOrientation.AUTO,
+    /** How the page image is placed inside the printable area. */
+    val imageScale: ImageScale = ImageScale.FIT,
+    /** File name prefix from Settings → PDF → Document Name. Blank = none. */
+    val fileBaseName: String = ""
 )
 
 /**

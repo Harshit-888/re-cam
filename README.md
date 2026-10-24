@@ -78,8 +78,9 @@ in app-private storage, and renders them back.
      bottom-right, so it survives into thumbnails, the viewer and the PDF.
 
 8. **PDF export** (`util/PdfGenerator.kt`, `ui/pdf/`)
-   - Real page bitmaps, 72 DPI point geometry, aspect-preserving fit.
+   - Real page bitmaps, 72 DPI point geometry.
    - **8 paper presets**, 4 margin presets, optional page numbering, watermark.
+   - Fit / fill / original scaling and per-page auto orientation, from Settings.
    - Runs on `Dispatchers.IO` (no ANR on long documents).
    - Shares through a `FileProvider` + the system share sheet.
 
@@ -88,6 +89,18 @@ in app-private storage, and renders them back.
 
 10. **Persistence** (`data/LibraryStore.kt`) — the whole library is a
    `library.json` snapshot written atomically, so it survives process death.
+
+11. **Settings** (`ui/settings/`, `data/SettingsStore.kt`) — every row changes
+   real behaviour, no decorative switches:
+   - *Theme*: System / Light / Dark plus six accent palettes.
+   - *Scan*: in-app camera on/off (off = the system photo picker becomes the scan
+     entry point), shutter sound, image quality (capture resolution + JPEG
+     quality), auto-save to `Pictures/DocScanner`.
+   - *PDF*: document-name prefix for exported files, page size, resolution
+     (150/200/300 DPI), page orientation (auto swaps axis per landscape page),
+     image scale (fit / fill / original).
+   - *Default Email*: recipient + subject pre-filled into the share sheet.
+   Settings persist in `settings.json`, separate from the document library.
 
 ---
 
@@ -161,8 +174,10 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## 🗺️ Roadmap
 
-Both are tracked in `AGENTS.md` §4 with implementation notes:
-1. ML Kit on-device OCR (`util/OcrManager.kt`) — fills the existing OCR sheet.
+Not built yet, and deliberately absent from the Settings screen so no control is
+a lie — tracked in `AGENTS.md` §4 with implementation notes:
+1. ML Kit on-device OCR (`util/OcrManager.kt`) — fills the existing OCR sheet;
+   the OCR *language* row the legacy app had lands with it.
 2. White-out eraser (`ui/editor/CleanupBgCanvas.kt`).
 3. Naming templates (`util/NamingTemplateEngine.kt`).
 4. ZIP backup/restore (`util/BackupRestoreManager.kt`).

@@ -88,6 +88,7 @@ fun DocumentDetailScreen(
     val scope = rememberCoroutineScope()
 
     val documents by repository.documents.collectAsState()
+    val settings by repository.settings.collectAsState()
     val document = remember(documents, docId) { documents.find { it.id == docId } }
 
     var showPdfExportSheet by remember { mutableStateOf(false) }
@@ -250,6 +251,7 @@ fun DocumentDetailScreen(
     if (showPdfExportSheet) {
         PdfExportSheet(
             document = document,
+            settings = settings,
             onDismiss = { showPdfExportSheet = false }
         )
     }

@@ -39,6 +39,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import com.example.docscanner.model.AppSettings
 import com.example.docscanner.model.Document
 import com.example.docscanner.model.PaperSize
 import com.example.docscanner.model.PdfExportConfig
@@ -54,12 +55,15 @@ import java.io.File
 @Composable
 fun PdfExportSheet(
     document: Document,
+    settings: AppSettings,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var selectedPaperSize by remember { mutableStateOf(PaperSize.A4) }
+    // Settings → PDF supplies the defaults; the chips below are a per-export
+    // override that starts from them and is deliberately not persisted.
+    var selectedPaperSize by remember { mutableStateOf(settings.pageSize) }
     var selectedMargin by remember { mutableStateOf(PdfMargin.STANDARD) }
     var includePageNumbers by remember { mutableStateOf(true) }
     var isGenerating by remember { mutableStateOf(false) }
@@ -92,6 +96,11 @@ fun PdfExportSheet(
                         "${document.title} • ${document.pages.size} pages",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "${settings.resolution.label} · ${settings.pageOrientation.label} · ${settings.imageScale.label}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
             }
@@ -157,7 +166,11 @@ fun PdfExportSheet(
                     val config = PdfExportConfig(
                         paperSize = selectedPaperSize,
                         margins = selectedMargin,
-                        includePageNumbers = includePageNumbers
+                        includePageNumbers = includePageNumbers,
+                        maxImageDimensionPx = settings.resolution.maxImageDimensionPx,
+                        pageOrientation = settings.pageOrientation,
+                        imageScale = settings.imageScale,
+                        fileBaseName = settings.defaultDocumentName
                     )
                     scope.launch {
                         val result = runCatching {
@@ -179,7 +192,13 @@ fun PdfExportSheet(
                         isGenerating = false
                         result
                             .onSuccess { file ->
-                                sharePdf(context, file, document.title)
+                                sharePdf(
+                                    context = context,
+                                    file = file,
+                                    title = document.title,
+                                    emailTo = settings.emailTo,
+                                    emailSubject = settings.emailSubject
+                                )
                                 onDismiss()
                             }
                             .onFailure { error ->
@@ -230,7 +249,13 @@ fun PdfExportSheet(
  * `res/xml/file_paths.xml`; without it every share threw and silently fell back
  * to the Toast, which is exactly what the previous revision did.
  */
-private fun sharePdf(context: Context, file: File, title: String) {
+private fun sharePdf(
+    context: Context,
+    file: File,
+    title: String,
+    emailTo: String,
+    emailSubject: String
+) {
     try {
         val uri = FileProvider.getUriForFile(
             context,
@@ -240,7 +265,18 @@ private fun sharePdf(context: Context, file: File, title: String) {
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
             type = "application/pdf"
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, title)
+            // Settings → Default Email. Mail clients read these two extras and
+            // pre-fill the compose screen; other share targets ignore them.
+            putExtra(Intent.EXTRA_SUBJECT, emailSubject.ifBlank { title })
+            if (emailTo.isNotBlank()) {
+                putExtra(
+                    Intent.EXTRA_EMAIL,
+                    emailTo.split(',', ';', ' ')
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                        .toTypedArray()
+                )
+            }
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         context.startActivity(Intent.createChooser(shareIntent, "Share document PDF"))

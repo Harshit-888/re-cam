@@ -113,6 +113,29 @@ Arena owns these two files for the zoom work; do not edit them concurrently:
   (one `awaitEachGesture` handler: single finger drags a corner, single finger
   elsewhere pans when zoomed, two fingers pinch)
 
+## 6c. Settings screen (claimed by Arena, 2026-10-25)
+
+Touched by the same change, all committed together:
+
+- New: `ui/settings/SettingsScreen.kt`, `data/SettingsStore.kt`,
+  `model/AppSettings.kt`, `util/GalleryExporter.kt`,
+  `app/src/test/.../model/AppSettingsTest.kt`
+- Changed: `MainActivity.kt` (theme from settings + system bars),
+  `theme/Theme.kt` (accent), `Navigation.kt` / `NavigationKeys.kt`
+  (`SettingsNav`), `ui/dashboard/DashboardScreen.kt` (settings icon +
+  system-picker scan path), `ui/pdf/PdfExportSheet.kt`, `util/PdfGenerator.kt`,
+  `util/PageRenderer.kt`, `util/ImageStore.kt`, `ui/camera/ScannerCameraScreen.kt`,
+  `ui/editor/CropAndFilterScreen.kt`, `ui/detail/DocumentDetailScreen.kt`,
+  `AndroidManifest.xml`.
+
+Rules for this area:
+1. New preference → add the field to `AppSettings` **and** a reader in the same
+   commit. `AGENTS.md` §2.7: no row may persist a value nothing consumes.
+2. Screens read `repository.settings` (StateFlow) or
+   `repository.currentSettings()` inside callbacks — never a local copy.
+3. Do not move settings into `library.json`; it would rewrite the whole library
+   on every toggle.
+
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-25 (`./gradlew assembleDebug testDebugUnitTest` passed).

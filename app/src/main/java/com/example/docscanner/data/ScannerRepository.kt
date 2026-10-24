@@ -1,6 +1,7 @@
 package com.example.docscanner.data
 
 import android.content.Context
+import com.example.docscanner.model.AppSettings
 import com.example.docscanner.model.Document
 import com.example.docscanner.model.Folder
 import com.example.docscanner.model.LibrarySnapshot
@@ -38,8 +39,12 @@ class ScannerRepository(context: Context) {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val store = LibraryStore(appContext, scope)
+    private val settingsStore = SettingsStore(appContext, scope)
 
     private val restored: LibrarySnapshot? = store.load()
+
+    private val _settings = MutableStateFlow(settingsStore.load() ?: AppSettings())
+    val settings: StateFlow<AppSettings> = _settings.asStateFlow()
 
     private val _folders = MutableStateFlow(
         restored?.folders?.takeIf { it.isNotEmpty() } ?: defaultFolders()
@@ -50,6 +55,12 @@ class ScannerRepository(context: Context) {
     val documents: StateFlow<List<Document>> = _documents.asStateFlow()
 
     init {
+        // Settings persist separately from the library: a theme toggle must not
+        // rewrite every document, and the theme is needed before the first frame.
+        scope.launch {
+            _settings.collect { settingsStore.schedule(it) }
+        }
+
         // Persist every subsequent change. `combine` emits once immediately, which
         // also normalises a fresh install's default folders to disk.
         scope.launch {
@@ -66,6 +77,22 @@ class ScannerRepository(context: Context) {
     // ------------------------------------------------------------- reads
 
     fun getDocumentById(id: String): Document? = _documents.value.find { it.id == id }
+
+    /** Current settings snapshot, for call sites outside composition. */
+    fun currentSettings(): AppSettings = _settings.value
+
+    // ---------------------------------------------------------- settings
+
+    /**
+     * Applies [transform] to the current settings and persists the result.
+     *
+     * The single write path for preferences; screens never hold their own copy,
+     * so a change made in Settings is visible to the camera, the editor and the
+     * PDF sheet the moment it happens.
+     */
+    fun updateSettings(transform: (AppSettings) -> AppSettings) {
+        _settings.update(transform)
+    }
 
     // --------------------------------------------------------- documents
 

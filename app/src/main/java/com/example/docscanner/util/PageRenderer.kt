@@ -29,7 +29,11 @@ object PageRenderer {
      *
      * @return the updated page, or `null` if the source bitmap could not be read.
      */
-    fun bakeBlocking(context: Context, page: ScannedPage): ScannedPage? {
+    fun bakeBlocking(
+        context: Context,
+        page: ScannedPage,
+        jpegQuality: Int = ImageStore.JPEG_QUALITY
+    ): ScannedPage? {
         val pristinePath = page.originalImageUri ?: page.imageUri
         val source = ImageStore.loadBitmap(context, pristinePath, ImageStore.MAX_CAPTURE_DIMENSION)
             ?: return null
@@ -54,7 +58,8 @@ object PageRenderer {
                 }
             }
 
-            val savedPath = ImageStore.saveEditedPage(context, page.id, result) ?: return null
+            val savedPath = ImageStore.saveEditedPage(context, page.id, result, jpegQuality)
+                ?: return null
             return page.copy(imageUri = savedPath, originalImageUri = pristinePath)
         } finally {
             if (result !== source) result.recycle()
@@ -62,8 +67,11 @@ object PageRenderer {
         }
     }
 
-    suspend fun bake(context: Context, page: ScannedPage): ScannedPage? =
-        withContext(Dispatchers.IO) { bakeBlocking(context, page) }
+    suspend fun bake(
+        context: Context,
+        page: ScannedPage,
+        jpegQuality: Int = ImageStore.JPEG_QUALITY
+    ): ScannedPage? = withContext(Dispatchers.IO) { bakeBlocking(context, page, jpegQuality) }
 
     /**
      * Bitmap to embed in a PDF. Uses the already-baked `imageUri`; if that file

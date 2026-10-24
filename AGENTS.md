@@ -73,6 +73,7 @@ The goal is a state-of-the-art, privacy-respecting, high-performance Android doc
 | **Navigation** | Jetpack Navigation 3 (Type-Safe `NavKey`s) | [`Navigation.kt`](app/src/main/java/com/example/docscanner/Navigation.kt) |
 | **State Management** | UDF via `StateFlow`, repository injected down the tree | [`data/ScannerRepository.kt`](app/src/main/java/com/example/docscanner/data/ScannerRepository.kt) |
 | **Persistence** | `library.json` snapshot, atomic write, coalesced | [`data/LibraryStore.kt`](app/src/main/java/com/example/docscanner/data/LibraryStore.kt) |
+| **Preferences** | `settings.json`, same atomic-write pattern, exposed as `repository.settings` | [`data/SettingsStore.kt`](app/src/main/java/com/example/docscanner/data/SettingsStore.kt) |
 | **Domain Models** | Immutable `@Serializable` Kotlin data classes | [`model/Models.kt`](app/src/main/java/com/example/docscanner/model/Models.kt) |
 | **Image Storage** | `filesDir/pages/<pageId>.jpg` + `_edited.jpg` bakes | [`util/ImageStore.kt`](app/src/main/java/com/example/docscanner/util/ImageStore.kt) |
 | **Image Loading** | Sampled decode + `LruCache` + `rememberPageImage()` | [`util/PageImageLoader.kt`](app/src/main/java/com/example/docscanner/util/PageImageLoader.kt) |
@@ -117,10 +118,25 @@ private storage. Never store a `content://` URI in it — import first.
 - **PDF Engine** (`util/PdfGenerator.kt` + `ui/pdf/`): 8 paper presets, 4 margin presets, page numbering, watermark, real page bitmaps, `FileProvider` share sheet, runs off the main thread.
 - **Recycle Bin** (`ui/trash/`): soft delete, restore, permanent purge (deletes page files too).
 - **Persistence** (`data/LibraryStore.kt`): the library survives process death.
+- **Settings** (`ui/settings/SettingsScreen.kt` + `data/SettingsStore.kt`): theme
+  mode + 6 accented palettes, in-app-camera toggle (off routes scanning through
+  the system photo picker), shutter sound, image quality (capture dimension +
+  JPEG quality), auto-save to `Pictures/DocScanner`, and PDF defaults (file-name
+  prefix, page size, DPI, orientation, image scale) plus default email
+  recipient/subject. Persisted in `settings.json`; UDF via
+  `ScannerRepository.settings` + `updateSettings`. Rows whose feature does not
+  exist (OCR language, camera engine, cloud sync) are **not** shown.
 
 ### 🚀 Roadmap: Next Features to Build (Priority Order)
 
 Pick exclusively from this list. Each one assumes the image pipeline above works.
+
+#### Priority 0 (already scoped): Settings rows that were deliberately omitted
+* **OCR language** — add to the settings screen in the same commit as
+  `util/OcrManager.kt`, not before: the row would have nothing to read it.
+* **Camera engine** — CameraX is the only engine wired; a picker with one option
+  is noise.
+* **Sync to Cloud / Sync Settings** — needs an account + transport; parked.
 
 #### Priority 1: Google ML Kit On-Device OCR (`util/OcrManager.kt`)
 * **Task**: Integrate `com.google.mlkit:text-recognition:16.0.1`.

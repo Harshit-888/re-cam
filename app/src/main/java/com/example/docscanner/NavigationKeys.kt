@@ -31,3 +31,7 @@ data class PageViewerNav(val docId: String, val pageId: String) : NavKey
 
 @Serializable
 data object TrashNav : NavKey
+
+/** Preferences. Reachable from the dashboard's settings icon. */
+@Serializable
+data object SettingsNav : NavKey

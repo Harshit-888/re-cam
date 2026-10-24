@@ -245,12 +245,13 @@ fun CropAndFilterScreen(
         isSaving = true
         scope.launch {
             val baked = PageRenderer.bake(
-                context,
-                current.copy(
+                context = context,
+                page = current.copy(
                     filterType = selectedFilter,
                     rotationDegrees = rotation,
                     corners = corners
-                )
+                ),
+                jpegQuality = repository.currentSettings().imageQuality.jpegQuality
             )
             if (baked != null) {
                 repository.updatePage(docId, activePageId) { baked }

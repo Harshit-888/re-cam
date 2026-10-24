@@ -4,6 +4,16 @@
     <!-- Camera capture. Gallery import uses the system photo picker
          (PickVisualMedia), which needs no storage permission. -->
     <uses-permission android:name="android.permission.CAMERA" />
+
+    <!--
+      Settings → Scan → Auto-save to Gallery. Android 10+ writes through
+      MediaStore with no permission; Android 8/9 can only write to the public
+      Pictures folder with this grant, so it is capped at API 28 and requested
+      from the settings row, never at launch.
+    -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!--

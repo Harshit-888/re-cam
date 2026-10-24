@@ -7,6 +7,8 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
@@ -15,6 +17,7 @@ import com.example.docscanner.ui.camera.ScannerCameraScreen
 import com.example.docscanner.ui.dashboard.DashboardScreen
 import com.example.docscanner.ui.detail.DocumentDetailScreen
 import com.example.docscanner.ui.editor.CropAndFilterScreen
+import com.example.docscanner.ui.settings.SettingsScreen
 import com.example.docscanner.ui.trash.TrashScreen
 import com.example.docscanner.ui.viewer.PageViewerScreen
 
@@ -55,6 +58,9 @@ fun MainNavigation(repository: ScannerRepository) {
                     },
                     onNavigateToTrash = {
                         backStack.add(TrashNav)
+                    },
+                    onNavigateToSettings = {
+                        backStack.add(SettingsNav)
                     }
                 )
             }
@@ -125,6 +131,17 @@ fun MainNavigation(repository: ScannerRepository) {
                     },
                     onNavigateToCrop = { pageId ->
                         backStack.add(CropAndFilterNav(key.docId, pageId))
+                    }
+                )
+            }
+
+            entry<SettingsNav> {
+                val settings by repository.settings.collectAsState()
+                SettingsScreen(
+                    settings = settings,
+                    onSettingsChange = { transform -> repository.updateSettings(transform) },
+                    onNavigateBack = {
+                        backStack.removeLastOrNull()
                     }
                 )
             }
