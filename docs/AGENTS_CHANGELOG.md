@@ -4,6 +4,12 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (m) — Antigravity — Unit test executor memory limit & build verified
+
+- Configured `testOptions.unitTests.all { maxParallelForks = 1; jvmArgs("-Xmx512m") }` in `app/build.gradle.kts` to prevent parallel test executor forks from exhausting host paging memory on high-core CPUs.
+- Verified test suite: all 28 unit tests passed with 0 failures (`testDebugUnitTest`).
+- Rebuilt `app-debug.apk` (21,810,287 bytes).
+
 ## 2026-10-25 (l) — Arena.ai — Filters corrected against the native disassembly
 
 ### What changed and why
