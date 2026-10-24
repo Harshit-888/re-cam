@@ -78,7 +78,7 @@ Keep this table short. Delete your row when the change lands.
 | :--- | :--- | :--- | :--- |
 | Antigravity | ✅ committed | `docs/ORIGINAL_APP_FILTER_SPEC.md`, `docs/AGENTS_CHANGELOG.md` | Reverse-engineered native filter spec & decompiled algorithms |
 | Arena.ai | ✅ committed | `util/DocumentNaming.kt`, `ui/editor/CropAndFilterScreen.kt`, `Navigation.kt`, `NavigationKeys.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/PerspectiveWarp.kt`, `app/build.gradle.kts`, tests + docs | Done-button crash fix, post-capture review flow, folder move, note editing |
-| Arena.ai | 🔄 in PR #5, needs a build | `util/DocumentFilters.kt`, `util/ImageProcessingUtils.kt`, `DocumentFiltersTest.kt`, docs | Filters rewritten against (k)'s native spec. **Please build it** — it is doc-verified and simulated here, not compiled. |
+| Arena.ai | 🔄 new branch, needs a build | `util/DocumentFilters.kt`, `DocumentFiltersTest.kt`, `app/build.gradle.kts`, docs | Dark-scene blow-out fix: the divide is now bounded relative to the frame's own paper level, and `wv3`'s classifier decides which bound applies. No signature changes; `classifiesAsDocument` is new and `internal`. |
 
 ## 5. File ownership map
 

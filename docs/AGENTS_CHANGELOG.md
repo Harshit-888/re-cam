@@ -4,6 +4,88 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (n) — Arena.ai — Document filters no longer blow up photos taken in the dark
+
+### The report
+A photograph of a glowing laptop screen in a dark room, saved as *Magic Color*,
+came out with **13 % of the page at pure white** (a grey mock-up of the desktop
+where the screen was, everything around it white). The original APK handles the
+same kind of frame. Data from the scanned page and from the 4000 × 3000 source:
+mean luminance **51/255**, 1.0 % of pixels at ≥ 250, **49 %** at ≤ 30.
+
+### Why it happened — a step we did not have
+`enhanceDocument` divides the frame by its own illumination surface,
+`I / paper · 255`. On a page that is the whole point: a 30 % shadow has to become
+paper. On a dark scene it is catastrophic, because the divide is **selective**.
+The screen reads 230 and the room around it reads 15, so the surface follows the
+room down into the dark, every *moderately* dark pixel (20–70) is amplified past
+250, and the genuinely black pixels stay black. That is exactly the "grey
+ghost" the PDF showed — the filter is not doing nothing, it is doing the right
+operation on the wrong frame.
+
+The original computes `imageType` (`hv3.PSImageTypeDocumentImage` /
+`PSImageTypePhotoImage`) for **every** capture in `fa1.H` and carries it in
+`PSImageEstimationInfoBean`. I traced `bx.smali`'s bake path (lines 127–195) and
+it branches only on `enhanceType` — `Original` → `qx3`, `Lighten` → `tw3`,
+level 1/2 → `lu3`. **`imageType` is never read**, so there is no explicit gate to
+copy; the original's native code simply never runs away on a dark frame the way
+ours does. Since the gate is not the difference, the fix had to be inside our
+illumination model.
+
+### The fix
+The divide is now bounded, per channel, by how dark the surface is allowed to
+get relative to the frame's own paper level:
+
+| Frame | Bound | Why |
+|---|---|---|
+| reads as a document | `0.25 ×` lit level | a page must keep its shadow removal |
+| reads as a scene | `0.62 ×` lit level | the gain ceiling stops a dark frame being repainted |
+
+"Lit level" is the 95th percentile of the smoothed surface per channel — not the
+maximum (one specular highlight is not the paper) and not the mean (a large dark
+print block drags it down).
+
+The frame type comes from `wv3`'s own rules — the ones we had ported and never
+used. **`wv3`'s thresholds are absolute** (`R ≥ 80`, `G ≥ 80`, `B ≥ 70`), so a
+page at half exposure scored 33 % and would have been misread as a photo.
+`classifiesAsDocument` therefore scales the frame to a target luminance before
+asking, which makes the question exposure-invariant; the gain is capped, so a
+genuinely dark frame is not lifted into a false positive.
+
+### Measured
+| | source | before | after |
+|---|---|---|---|
+| mean luminance | 51.2 | 93.2 | **53.0** |
+| ≥ 250 (blown out) | 1.0 % | 13.2 % | **2.5 %** |
+| ≤ 30 (blacks kept) | 49.0 % | 39.1 % | **52.4 %** |
+
+![source | Magic Color before | after](filter_fix_dark_scene.jpg)
+
+*Left: the capture. Middle: what 1.5 shipped — the desktop area is a white
+mock-up. Right: after the fix.*
+
+That frame classifies as a scene at **29.5 %** (doc rule) / 4.9 % (photo rule).
+Documents are unaffected: a synthetic page with ink and a 45 % shadow gradient
+still lands paper at 249 and ink at 41.5, at full, 60 % and 35 % exposure —
+because the *classification* is exposure-invariant even where the enhancements
+are not.
+
+### Tests
+`classify_callsAFlatLitPageADocument`, `classify_isInvariantToExposure` (232 vs
+the same page at 81), `classify_doesNotCallADarkRoomADocument`,
+`classify_doesNotCallALandscapeADocument` (sky + dark ground scores photo 50 %,
+under the 60 % bar), `classify_survivesAnEmptyArray`.
+
+### Known limit, documented not papered over
+A page shot at 35 % exposure still comes out at 180 rather than white, because
+`MAX_ILLUMINATION_GAIN = 4.5` clamps the divide before the relative bound is
+reached. Lowering it would turn a page that is mostly a dark printed photo
+white, so it stays. `Lighten` (`enhancePhoto`'s linear stretch) is the right tool
+for a frame that dark, and it is already exact.
+
+### Version
+**1.6 (code 7)**.
+
 ## 2026-10-25 (m) — Antigravity — Unit test executor memory limit & build verified
 
 - Configured `testOptions.unitTests.all { maxParallelForks = 1; jvmArgs("-Xmx512m") }` in `app/build.gradle.kts` to prevent parallel test executor forks from exhausting host paging memory on high-core CPUs.

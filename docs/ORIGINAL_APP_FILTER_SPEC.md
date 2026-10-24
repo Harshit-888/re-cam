@@ -305,3 +305,43 @@ guard, and that guard is gone.
 No static LUT tables exist in the binary, which confirms §8's instruction not to
 hardcode the document tone mapping: it is computed at runtime from the estimated
 background.
+
+### 9.5 The divide is unbounded in the native code, and that is fine there
+
+`enhanceDocument` computes `I / paper · 255` with no bound on `paper`, so on a
+frame that is *mostly dark* the surface follows the darkness down and every
+moderately dark pixel is pushed to white. A reprocessed *Magic Color* page of a
+lit screen in a dark room came out with 13 % of its pixels at pure white, from a
+source that had 1 % (mean luminance 51/255, half the frame under 30).
+
+`imageType` was the obvious suspect — `fa1.H` computes it, the bean carries it —
+but the bake path does not read it. `bx.smali` lines 127–195 branch only on
+`enhanceType`:
+
+| `enhanceType` | Call |
+|---|---|
+| `kPSEnhanceTypeOriginal` | `qx3.E(bitmap, colorType)` |
+| `kPSEnhanceTypeLighten` | `tw3.E(bitmap, whitePoint, blackPoint, colorType)` |
+| `kPSEnhanceTypeDocumentLevel1` / `Level2` | `lu3.E(bitmap, level, colorType)` |
+
+So there is no gate to transcribe, and the difference lives inside the native
+routine. Our port bounds it instead: the per-channel surface floor is
+`0.25 × litLevel` when the frame reads as a document and `0.62 × litLevel` when
+it does not, where `litLevel` is the 95th percentile of the smoothed surface.
+
+Frame type comes from `wv3`'s own rules (see §9.6). Note the thresholds there are
+absolute, so they are evaluated on the frame scaled to a target luminance —
+otherwise a page photographed at 35 % exposure scores `documentRatio = 33 %` and
+is misclassified as a photo.
+
+Measured on the reported frame: blown-out area 13.2 % → **2.5 %** (source 1.0 %),
+blacks 39.1 % → **52.4 %** (source 49.0 %), mean 93.2 → 53.0 (source 51.2).
+
+### 9.6 `photoRatio > 60` accepts sky — so "scene" means *mixed* scene
+
+`documentImage = documentRatio > 60 || photoRatio > 60`. The photo rule fires on
+blue-dominant highlight, i.e. on blue sky, so a frame that is mostly sky counts
+as `documentImage`. That is harmless for the illumination model because a
+sky-dominated frame has nothing dark to be lifted. The case that matters is a
+landscape — sky *plus* dark ground — which scores `photoRatio ≈ 50 %` and is
+correctly not a document.

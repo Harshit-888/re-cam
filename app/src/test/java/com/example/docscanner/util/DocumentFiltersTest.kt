@@ -232,6 +232,62 @@ class DocumentFiltersTest {
         )
     }
 
+    // ------------------------------------------------- exposure-invariant classify
+
+    @Test
+    fun classify_callsAFlatLitPageADocument() {
+        // A page: bright, neutral, flat.
+        val page = IntArray(400) { rgb(232, 230, 226) }
+        assertTrue(DocumentFilters.classifiesAsDocument(page))
+    }
+
+    @Test
+    fun classify_isInvariantToExposure() {
+        // wv3's thresholds are absolute (R >= 80 ...), so without normalisation a
+        // page shot at half exposure would be misread as a photo. The whole point
+        // of CLASSIFY_LUMA_TARGET is that these two answer the same.
+        val full = IntArray(400) { rgb(232, 230, 226) }
+        val dim = IntArray(400) { rgb(81, 80, 79) }   // same page, 35 % exposure
+
+        assertTrue(DocumentFilters.classifiesAsDocument(full))
+        assertTrue("a dim page must still be a page", DocumentFilters.classifiesAsDocument(dim))
+    }
+
+    @Test
+    fun classify_doesNotCallADarkRoomADocument() {
+        // The frame this was written for: a photo of a lit laptop screen in a dark
+        // room. Most of it is near-black, the rest is a small bright rectangle.
+        // Neutral-and-bright flatters this frame, so it is the tight case.
+        val pixels = IntArray(1600) { index ->
+            val x = index % 40
+            val y = index / 40
+            if (x in 8..30 && y in 12..27) rgb(228, 226, 220) else rgb(18, 18, 20)
+        }
+        assertFalse(
+            "a dark scene must not be treated as a page",
+            DocumentFilters.classifiesAsDocument(pixels)
+        )
+    }
+
+    @Test
+    fun classify_doesNotCallALandscapeADocument() {
+        // The real scene risk: sky (which wv3's photo rule accepts) plus dark
+        // ground (which both rules reject). A landscape must not have its shadows
+        // divided out, or the ground turns white.
+        val pixels = IntArray(1600) { index ->
+            if (index < 800) rgb(150, 190, 235) else rgb(52, 84, 40)
+        }
+        assertFalse(
+            "a landscape must not be treated as a page",
+            DocumentFilters.classifiesAsDocument(pixels)
+        )
+    }
+
+    @Test
+    fun classify_survivesAnEmptyArray() {
+        assertFalse(DocumentFilters.classifiesAsDocument(IntArray(0)))
+    }
+
     // ---------------------------------------------------------------------- otsu
 
     @Test
