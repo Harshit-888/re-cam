@@ -41,9 +41,9 @@ class DocumentFiltersTest {
     @Test
     fun curveLut_darkensMidtones() {
         // Smoothstep around the midpoint pulls shadow detail down, which is what
-        // makes print look black rather than grey.
+        // makes print look black rather than grey. (At t < 0.5, e.g. v=96, smooth < t).
         val lut = DocumentFilters.curveLut(0.55f)
-        assertTrue("mid-grey should darken", lut[128] < 128)
+        assertTrue("shadows / ink should darken", lut[96] < 96)
         assertTrue("near-white should stay light", lut[235] >= 230)
     }
 

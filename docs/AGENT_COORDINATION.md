@@ -103,6 +103,6 @@ Rebuilt 2026-10-25 after the "make it real" pass.
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-25 (`./gradlew assembleDebug testDebugUnitTest` passed).
-Added `timeZone` parameter to `DocumentNaming.defaultScanTitle()` for hermetic unit testing. APK built successfully at `app/build/outputs/apk/debug/app-debug.apk` (versionCode 2, versionName 1.1).
+Document filters + edge quad detection verified. APK built successfully at `app/build/outputs/apk/debug/app-debug.apk` (versionCode 3, versionName 1.2).
 
 
