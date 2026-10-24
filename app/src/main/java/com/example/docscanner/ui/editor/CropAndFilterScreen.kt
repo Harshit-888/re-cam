@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.RotateLeft
@@ -42,6 +43,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -52,6 +54,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -73,12 +76,23 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
+/** Smallest allowed gap between opposing edges, in normalised units. */
+private const val MIN_GAP = 0.02f
+
 /**
  * Perspective correction + enhancement editor.
  *
- * Shows the **real captured page**, previews the active `ColorMatrix` filter
- * live over those pixels, and on *Save* bakes warp → rotation → filter into a new
- * JPEG through [PageRenderer] (non-destructively, from the pristine original).
+ * Two modes, driven by [reviewMode]:
+ *
+ * - **Review mode** (`reviewMode = true`) — the post-capture step the original app
+ *   had. Entered straight from the camera after *Done*, it auto-detects the
+ *   document borders on the first frame, lets the user fine-tune the four
+ *   corners and pick a filter, then walks through every captured page with
+ *   *Save & Next* before landing on the document.
+ * - **Single-page mode** — reached from the document screen or the viewer to
+ *   re-edit one page; *Save* returns where you came from.
+ *
+ * Edits are baked non-destructively by [PageRenderer] from the pristine capture.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -86,45 +100,84 @@ fun CropAndFilterScreen(
     docId: String,
     pageId: String,
     repository: ScannerRepository,
-    onDone: () -> Unit
+    onDone: () -> Unit,
+    reviewMode: Boolean = false
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    val page = remember(docId, pageId) {
-        repository.getDocumentById(docId)?.pages?.find { it.id == pageId }
+    val documents by repository.documents.collectAsState()
+    val document = remember(documents, docId) { documents.find { it.id == docId } }
+    val pages = document?.pages ?: emptyList()
+
+    // The editor walks the document itself in review mode instead of pushing a
+    // new navigation entry per page.
+    var activePageId by remember(pageId) { mutableStateOf(pageId) }
+    val activeIndex = pages.indexOfFirst { it.id == activePageId }
+    // Guard against activeIndex == -1 (page not found yet): activeIndex + 1 would
+    // otherwise resolve to the FIRST page and the editor would loop forever.
+    val nextPageId = if (reviewMode && activeIndex >= 0) {
+        pages.getOrNull(activeIndex + 1)?.id
+    } else {
+        null
     }
 
-    var selectedFilter by remember { mutableStateOf(page?.filterType ?: FilterType.MAGIC_COLOR) }
-    var rotation by remember { mutableFloatStateOf(page?.rotationDegrees ?: 0f) }
-    var corners by remember { mutableStateOf(page?.corners ?: QuadCorners.FULL_FRAME) }
+    var selectedFilter by remember { mutableStateOf(FilterType.MAGIC_COLOR) }
+    var rotation by remember { mutableFloatStateOf(0f) }
+    var corners by remember { mutableStateOf(QuadCorners.FULL_FRAME) }
     var isCropMode by remember { mutableStateOf(false) }
     var isSaving by remember { mutableStateOf(false) }
+    var isAutoDetecting by remember { mutableStateOf(false) }
+    var loadedPageId by remember { mutableStateOf<String?>(null) }
 
-    var previewBitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var previewBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
     var previewAspect by remember { mutableFloatStateOf(0.707f) }
     var detectSource by remember { mutableStateOf<Bitmap?>(null) }
 
-    LaunchedEffect(docId, pageId) {
-        val current = repository.getDocumentById(docId)?.pages?.find { it.id == pageId }
-            ?: return@LaunchedEffect
+    // Load (and, for a fresh capture, auto-detect) the active page.
+    LaunchedEffect(activePageId) {
+        val current = repository.getDocumentById(docId)
+            ?.pages?.find { it.id == activePageId } ?: return@LaunchedEffect
+
+        selectedFilter = current.filterType
+        rotation = current.rotationDegrees
+        corners = current.corners
+
         val decoded = withContext(Dispatchers.IO) {
             ImageStore.loadBitmap(
                 context,
                 current.originalImageUri ?: current.imageUri,
-                1600
+                1400
             )
         }
-        if (decoded != null) {
-            detectSource = decoded
-            previewBitmap = decoded.asImageBitmap()
-            previewAspect = decoded.width.toFloat() / decoded.height.toFloat()
+        if (decoded == null) {
+            loadedPageId = activePageId
+            return@LaunchedEffect
         }
+
+        detectSource = decoded
+        previewBitmap = decoded.asImageBitmap()
+        previewAspect = decoded.width.toFloat() / decoded.height.toFloat()
+
+        // Auto-detect only for pages the user has not cropped yet, and never
+        // override saved corners.
+        if (current.corners.isFullFrame) {
+            isAutoDetecting = true
+            val detected = withContext(Dispatchers.Default) { PerspectiveWarp.detectQuad(decoded) }
+            isAutoDetecting = false
+            if (!detected.isFullFrame) corners = detected
+        }
+
+        loadedPageId = activePageId
+
+        // A single-page edit should lead with the photo, not the crop handles.
+        if (!reviewMode) isCropMode = false
     }
 
-    fun save() {
+    fun saveAndContinue() {
         if (isSaving) return
-        val current = repository.getDocumentById(docId)?.pages?.find { it.id == pageId }
+        val current = repository.getDocumentById(docId)
+            ?.pages?.find { it.id == activePageId }
         if (current == null) {
             onDone()
             return
@@ -140,39 +193,68 @@ fun CropAndFilterScreen(
                 )
             )
             if (baked != null) {
-                repository.updatePage(docId, pageId) { baked }
+                repository.updatePage(docId, activePageId) { baked }
             }
             isSaving = false
-            onDone()
+            if (nextPageId != null) {
+                activePageId = nextPageId
+            } else {
+                onDone()
+            }
         }
+    }
+
+    val pageLabel = when {
+        pages.isEmpty() -> "Page"
+        activeIndex >= 0 -> "Page ${activeIndex + 1} of ${pages.size}"
+        else -> "Page"
+    }
+    val saveLabel = when {
+        nextPageId != null -> "Save & Next"
+        reviewMode -> "Finish"
+        else -> "Save"
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        if (isCropMode) "Adjust Perspective Borders" else "Enhance & Filter",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Column {
+                        Text(
+                            if (isCropMode) "Adjust borders" else "Enhance & filter",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            pageLabel,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 },
                 navigationIcon = {
                     IconButton(onClick = onDone) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(
+                            Icons.Default.ArrowBack,
+                            contentDescription = if (reviewMode) "Skip review" else "Back"
+                        )
                     }
                 },
                 actions = {
-                    TextButton(onClick = { save() }, enabled = !isSaving) {
+                    TextButton(onClick = { saveAndContinue() }, enabled = !isSaving) {
                         if (isSaving) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(18.dp),
                                 strokeWidth = 2.dp
                             )
                         } else {
-                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(
+                                Icons.Default.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Save", fontWeight = FontWeight.Bold)
+                            Text(saveLabel, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -189,7 +271,7 @@ fun CropAndFilterScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
-                        .padding(vertical = 12.dp, horizontal = 16.dp)
+                        .padding(vertical = 10.dp, horizontal = 16.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -210,19 +292,19 @@ fun CropAndFilterScreen(
                             label = { Text("Borders") },
                             shape = RoundedCornerShape(16.dp)
                         )
-                        IconButton(onClick = {
-                            rotation = ImageProcessingUtils.normalizeRotation(rotation - 90f)
-                        }) {
+                        IconButton(
+                            onClick = { rotation = ImageProcessingUtils.normalizeRotation(rotation - 90f) }
+                        ) {
                             Icon(Icons.Default.RotateLeft, contentDescription = "Rotate left")
                         }
-                        IconButton(onClick = {
-                            rotation = ImageProcessingUtils.normalizeRotation(rotation + 90f)
-                        }) {
+                        IconButton(
+                            onClick = { rotation = ImageProcessingUtils.normalizeRotation(rotation + 90f) }
+                        ) {
                             Icon(Icons.Default.RotateRight, contentDescription = "Rotate right")
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     if (!isCropMode) {
                         LazyRow(
@@ -230,9 +312,8 @@ fun CropAndFilterScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             items(FilterType.entries.toList(), key = { it.name }) { filter ->
-                                val isSelected = selectedFilter == filter
                                 FilterChip(
-                                    selected = isSelected,
+                                    selected = selectedFilter == filter,
                                     onClick = { selectedFilter = filter },
                                     label = { Text(filter.label) },
                                     shape = RoundedCornerShape(14.dp)
@@ -242,29 +323,37 @@ fun CropAndFilterScreen(
                     } else {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             TextButton(onClick = { corners = QuadCorners.FULL_FRAME }) {
                                 Icon(Icons.Default.Fullscreen, contentDescription = null)
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Full Page")
+                                Text("Full page")
                             }
                             TextButton(
                                 onClick = {
-                                    val source = detectSource
-                                    if (source != null) {
-                                        scope.launch {
-                                            corners = withContext(Dispatchers.Default) {
-                                                PerspectiveWarp.detectQuad(source)
-                                            }
+                                    val source = detectSource ?: return@TextButton
+                                    scope.launch {
+                                        isAutoDetecting = true
+                                        corners = withContext(Dispatchers.Default) {
+                                            PerspectiveWarp.detectQuad(source)
                                         }
+                                        isAutoDetecting = false
                                     }
                                 },
-                                enabled = detectSource != null
+                                enabled = detectSource != null && !isAutoDetecting
                             ) {
-                                Icon(Icons.Outlined.Crop, contentDescription = null)
+                                if (isAutoDetecting) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Icon(Icons.Default.AutoFixHigh, contentDescription = null)
+                                }
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Auto Detect")
+                                Text("Auto detect")
                             }
                         }
                     }
@@ -280,12 +369,20 @@ fun CropAndFilterScreen(
             contentAlignment = Alignment.Center
         ) {
             val image = previewBitmap
+            val pageReady = loadedPageId == activePageId
             if (image == null) {
-                CircularProgressIndicator()
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        if (pageReady) "This page's image is missing." else "Loading page…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             } else {
                 BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                     val swapAxes = rotation.roundToInt() % 180 != 0
-                    // Fit the *rotated* bounding box inside the available space.
                     val visualAspect = if (swapAxes) 1f / previewAspect else previewAspect
                     val availableAspect = maxWidth / maxHeight
                     val visualWidth = if (availableAspect > visualAspect) maxHeight * visualAspect else maxWidth
@@ -301,11 +398,11 @@ fun CropAndFilterScreen(
                     ) {
                         Image(
                             bitmap = image,
-                            contentDescription = "Scanned page preview",
+                            contentDescription = "Page preview",
                             contentScale = ContentScale.FillBounds,
-                            colorFilter = ImageProcessingUtils.getComposeColorFilter(selectedFilter).takeIf {
-                                selectedFilter != FilterType.ORIGINAL
-                            },
+                            colorFilter = ImageProcessingUtils
+                                .getComposeColorFilter(selectedFilter)
+                                .takeIf { selectedFilter != FilterType.ORIGINAL },
                             modifier = Modifier.fillMaxSize()
                         )
 
@@ -371,7 +468,6 @@ fun CropAndFilterScreen(
                             )
 
                             if (isCropMode) {
-                                // Dim everything outside the quad.
                                 val quad = Path().apply {
                                     moveTo(points[0].x, points[0].y)
                                     lineTo(points[1].x, points[1].y)
@@ -379,13 +475,13 @@ fun CropAndFilterScreen(
                                     lineTo(points[3].x, points[3].y)
                                     close()
                                 }
-                                drawPath(quad, color = Color.White.copy(alpha = 0.08f))
+                                // Dim outside the document, outline it, mark corners.
+                                drawPath(quad, color = Color(0xFF4FD8EB).copy(alpha = 0.10f))
                                 drawPath(
                                     path = quad,
                                     color = Color(0xFF4FD8EB),
                                     style = Stroke(width = 3.dp.toPx())
                                 )
-
                                 points.forEachIndexed { index, point ->
                                     val isActive = grabbedCorner == index
                                     drawCircle(
@@ -407,9 +503,6 @@ fun CropAndFilterScreen(
         }
     }
 }
-
-/** Smallest allowed gap between opposing edges, in normalised units. */
-private const val MIN_GAP = 0.02f
 
 /**
  * `coerceIn` throws when `min > max`. Dragging one corner past its neighbour used

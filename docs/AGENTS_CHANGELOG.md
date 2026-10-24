@@ -6,6 +6,70 @@ Newest entry at the top.
 
 ---
 
+## 2026-10-25 (b) — Arena.ai — Crash fix + post-capture review flow
+
+### 🐞 Root cause of the "press Done → crash" bug
+`ScannerCameraScreen.commitScan()` built a new document's title with
+
+```kotlin
+SimpleDateFormat("Scan yyyy-MM-dd HH:mm", Locale.getDefault())
+```
+
+`"Scan yyyy-MM-dd HH:mm"` is a **pattern**, not a literal. `S`, `a`, `d`, `y`,
+`H`, `m` are legal pattern letters, but **`c` and `n` are not**, so the
+constructor threw `IllegalArgumentException: Illegal pattern character 'c'`.
+It fired at exactly one moment: **Done on a brand-new document**, because the
+`targetDocId != null` branch (adding pages to an existing document) never built a
+title. That is why capture worked, the counter advanced, and only *Done* crashed.
+
+Fixed by never inlining a pattern again: `util/DocumentNaming.kt` owns the
+pattern (`"'Scan' yyyy-MM-dd HH-mm-ss"` — literal quoted, `-` instead of `:` so
+the title is filename-safe) and falls back instead of throwing.
+`DocumentNamingTest` locks the behaviour, including a test that asserts the *old*
+pattern still throws, so nobody "simplifies" the quotes away.
+
+> **Rule for all agents:** any `SimpleDateFormat` pattern containing a literal
+> word must single-quote it. Put patterns in `DocumentNaming`, not in screens.
+
+### ✨ New: post-capture review screen (the flow the original app had)
+After *Done*, the camera now opens the editor in **review mode** instead of
+jumping to the document:
+
+1. Borders are **auto-detected** on entry (`PerspectiveWarp.detectQuad`).
+2. Four draggable corners, live filter preview, 90° rotation.
+3. **Save & Next** bakes the page and advances to the next captured page;
+   the last page becomes **Finish** and lands on the document screen.
+
+### Signature changes
+| Symbol | Before | After |
+| :--- | :--- | :--- |
+| `CropAndFilterScreen(...)` | `(docId, pageId, repository, onDone)` | **added `reviewMode: Boolean = false`** (last param) |
+| `CropAndFilterNav` | `(docId, pageId)` | **`(docId, pageId, review: Boolean = false)`** |
+| `PerspectiveWarp.detectQuad` | fell back to a 6 % inset | **falls back to `FULL_FRAME`** — never silently crops when detection is inconclusive |
+| `DocumentGridCard` / `DocumentListCard` | `(document, onClick, onDelete)` | **added `onMoveToFolder: () -> Unit`** |
+
+### New files
+| File | Purpose |
+| :--- | :--- |
+| `util/DocumentNaming.kt` | Single owner of title patterns; quotes literals, never throws |
+| `app/src/test/.../util/DocumentNamingTest.kt` | First real unit test in the repo; guards the crash pattern |
+
+### Other fixes in this pass
+- **"Move to folder" now exists.** `ScannerRepository.moveDocumentToFolder` was
+  implemented but unreachable from the UI, so folder chips could only ever filter
+  seeded data. Both dashboard card menus have *Move to folder…* +
+  `MoveToFolderDialog`.
+- **Notes are editable.** `Document.notes` rendered in a banner but nothing could
+  set it. The rename dialog is now *Edit document* (title + notes).
+- **Duplicate back-stack key removed.** Adding a page to an existing document
+  produced `[…, DocumentDetailNav(d), DocumentDetailNav(d)]`; the camera's finish
+  handler now reaches the review screen and `addDetailIfNeeded()` prevents a
+  second entry with the same key.
+- `versionCode 1 → 2`, `versionName 1.0 → 1.1` so a device can be checked for the
+  right build.
+
+---
+
 ## 2026-10-25 — Antigravity — Build verified & daemon memory configured
 
 - Verified compilation and built `app-debug.apk` (`./gradlew assembleDebug` SUCCESS in 1m 17s).

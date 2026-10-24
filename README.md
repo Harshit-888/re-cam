@@ -23,7 +23,7 @@ in app-private storage, and renders them back.
 1. **Dashboard & organisation** (`ui/dashboard/`)
    - Instant search across titles, tags and extracted text.
    - Folder chips (create folders with a colour), grid/list switcher, sorting by
-     modified/created/A–Z.
+     modified/created/A–Z, and *Move to folder…* from any document card.
    - Cover thumbnails are the **real first page**, not an icon.
 
 2. **Camera capture** (`ui/camera/`)
@@ -43,32 +43,39 @@ in app-private storage, and renders them back.
    - Non-destructive: the pristine capture is never overwritten, so repeated edits
      don't accumulate JPEG loss.
 
-4. **Document detail** (`ui/detail/`)
+4. **Post-capture review** (`ui/editor/`, `reviewMode`)
+   - After *Done*, every captured page opens with **auto-detected document
+     borders** and draggable corner handles.
+   - Live filter preview, 90° rotation, then *Save & Next* through the whole
+     batch before landing on the document. This is the step the legacy app had.
+
+5. **Document detail** (`ui/detail/`)
    - Multi-page grid with real thumbnails and filter/watermark badges.
    - Page rotation, deletion (cleans up the JPEGs), reordering, and appending
      more scans.
-   - Rename, watermark (applied at PDF time), signature, PDF export.
+   - Edit title **and notes**, watermark (applied at PDF time), signature, PDF
+     export.
 
-5. **Fullscreen viewer** (`ui/viewer/`)
+6. **Fullscreen viewer** (`ui/viewer/`)
    - Real page bitmap, pan + pinch-zoom to 4×, page navigation, rotation.
    - Recognised-text sheet with copy-to-clipboard (populated by the OCR roadmap
      item).
 
-6. **Digital signature** (`ui/signature/`)
+7. **Digital signature** (`ui/signature/`)
    - Bezier-smoothed stroke canvas, thickness slider, three ink colours.
    - Rasterised to a transparent PNG and composited onto the page at the
      bottom-right, so it survives into thumbnails, the viewer and the PDF.
 
-7. **PDF export** (`util/PdfGenerator.kt`, `ui/pdf/`)
+8. **PDF export** (`util/PdfGenerator.kt`, `ui/pdf/`)
    - Real page bitmaps, 72 DPI point geometry, aspect-preserving fit.
    - **8 paper presets**, 4 margin presets, optional page numbering, watermark.
    - Runs on `Dispatchers.IO` (no ANR on long documents).
    - Shares through a `FileProvider` + the system share sheet.
 
-8. **Recycle bin** (`ui/trash/`) — soft delete, restore, permanent purge
+9. **Recycle bin** (`ui/trash/`) — soft delete, restore, permanent purge
    (including deleting page files from disk).
 
-9. **Persistence** (`data/LibraryStore.kt`) — the whole library is a
+10. **Persistence** (`data/LibraryStore.kt`) — the whole library is a
    `library.json` snapshot written atomically, so it survives process death.
 
 ---
@@ -130,7 +137,8 @@ Margins: None (0 pt), Compact (10 pt), Standard (25 pt), Wide (40 pt).
 Requirements: JDK 17+ (21 recommended) and Android SDK 36 with Build Tools 36.
 
 ```bash
-./gradlew assembleDebug
+./gradlew assembleDebug          # build
+./gradlew testDebugUnitTest      # unit tests (DocumentNaming crash guard)
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 

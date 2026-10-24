@@ -85,14 +85,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.model.ScannedPage
+import com.example.docscanner.util.DocumentNaming
 import com.example.docscanner.util.ImageStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.UUID
 
 /** Flash behaviour for capture + torch state for the live preview. */
@@ -239,9 +237,14 @@ fun ScannerCameraScreen(
             capturedPages.forEach { repository.addPageToDocument(targetDocId, it) }
             targetDocId
         } else {
-            val title = SimpleDateFormat("Scan yyyy-MM-dd HH:mm", Locale.getDefault())
-                .format(Date())
-            repository.addDocument(title, null, capturedPages.toList()).id
+            // NOTE: DocumentNaming quotes the literal "Scan". Passing a bare
+            // "Scan yyyy-MM-dd HH:mm" here threw IllegalArgumentException inside
+            // SimpleDateFormat and crashed the app on the first Done press.
+            repository.addDocument(
+                DocumentNaming.defaultScanTitle(),
+                null,
+                capturedPages.toList()
+            ).id
         }
         onFinishScan(docId)
     }

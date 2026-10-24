@@ -47,10 +47,18 @@ fun MainNavigation(repository: ScannerRepository) {
                     targetDocId = key.targetDocId,
                     repository = repository,
                     onFinishScan = { docId ->
-                        // Replace the camera with the detail screen so Back returns
-                        // to the dashboard rather than reopening the viewfinder.
+                        // Replace the camera so Back returns to where the scan
+                        // started rather than reopening the viewfinder.
                         backStack.removeLastOrNull()
-                        backStack.add(DocumentDetailNav(docId))
+                        val firstPageId = repository.getDocumentById(docId)
+                            ?.pages?.firstOrNull()?.id
+                        if (firstPageId != null) {
+                            // Post-capture review: auto-detected borders + filters,
+                            // page by page — then on to the document.
+                            backStack.add(CropAndFilterNav(docId, firstPageId, review = true))
+                        } else {
+                            addDetailIfNeeded(backStack, docId)
+                        }
                     },
                     onClose = {
                         backStack.removeLastOrNull()
@@ -82,8 +90,10 @@ fun MainNavigation(repository: ScannerRepository) {
                     docId = key.docId,
                     pageId = key.pageId,
                     repository = repository,
+                    reviewMode = key.review,
                     onDone = {
                         backStack.removeLastOrNull()
+                        if (key.review) addDetailIfNeeded(backStack, key.docId)
                     }
                 )
             }
@@ -112,4 +122,18 @@ fun MainNavigation(repository: ScannerRepository) {
             }
         }
     )
+}
+
+/**
+ * Pushes a [DocumentDetailNav] unless that document's detail screen is already on
+ * top. Adding a second entry with the same [androidx.navigation3.runtime.NavKey]
+ * would give Navigation 3 two entries with identical keys.
+ */
+private fun addDetailIfNeeded(
+    backStack: MutableList<androidx.navigation3.runtime.NavKey>,
+    docId: String
+) {
+    val top = backStack.lastOrNull()
+    if (top is DocumentDetailNav && top.docId == docId) return
+    backStack.add(DocumentDetailNav(docId))
 }
