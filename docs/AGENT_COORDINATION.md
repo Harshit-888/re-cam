@@ -54,13 +54,19 @@ adding a changelog entry and updating every caller in the same commit.
 | `ImageStore.loadBitmap(ctx, imageUri, w, h)` | fun | Sampled decode, orientation-corrected |
 | `rememberPageImage(imageUri, w, h)` | `@Composable` | Async decode → `ImageBitmap?` |
 | `PageThumbnail(page, modifier)` | `@Composable` | Standard page preview with icon fallback |
-| `ImageProcessingUtils.applyEnhancements(src, filter, rotation, corners)` | fun | warp → rotate → ColorMatrix, in that order |
+| `ImageProcessingUtils.applyEnhancements(src, filter, rotation, corners)` | fun | warp → rotate → filter, in that order |
+| `DocumentFilters.apply(src, filter, maxDimension)` | fun | The real filter pipeline. Returns `src` for ORIGINAL/failure — compare identity before recycling |
+| `DocumentFilters.applyPreview(src, filter)` | fun | Same pipeline at preview resolution (WYSIWYG) |
+| `DocumentDetector.detectQuad(bitmap)` | fun | Sobel + quad fit; never throws, falls back to `FULL_FRAME` |
+| `PerspectiveWarp.detectQuad(bitmap)` | fun | Thin delegate to `DocumentDetector` (kept for compatibility) |
 | `PerspectiveWarp.warp(src, corners)` | fun | `Matrix.setPolyToPoly` projective warp |
 | `PdfGenerator.generatePdf(ctx, doc, config, bitmapProvider)` | fun | Blocking; **call from `Dispatchers.IO` only** |
 | `SignaturePadDialog(onDismiss, onSignatureConfirmed)` | `@Composable` | Callback receives a **PNG path**, not an opaque token |
 | `CropAndFilterScreen(docId, pageId, repository, onDone, reviewMode)` | `@Composable` | `reviewMode = true` auto-detects borders and walks the document page by page |
 | `DocumentNaming.defaultScanTitle()` | fun | **The only** sanctioned source of scan titles — it quotes pattern literals |
 | `QuadCorners.FULL_FRAME` | const | Means "no warp". Auto-detect falls back to it rather than cropping |
+| ~~`ImageProcessingUtils.getColorMatrix`~~ | **removed** | Was a global `ColorMatrix`; superseded by `DocumentFilters` |
+| ~~`ImageProcessingUtils.getComposeColorFilter`~~ | **removed** | Editor now previews a real filtered bitmap |
 
 ## 4. In-flight changes
 

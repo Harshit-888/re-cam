@@ -6,6 +6,87 @@ Newest entry at the top.
 
 ---
 
+## 2026-10-25 (c) — Arena.ai — Real filters + real border detection
+
+### Why
+The user reported: *"the filters effect are not good at all, make them perfect like
+the original app, also the auto detection of pages and border."* Both were
+algorithmic gaps, not tuning.
+
+### Filters — replaced a global `ColorMatrix` with a pixel pipeline
+`ImageProcessingUtils.getColorMatrix()` applied five fixed matrices (e.g. *Magic
+Color* = contrast ×1.35 + brightness +15, *Clear B&W* = desaturate + contrast ×2.4
+− 140). A global matrix **cannot**:
+- remove shadows or a torch hotspot, because the correction has to vary spatially;
+- white-balance, because indoor light is yellow and shade is blue;
+- avoid clipping, because ×2.4 contrast maps a mid-grey page to 0 or 255.
+
+New `util/DocumentFilters.kt` per filter:
+1. **Illumination normalisation** — paper brightness is estimated with a
+   block-**max** (dilation) pyramid (max rejects ink, keeps paper), blurred, and
+   sampled bilinearly; dividing by it maps every patch of paper to the same white.
+2. **Grey-world white balance** on the normalised result (clamped to ±20 % so a
+   genuinely tinted page is not neutralised).
+3. **Percentile stretch** 0.4 %→99.6 % per channel instead of a fixed multiplier.
+4. **Saturation boost** (1.18) around Rec.601 luminance for *Magic Color*.
+5. **Smoothstep S-curve** to deepen ink while pinning paper at 255.
+6. *Clear B&W* → **Otsu threshold** over the normalised luminance with a narrow
+   ramp, so glyph edges stay anti-aliased instead of jagged.
+7. *Lighten* → partial normalisation (72 %) that keeps some shading for photos and
+   tinted paper.
+
+Processing is capped at `MAX_PROCESS_DIMENSION = 2000` px on the long edge
+(~240 DPI A4), which keeps a bake to a few hundred ms and bounds memory.
+`android:largeHeap="true"` was added: the pipeline holds an ARGB `IntArray` plus a
+luminance `FloatArray` for the whole page (~2 × 4 bytes × pixels).
+
+### Editor preview is now WYSIWYG
+The editor used `ImageProcessingUtils.getComposeColorFilter()` — a `ColorMatrix`
+`ColorFilter` that looked **nothing like** the baked output. It now renders the
+real filter via `DocumentFilters.applyPreview()` at 900 px, with a 2 dp progress
+bar while it computes. Preview and PDF therefore match.
+
+### Border detection — replaced a brightness bounding box with an edge quad
+`PerspectiveWarp.detectQuad()` sampled a 64×48 grid and returned the axis-aligned
+box of "bright enough" cells. That cannot express perspective (it cuts off two
+corners of an angled page and keeps desk at the other two), keys on absolute
+brightness (a white desk defeats it), and returned `FULL_FRAME` whenever the page
+filled the frame.
+
+New `util/DocumentDetector.kt`:
+1. Downscale to 360 px, blur, **Sobel** gradients.
+2. Percentile edge threshold (`sorted.p90 × 0.55`, floored at 26).
+3. **Extreme-point quad** — TL minimises `x+y`, BR maximises it, TR maximises
+   `x−y`, BL minimises it. Adapts to perspective and ignores interior text edges.
+4. **Robust least-squares line per side** (only points 10–90 % along that side,
+   within a 5.5 % band), with one MAD-based outlier rejection pass and refit.
+5. **Intersect adjacent lines** for well-conditioned corners.
+6. Validate convexity, bounds, side lengths and area (12 %–99.5 %); anything
+   doubtful returns `FULL_FRAME`. Never throws.
+
+### Signature changes
+| Symbol | Before | After |
+| :--- | :--- | :--- |
+| `ImageProcessingUtils.getColorMatrix` | returned `ColorMatrix?` | **removed** — use `DocumentFilters.apply` |
+| `ImageProcessingUtils.getComposeColorFilter` | returned Compose `ColorFilter?` | **removed** — editor previews a real bitmap |
+| `ImageProcessingUtils.applyFilter` | — | **new** `(src, filterType, maxDimension)` |
+| `PerspectiveWarp.detectQuad` | 120-line brightness heuristic | delegates to `DocumentDetector.detectQuad`; same signature |
+| `DocumentFilters.apply` | — | **new** — returns `src` itself for ORIGINAL/failure |
+| `DocumentFilters.applyPreview` | — | **new** |
+| `DocumentDetector.detectQuad` | — | **new** |
+
+### New files
+| File | Purpose |
+| :--- | :--- |
+| `util/DocumentFilters.kt` | Illumination model, white balance, stretch, Otsu, tone curve |
+| `util/DocumentDetector.kt` | Sobel + extreme-point quad + robust line fit + validation |
+| `app/src/test/.../util/DocumentFiltersTest.kt` | JVM tests for `curveLut`, `percentile`, `otsuThreshold` |
+
+### Version
+`versionCode 3`, `versionName 1.2`.
+
+---
+
 ## 2026-10-25 (c) — Antigravity — TimeZone hermetic test fix & build verified
 
 - Added `timeZone: TimeZone = TimeZone.getDefault()` to `DocumentNaming.defaultScanTitle()` so formatters default to local device time while unit tests can explicitly assert under `UTC`.

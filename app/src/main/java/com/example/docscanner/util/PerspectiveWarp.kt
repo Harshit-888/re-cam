@@ -85,82 +85,16 @@ object PerspectiveWarp {
     }
 
     /**
-     * Cheap "auto detect" used by the editor's *Auto Detect* button.
+     * Auto-detects the document quad.
      *
-     * Samples the page on a coarse grid, estimates the paper brightness from the
-     * upper percentile of luminance, and returns the bounding box of pixels
-     * bright enough to be paper. This is a **brightness bounding box**, not
-     * contour/edge detection — it finds a straight document on a dark background
-     * reliably and politely gives up (returning a small inset) otherwise.
+     * Delegates to [DocumentDetector], which does Sobel edge extraction plus a
+     * robust four-line fit. This used to be a brightness bounding box here, which
+     * could not represent perspective and failed on white backgrounds.
      *
-     * Upgrade path: replace with ML Kit Document Scanner or a contour pass over
-     * a Canny mask if a true quad is needed.
+     * Kept on this object because several call sites and the agent integration
+     * contract refer to `PerspectiveWarp.detectQuad`.
      */
-    fun detectQuad(bitmap: Bitmap): QuadCorners {
-        // When detection is inconclusive, report the FULL frame: silently
-        // trimming 6% off every edge could cut real content off the user's page.
-        val fallback = QuadCorners.FULL_FRAME
-        val gridWidth = 64
-        val gridHeight = (64.0 * bitmap.height / bitmap.width).roundToInt().coerceIn(48, 96)
-
-        val luminance = FloatArray(gridWidth * gridHeight)
-        for (gy in 0 until gridHeight) {
-            val y = (gy + 0.5f) / gridHeight * (bitmap.height - 1)
-            for (gx in 0 until gridWidth) {
-                val x = (gx + 0.5f) / gridWidth * (bitmap.width - 1)
-                val pixel = bitmap.getPixel(x.toInt().coerceIn(0, bitmap.width - 1), y.toInt().coerceIn(0, bitmap.height - 1))
-                // Rec. 601 luminance, matching the grayscale filter's weights.
-                luminance[gy * gridWidth + gx] =
-                    0.299f * android.graphics.Color.red(pixel) +
-                    0.587f * android.graphics.Color.green(pixel) +
-                    0.114f * android.graphics.Color.blue(pixel)
-            }
-        }
-
-        val sorted = luminance.copyOf().also { it.sort() }
-        val paperLevel = sorted[(sorted.size * 0.85f).toInt().coerceIn(0, sorted.lastIndex)]
-        if (paperLevel < 60f) return fallback // nothing bright enough: no paper visible
-
-        val threshold = paperLevel * 0.62f
-        var minX = gridWidth
-        var minY = gridHeight
-        var maxX = -1
-        var maxY = -1
-        var brightCount = 0
-
-        for (gy in 0 until gridHeight) {
-            for (gx in 0 until gridWidth) {
-                if (luminance[gy * gridWidth + gx] >= threshold) {
-                    brightCount++
-                    if (gx < minX) minX = gx
-                    if (gx > maxX) maxX = gx
-                    if (gy < minY) minY = gy
-                    if (gy > maxY) maxY = gy
-                }
-            }
-        }
-
-        if (maxX < 0 || maxY < 0) return fallback
-
-        val coverage = brightCount.toFloat() / (gridWidth * gridHeight)
-        val boxWidth = (maxX - minX + 1).toFloat() / gridWidth
-        val boxHeight = (maxY - minY + 1).toFloat() / gridHeight
-
-        // Reject implausible results: too little paper anywhere, or a box that is
-        // essentially the whole frame (in which case cropping gains nothing).
-        if (coverage < 0.08f || (boxWidth > 0.985f && boxHeight > 0.985f)) return fallback
-
-        return QuadCorners(
-            topLeftX = minX.toFloat() / gridWidth,
-            topLeftY = minY.toFloat() / gridHeight,
-            topRightX = (maxX + 1).toFloat() / gridWidth,
-            topRightY = minY.toFloat() / gridHeight,
-            bottomRightX = (maxX + 1).toFloat() / gridWidth,
-            bottomRightY = (maxY + 1).toFloat() / gridHeight,
-            bottomLeftX = minX.toFloat() / gridWidth,
-            bottomLeftY = (maxY + 1).toFloat() / gridHeight
-        )
-    }
+    fun detectQuad(bitmap: Bitmap): QuadCorners = DocumentDetector.detectQuad(bitmap)
 
     private fun distance(x1: Float, y1: Float, x2: Float, y2: Float): Float {
         val dx = x2 - x1

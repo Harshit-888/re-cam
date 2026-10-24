@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.outlined.Crop
 import androidx.compose.material.icons.outlined.FilterAlt
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -67,6 +68,7 @@ import androidx.compose.ui.unit.dp
 import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.model.FilterType
 import com.example.docscanner.model.QuadCorners
+import com.example.docscanner.util.DocumentFilters
 import com.example.docscanner.util.ImageProcessingUtils
 import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.PageRenderer
@@ -130,9 +132,12 @@ fun CropAndFilterScreen(
     var isAutoDetecting by remember { mutableStateOf(false) }
     var loadedPageId by remember { mutableStateOf<String?>(null) }
 
+    // Unfiltered, downscaled source used for both detection and previewing.
+    var previewSource by remember { mutableStateOf<Bitmap?>(null) }
+    // The filtered preview the user actually sees (real filter, not a ColorMatrix).
     var previewBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
     var previewAspect by remember { mutableFloatStateOf(0.707f) }
-    var detectSource by remember { mutableStateOf<Bitmap?>(null) }
+    var isFiltering by remember { mutableStateOf(false) }
 
     // Load (and, for a fresh capture, auto-detect) the active page.
     LaunchedEffect(activePageId) {
@@ -155,8 +160,7 @@ fun CropAndFilterScreen(
             return@LaunchedEffect
         }
 
-        detectSource = decoded
-        previewBitmap = decoded.asImageBitmap()
+        previewSource = decoded
         previewAspect = decoded.width.toFloat() / decoded.height.toFloat()
 
         // Auto-detect only for pages the user has not cropped yet, and never
@@ -172,6 +176,28 @@ fun CropAndFilterScreen(
 
         // A single-page edit should lead with the photo, not the crop handles.
         if (!reviewMode) isCropMode = false
+    }
+
+    // Render the selected filter for real, at preview resolution. Using the same
+    // DocumentFilters pipeline as the bake means what you see is what gets saved.
+    LaunchedEffect(previewSource, selectedFilter) {
+        val source = previewSource
+        if (source == null) {
+            previewBitmap = null
+            return@LaunchedEffect
+        }
+        if (selectedFilter == FilterType.ORIGINAL) {
+            previewBitmap = source.asImageBitmap()
+            return@LaunchedEffect
+        }
+        isFiltering = true
+        // runCatching: an OutOfMemoryError mid-filter must not strand the UI in a
+        // permanent "filtering…" state; fall back to the unfiltered page.
+        val filtered = withContext(Dispatchers.Default) {
+            runCatching { DocumentFilters.applyPreview(source, selectedFilter) }.getOrNull()
+        }
+        previewBitmap = (filtered ?: source).asImageBitmap()
+        isFiltering = false
     }
 
     fun saveAndContinue() {
@@ -333,7 +359,7 @@ fun CropAndFilterScreen(
                             }
                             TextButton(
                                 onClick = {
-                                    val source = detectSource ?: return@TextButton
+                                    val source = previewSource ?: return@TextButton
                                     scope.launch {
                                         isAutoDetecting = true
                                         corners = withContext(Dispatchers.Default) {
@@ -342,7 +368,7 @@ fun CropAndFilterScreen(
                                         isAutoDetecting = false
                                     }
                                 },
-                                enabled = detectSource != null && !isAutoDetecting
+                                enabled = previewSource != null && !isAutoDetecting
                             ) {
                                 if (isAutoDetecting) {
                                     CircularProgressIndicator(
@@ -370,6 +396,14 @@ fun CropAndFilterScreen(
         ) {
             val image = previewBitmap
             val pageReady = loadedPageId == activePageId
+            if (isFiltering && image != null) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .height(2.dp)
+                )
+            }
             if (image == null) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator()
@@ -400,9 +434,6 @@ fun CropAndFilterScreen(
                             bitmap = image,
                             contentDescription = "Page preview",
                             contentScale = ContentScale.FillBounds,
-                            colorFilter = ImageProcessingUtils
-                                .getComposeColorFilter(selectedFilter)
-                                .takeIf { selectedFilter != FilterType.ORIGINAL },
                             modifier = Modifier.fillMaxSize()
                         )
 

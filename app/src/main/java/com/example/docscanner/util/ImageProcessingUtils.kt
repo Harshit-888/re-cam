@@ -2,105 +2,24 @@ package com.example.docscanner.util
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.ColorMatrix
-import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
 import android.graphics.Paint
-import androidx.compose.ui.graphics.ColorFilter
 import com.example.docscanner.model.FilterType
 import com.example.docscanner.model.QuadCorners
 
 object ImageProcessingUtils {
 
     /**
-     * Compose ColorFilter for live previews. Prefer rendering the baked bitmap
-     * over applying a preview filter, so what the user sees is what the PDF gets.
-     */
-    fun getComposeColorFilter(filterType: FilterType): ColorFilter? {
-        val matrix = getColorMatrix(filterType) ?: return null
-        return ColorFilter.colorMatrix(androidx.compose.ui.graphics.ColorMatrix(matrix.array))
-    }
-
-    /** The 5 scanner enhancement modes, as hardware color matrices. */
-    fun getColorMatrix(filterType: FilterType): ColorMatrix? {
-        return when (filterType) {
-            FilterType.ORIGINAL -> null
-            FilterType.MAGIC_COLOR -> {
-                // Flatten shadows and lift paper white without killing colour ink.
-                val contrast = 1.35f
-                val brightness = 15f
-                ColorMatrix(
-                    floatArrayOf(
-                        contrast, 0f, 0f, 0f, brightness,
-                        0f, contrast, 0f, 0f, brightness,
-                        0f, 0f, contrast, 0f, brightness,
-                        0f, 0f, 0f, 1f, 0f
-                    )
-                )
-            }
-            FilterType.CLEAR_BW -> {
-                // Desaturate, then push luminance through a steep ramp so text
-                // goes near-black and paper clips to white.
-                val cm = ColorMatrix()
-                cm.setSaturation(0f)
-                val contrast = 2.4f
-                cm.postConcat(
-                    ColorMatrix(
-                        floatArrayOf(
-                            contrast, 0f, 0f, 0f, -140f,
-                            0f, contrast, 0f, 0f, -140f,
-                            0f, 0f, contrast, 0f, -140f,
-                            0f, 0f, 0f, 1f, 0f
-                        )
-                    )
-                )
-                cm
-            }
-            FilterType.GRAYSCALE -> {
-                val cm = ColorMatrix()
-                cm.setSaturation(0f)
-                val contrast = 1.2f
-                cm.postConcat(
-                    ColorMatrix(
-                        floatArrayOf(
-                            contrast, 0f, 0f, 0f, 5f,
-                            0f, contrast, 0f, 0f, 5f,
-                            0f, 0f, contrast, 0f, 5f,
-                            0f, 0f, 0f, 1f, 0f
-                        )
-                    )
-                )
-                cm
-            }
-            FilterType.LIGHTEN -> ColorMatrix(
-                floatArrayOf(
-                    1.1f, 0f, 0f, 0f, 40f,
-                    0f, 1.1f, 0f, 0f, 40f,
-                    0f, 0f, 1.1f, 0f, 40f,
-                    0f, 0f, 0f, 1f, 0f
-                )
-            )
-        }
-    }
-
-    /**
-     * Normalises any angle into `[0, 360)`.
-     *
-     * The previous revision stored `(rotation - 90f) % 360f`, which yields
-     * **negative** degrees; `Matrix.postRotate` accepts them, so the bug was
-     * invisible until something compared angles.
-     */
-    fun normalizeRotation(degrees: Float): Float {
-        val wrapped = degrees % 360f
-        return if (wrapped < 0f) wrapped + 360f else wrapped
-    }
-
-    /**
      * Full enhancement pipeline, in the order the geometry demands:
      * **warp → rotate → colour**.
      *
-     * The source bitmap is never recycled here; the caller owns it (it is
-     * usually a cached decode).
+     * Colour work is delegated to [DocumentFilters], which does real illumination
+     * normalisation, white balance, percentile stretch and (for *Clear B&W*) Otsu
+     * thresholding. Earlier revisions used a global [android.graphics.ColorMatrix]
+     * here and the results looked washed out or clipped.
+     *
+     * The source bitmap is never recycled: the caller owns it (it is usually a
+     * cached decode).
      *
      * @param corners perspective quad to correct first; `null` or full-frame skips it.
      */
@@ -127,31 +46,48 @@ object ImageProcessingUtils {
             } catch (_: OutOfMemoryError) {
                 current
             }
-            if (rotated !== current && current !== src) current.recycle()
-            if (rotated !== current) current = rotated
+            if (rotated !== current) {
+                if (current !== src) current.recycle()
+                current = rotated
+            }
         }
 
-        val colorMatrix = getColorMatrix(filterType)
-        if (colorMatrix == null) return current
+        if (filterType == FilterType.ORIGINAL) return current
 
-        val output = try {
-            Bitmap.createBitmap(current.width, current.height, Bitmap.Config.ARGB_8888)
-        } catch (_: OutOfMemoryError) {
-            return current
+        val filtered = try {
+            DocumentFilters.apply(current, filterType)
+        } catch (_: Throwable) {
+            null
         }
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            colorFilter = ColorMatrixColorFilter(colorMatrix)
-        }
-        Canvas(output).drawBitmap(current, 0f, 0f, paint)
+        // DocumentFilters returns the input for ORIGINAL and on any failure, so a
+        // non-null-but-identical result means "nothing was applied".
+        if (filtered == null || filtered === current) return current
+
         if (current !== src) current.recycle()
-        return output
+        return filtered
+    }
+
+    /** Alias kept for readability at call sites that only need the colour pass. */
+    fun applyFilter(src: Bitmap, filterType: FilterType, maxDimension: Int = DocumentFilters.MAX_PROCESS_DIMENSION): Bitmap =
+        DocumentFilters.apply(src, filterType, maxDimension)
+
+    /**
+     * Normalises any angle into `[0, 360)`.
+     *
+     * An earlier revision stored `(rotation - 90f) % 360f`, which yields
+     * **negative** degrees; `Matrix.postRotate` accepts them, so the bug was
+     * invisible until something compared angles.
+     */
+    fun normalizeRotation(degrees: Float): Float {
+        val wrapped = degrees % 360f
+        return if (wrapped < 0f) wrapped + 360f else wrapped
     }
 
     /**
      * Composites a signature PNG onto the bottom-right of [base] at ~32 % of the
      * page width, inset by 6 %.
      *
-     * Applied *after* warping and filtering so the ink is never distorted or
+     * Applied *after* warping and filtering so the ink is neither distorted nor
      * desaturated by the document enhancement.
      */
     fun drawSignatureOverlay(base: Bitmap, signature: Bitmap): Bitmap {

@@ -77,7 +77,7 @@ The goal is a state-of-the-art, privacy-respecting, high-performance Android doc
 | **Image Storage** | `filesDir/pages/<pageId>.jpg` + `_edited.jpg` bakes | [`util/ImageStore.kt`](app/src/main/java/com/example/docscanner/util/ImageStore.kt) |
 | **Image Loading** | Sampled decode + `LruCache` + `rememberPageImage()` | [`util/PageImageLoader.kt`](app/src/main/java/com/example/docscanner/util/PageImageLoader.kt) |
 | **Perspective Correction** | `Matrix.setPolyToPoly` 4-point projective warp | [`util/PerspectiveWarp.kt`](app/src/main/java/com/example/docscanner/util/PerspectiveWarp.kt) |
-| **Image Processing** | `ColorMatrix` & Android `Canvas`/`Matrix` | [`util/ImageProcessingUtils.kt`](app/src/main/java/com/example/docscanner/util/ImageProcessingUtils.kt) |
+| **Image Processing** | Real pixel pipeline: illumination normalisation, grey-world white balance, percentile stretch, Otsu B&W (**not** a global `ColorMatrix`) | [`util/ImageProcessingUtils.kt`](app/src/main/java/com/example/docscanner/util/ImageProcessingUtils.kt) |
 | **Camera** | CameraX 1.4.2 (`PreviewView` in `AndroidView`) | [`ui/camera/ScannerCameraScreen.kt`](app/src/main/java/com/example/docscanner/ui/camera/ScannerCameraScreen.kt) |
 | **PDF Engine** | Native `android.graphics.pdf.PdfDocument` @ 72 DPI, **IO dispatcher only** | [`util/PdfGenerator.kt`](app/src/main/java/com/example/docscanner/util/PdfGenerator.kt) |
 
@@ -88,7 +88,7 @@ CameraX / gallery
       │  ImageStore.importFromUri() / takePicture()
       ▼
 filesDir/pages/<pageId>.jpg        ← pristine, never overwritten
-      │  editor "Save" bakes warp+rotate+ColorMatrix
+      │  editor "Save" bakes warp → rotate → DocumentFilters (real per-pixel)
       ▼
 filesDir/pages/<pageId>_edited.jpg ← becomes ScannedPage.imageUri
       │  originalImageUri keeps the pristine path for repeat edits
@@ -105,9 +105,12 @@ private storage. Never store a `content://` URI in it — import first.
 
 ### ✅ Working end-to-end
 - **Dashboard** (`ui/dashboard/`): instant search over titles/tags/OCR text, folder chips, grid vs list, sorting, extended FAB, folder creation, and *Move to folder…* on every document card.
+- **Document detection** (`util/DocumentDetector.kt`): Sobel gradient edges, extreme-point quad initialisation, least-squares side fits with MAD outlier rejection, convexity/area/bounds validation, conservative `FULL_FRAME` fallback.
+- **Filters** (`util/DocumentFilters.kt`): *Magic Color* (shadow removal + white balance + percentile stretch + saturation), *Clear B&W* (Otsu with an anti-aliased ramp), *Grayscale*, *Lighten*, *Original*. The editor previews the **real** filter at reduced resolution, so preview == baked output.
 - **Camera** (`ui/camera/`): real CameraX preview, runtime permission, flash (auto/on/off via torch), batch counter, gallery import, JPEG capture to `ImageStore`.
 - **Post-capture review** (`ui/editor/CropAndFilterScreen.kt`, `reviewMode = true`): the step the original app had — *Done* opens each captured page with **auto-detected document borders**, draggable corners, live filter preview and rotation, then *Save & Next* through the batch before landing on the document.
-- **Perspective Crop & 5 Filters** (`ui/editor/`): draggable 4-corner quad backed by a **real projective warp**, 90° rotation, 5 `ColorMatrix` filters, non-destructive bake.
+- **Perspective Crop & 5 Filters** (`ui/editor/`): draggable 4-corner quad backed by a **real projective warp**, 90° rotation, 5 filters rendered through `DocumentFilters`, non-destructive bake.
+- **Auto document detection** (`util/DocumentDetector.kt`): Sobel edges → extreme-point quad → robust four-line fit → validated corners. Runs automatically on every freshly captured page.
 - **Document Detail** (`ui/detail/`): multi-page grid with **real thumbnails**, page rotation, deletion, reordering, append scans, title **and notes** editing.
 - **Fullscreen Viewer** (`ui/viewer/`): real page bitmaps, pan and pinch-to-zoom to 4x, page navigation, OCR text sheet.
 - **Signature** (`ui/signature/`): bezier stroke canvas rasterised to a transparent PNG, composited onto pages at PDF export time.
