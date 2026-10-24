@@ -1,6 +1,14 @@
 package com.example.docscanner
 
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
@@ -9,6 +17,7 @@ import com.example.docscanner.ui.camera.ScannerCameraScreen
 import com.example.docscanner.ui.dashboard.DashboardScreen
 import com.example.docscanner.ui.detail.DocumentDetailScreen
 import com.example.docscanner.ui.editor.CropAndFilterScreen
+import com.example.docscanner.ui.settings.SettingsScreen
 import com.example.docscanner.ui.trash.TrashScreen
 import com.example.docscanner.ui.viewer.PageViewerScreen
 
@@ -26,6 +35,17 @@ fun MainNavigation(repository: ScannerRepository) {
     NavDisplay(
         backStack = backStack,
         onBack = { backStack.removeLastOrNull() },
+        // ---- screen transitions -------------------------------------------
+        // Shared-axis X: the screen being opened slides in from the end while the
+        // one underneath drifts a quarter of the way out, so the two read as one
+        // sheet moving rather than two panels swapping. Going back plays the same
+        // motion in reverse. Only top-level animation builders are used here, so
+        // this does not depend on the type of scope NavDisplay hands the spec.
+        transitionSpec = { navForwardTransition() },
+        popTransitionSpec = { navBackTransition() },
+        // Predictive back (edge swipe) gets the pop motion, so the live preview of
+        // the gesture matches where letting go actually lands.
+        predictivePopTransitionSpec = { navBackTransition() },
         entryProvider = entryProvider {
             entry<DashboardNav> {
                 DashboardScreen(
@@ -38,6 +58,9 @@ fun MainNavigation(repository: ScannerRepository) {
                     },
                     onNavigateToTrash = {
                         backStack.add(TrashNav)
+                    },
+                    onNavigateToSettings = {
+                        backStack.add(SettingsNav)
                     }
                 )
             }
@@ -112,6 +135,17 @@ fun MainNavigation(repository: ScannerRepository) {
                 )
             }
 
+            entry<SettingsNav> {
+                val settings by repository.settings.collectAsState()
+                SettingsScreen(
+                    settings = settings,
+                    onSettingsChange = { transform -> repository.updateSettings(transform) },
+                    onNavigateBack = {
+                        backStack.removeLastOrNull()
+                    }
+                )
+            }
+
             entry<TrashNav> {
                 TrashScreen(
                     repository = repository,
@@ -137,3 +171,42 @@ private fun addDetailIfNeeded(
     if (top is DocumentDetailNav && top.docId == docId) return
     backStack.add(DocumentDetailNav(docId))
 }
+
+/**
+ * Forward navigation: the incoming screen enters from the trailing edge, the
+ * outgoing screen moves a quarter of the way towards the leading edge.
+ *
+ * The outgoing screen deliberately travels less than the incoming one — that
+ * parallax is what makes a change of screen read as depth instead of a cut.
+ */
+private fun navForwardTransition(): ContentTransform =
+    slideInHorizontally(
+        animationSpec = tween(durationMillis = NAV_TRANSITION_MS, easing = FastOutSlowInEasing),
+        initialOffsetX = { width -> width }
+    ).togetherWith(
+        slideOutHorizontally(
+            animationSpec = tween(durationMillis = NAV_TRANSITION_MS, easing = FastOutSlowInEasing),
+            targetOffsetX = { width -> -width / NAV_PARALLAX_DIVISOR }
+        )
+    )
+
+/**
+ * Back navigation: the exact reverse of [navForwardTransition], so the screen you
+ * came from settles back where you left it.
+ */
+private fun navBackTransition(): ContentTransform =
+    slideInHorizontally(
+        animationSpec = tween(durationMillis = NAV_TRANSITION_MS, easing = FastOutSlowInEasing),
+        initialOffsetX = { width -> -width / NAV_PARALLAX_DIVISOR }
+    ).togetherWith(
+        slideOutHorizontally(
+            animationSpec = tween(durationMillis = NAV_TRANSITION_MS, easing = FastOutSlowInEasing),
+            targetOffsetX = { width -> width }
+        )
+    )
+
+/** Long enough to read as motion, short enough to stay out of the way. */
+private const val NAV_TRANSITION_MS = 320
+
+/** How far the outgoing screen travels, as a fraction of its own width. */
+private const val NAV_PARALLAX_DIVISOR = 4

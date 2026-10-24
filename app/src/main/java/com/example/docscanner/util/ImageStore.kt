@@ -86,22 +86,31 @@ object ImageStore {
      * private storage, correcting EXIF orientation and downscaling to
      * [MAX_CAPTURE_DIMENSION].
      *
+     * @param maxDimension longest edge kept after downscaling (Settings → Image
+     *   quality). Defaults to [MAX_CAPTURE_DIMENSION], i.e. keep everything.
+     * @param quality JPEG quality used when re-encoding.
      * @return the absolute path of the stored JPEG, or `null` on failure.
      */
-    fun importFromUri(context: Context, uri: Uri, pageId: String): String? = try {
+    fun importFromUri(
+        context: Context,
+        uri: Uri,
+        pageId: String,
+        maxDimension: Int = MAX_CAPTURE_DIMENSION,
+        quality: Int = JPEG_QUALITY
+    ): String? = try {
         val resolver = context.contentResolver
         val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
         if (bytes == null || bytes.isEmpty()) {
             null
         } else {
             val orientation = readExifOrientation(bytes)
-            val decoded = decodeSampled(bytes, MAX_CAPTURE_DIMENSION, Bitmap.Config.ARGB_8888)
+            val decoded = decodeSampled(bytes, maxDimension, Bitmap.Config.ARGB_8888)
             if (decoded == null) {
                 null
             } else {
                 val oriented = applyExifOrientation(decoded, orientation)
                 val target = pageFile(context, pageId)
-                writeJpeg(oriented, target, JPEG_QUALITY)
+                writeJpeg(oriented, target, quality)
                 if (oriented !== decoded) decoded.recycle()
                 target.absolutePath
             }
@@ -116,19 +125,25 @@ object ImageStore {
      *
      * Applies EXIF orientation, downscales, and deletes the temp file.
      */
-    fun importFromFile(context: Context, sourceFile: File, pageId: String): String? = try {
+    fun importFromFile(
+        context: Context,
+        sourceFile: File,
+        pageId: String,
+        maxDimension: Int = MAX_CAPTURE_DIMENSION,
+        quality: Int = JPEG_QUALITY
+    ): String? = try {
         val bytes = sourceFile.readBytes()
         if (bytes.isEmpty()) {
             null
         } else {
             val orientation = readExifOrientation(bytes)
-            val decoded = decodeSampled(bytes, MAX_CAPTURE_DIMENSION, Bitmap.Config.ARGB_8888)
+            val decoded = decodeSampled(bytes, maxDimension, Bitmap.Config.ARGB_8888)
             if (decoded == null) {
                 null
             } else {
                 val oriented = applyExifOrientation(decoded, orientation)
                 val target = pageFile(context, pageId)
-                writeJpeg(oriented, target, JPEG_QUALITY)
+                writeJpeg(oriented, target, quality)
                 if (oriented !== decoded) decoded.recycle()
                 target.absolutePath
             }
@@ -144,10 +159,12 @@ object ImageStore {
         context: Context,
         uri: Uri,
         documentId: String,
-        pageIndex: Int
+        pageIndex: Int,
+        maxDimension: Int = MAX_CAPTURE_DIMENSION,
+        quality: Int = JPEG_QUALITY
     ): ScannedPage? {
         val pageId = UUID.randomUUID().toString()
-        val path = importFromUri(context, uri, pageId) ?: return null
+        val path = importFromUri(context, uri, pageId, maxDimension, quality) ?: return null
         return ScannedPage(
             id = pageId,
             documentId = documentId,
@@ -164,9 +181,14 @@ object ImageStore {
      *
      * @return absolute path of the baked file, or `null` on failure.
      */
-    fun saveEditedPage(context: Context, pageId: String, bitmap: Bitmap): String? = try {
+    fun saveEditedPage(
+        context: Context,
+        pageId: String,
+        bitmap: Bitmap,
+        quality: Int = JPEG_QUALITY
+    ): String? = try {
         val target = editedFile(context, pageId)
-        writeJpeg(bitmap, target, JPEG_QUALITY)
+        writeJpeg(bitmap, target, quality)
         target.absolutePath
     } catch (_: Throwable) {
         null

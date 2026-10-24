@@ -27,7 +27,9 @@ in app-private storage, and renders them back.
    - Cover thumbnails are the **real first page**, not an icon.
 
 2. **Camera capture** (`ui/camera/`)
-   - Live **CameraX** preview, runtime permission flow, back-camera still capture.
+   - Full-bleed live **CameraX** preview (no decorative frame — it used to push
+     users to shoot past the paper edge, which broke auto-detection),
+     runtime permission flow, back-camera still capture.
    - Flash modes Auto / On / Off, wired to both `ImageCapture` flash and the torch.
    - Batch mode with a live page counter, or single mode that auto-commits.
    - Gallery import through the system photo picker (no storage permission needed).
@@ -35,17 +37,19 @@ in app-private storage, and renders them back.
 
 3. **Perspective correction & filters** (`ui/editor/`)
    - Four draggable corner handles over the **real photograph**, positioned by
-     automatic edge-based detection (`DocumentDetector`: Sobel → extreme-point
-     quad → robust line fit → validated corners).
+     automatic edge detection (`DocumentDetector`: boundary scan → RANSAC line per
+     side → validated corners). If a page edge can't be found the screen says so
+     rather than silently showing nothing.
    - Genuine projective warp (`Matrix.setPolyToPoly`) — the crop actually moves
      pixels now.
    - 5 enhancements computed per-pixel by `DocumentFilters` and previewed live:
      *Original*, *Magic Color*, *Clear B&W*, *Grayscale*, *Lighten*.
      Each applies **illumination normalisation** (shadows and torch hotspots are
      divided out against a local paper-brightness model), **grey-world white
-     balance**, a **percentile contrast stretch** and an ink-deepening S-curve;
-     *Clear B&W* thresholds with **Otsu** over a narrow ramp so glyph edges stay
-     smooth instead of turning jagged.
+     balance**, one **clamped luminance contrast stretch** (so whites never drift
+     pink/green and lightly-printed pages don't blow out) and an ink-deepening
+     S-curve; *Clear B&W* thresholds with **Otsu** over an asymmetric ramp plus a
+     3×3 despeckle, so paper stays clean and glyph edges stay smooth.
    - 90° rotation, "Full Page" reset, and a brightness-based "Auto Detect".
    - Non-destructive: the pristine capture is never overwritten, so repeated edits
      don't accumulate JPEG loss.
@@ -74,8 +78,9 @@ in app-private storage, and renders them back.
      bottom-right, so it survives into thumbnails, the viewer and the PDF.
 
 8. **PDF export** (`util/PdfGenerator.kt`, `ui/pdf/`)
-   - Real page bitmaps, 72 DPI point geometry, aspect-preserving fit.
+   - Real page bitmaps, 72 DPI point geometry.
    - **8 paper presets**, 4 margin presets, optional page numbering, watermark.
+   - Fit / fill / original scaling and per-page auto orientation, from Settings.
    - Runs on `Dispatchers.IO` (no ANR on long documents).
    - Shares through a `FileProvider` + the system share sheet.
 
@@ -84,6 +89,18 @@ in app-private storage, and renders them back.
 
 10. **Persistence** (`data/LibraryStore.kt`) — the whole library is a
    `library.json` snapshot written atomically, so it survives process death.
+
+11. **Settings** (`ui/settings/`, `data/SettingsStore.kt`) — every row changes
+   real behaviour, no decorative switches:
+   - *Theme*: System / Light / Dark plus six accent palettes.
+   - *Scan*: in-app camera on/off (off = the system photo picker becomes the scan
+     entry point), shutter sound, image quality (capture resolution + JPEG
+     quality), auto-save to `Pictures/DocScanner`.
+   - *PDF*: document-name prefix for exported files, page size, resolution
+     (150/200/300 DPI), page orientation (auto swaps axis per landscape page),
+     image scale (fit / fill / original).
+   - *Default Email*: recipient + subject pre-filled into the share sheet.
+   Settings persist in `settings.json`, separate from the document library.
 
 ---
 
@@ -157,8 +174,10 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## 🗺️ Roadmap
 
-Both are tracked in `AGENTS.md` §4 with implementation notes:
-1. ML Kit on-device OCR (`util/OcrManager.kt`) — fills the existing OCR sheet.
+Not built yet, and deliberately absent from the Settings screen so no control is
+a lie — tracked in `AGENTS.md` §4 with implementation notes:
+1. ML Kit on-device OCR (`util/OcrManager.kt`) — fills the existing OCR sheet;
+   the OCR *language* row the legacy app had lands with it.
 2. White-out eraser (`ui/editor/CleanupBgCanvas.kt`).
 3. Naming templates (`util/NamingTemplateEngine.kt`).
 4. ZIP backup/restore (`util/BackupRestoreManager.kt`).

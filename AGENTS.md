@@ -73,6 +73,7 @@ The goal is a state-of-the-art, privacy-respecting, high-performance Android doc
 | **Navigation** | Jetpack Navigation 3 (Type-Safe `NavKey`s) | [`Navigation.kt`](app/src/main/java/com/example/docscanner/Navigation.kt) |
 | **State Management** | UDF via `StateFlow`, repository injected down the tree | [`data/ScannerRepository.kt`](app/src/main/java/com/example/docscanner/data/ScannerRepository.kt) |
 | **Persistence** | `library.json` snapshot, atomic write, coalesced | [`data/LibraryStore.kt`](app/src/main/java/com/example/docscanner/data/LibraryStore.kt) |
+| **Preferences** | `settings.json`, same atomic-write pattern, exposed as `repository.settings` | [`data/SettingsStore.kt`](app/src/main/java/com/example/docscanner/data/SettingsStore.kt) |
 | **Domain Models** | Immutable `@Serializable` Kotlin data classes | [`model/Models.kt`](app/src/main/java/com/example/docscanner/model/Models.kt) |
 | **Image Storage** | `filesDir/pages/<pageId>.jpg` + `_edited.jpg` bakes | [`util/ImageStore.kt`](app/src/main/java/com/example/docscanner/util/ImageStore.kt) |
 | **Image Loading** | Sampled decode + `LruCache` + `rememberPageImage()` | [`util/PageImageLoader.kt`](app/src/main/java/com/example/docscanner/util/PageImageLoader.kt) |
@@ -105,22 +106,37 @@ private storage. Never store a `content://` URI in it — import first.
 
 ### ✅ Working end-to-end
 - **Dashboard** (`ui/dashboard/`): instant search over titles/tags/OCR text, folder chips, grid vs list, sorting, extended FAB, folder creation, and *Move to folder…* on every document card.
-- **Document detection** (`util/DocumentDetector.kt`): Sobel gradient edges, extreme-point quad initialisation, least-squares side fits with MAD outlier rejection, convexity/area/bounds validation, conservative `FULL_FRAME` fallback.
-- **Filters** (`util/DocumentFilters.kt`): *Magic Color* (shadow removal + white balance + percentile stretch + saturation), *Clear B&W* (Otsu with an anti-aliased ramp), *Grayscale*, *Lighten*, *Original*. The editor previews the **real** filter at reduced resolution, so preview == baked output.
+- **Document detection** (`util/DocumentDetector.kt`): edge-clamped Sobel → per-row/column **boundary scan** → **RANSAC** line per side → intersect → validate. A side with no visible boundary falls back to the frame edge. Returns `Detection(corners, confident)`; the editor tells the user when it is not confident instead of failing silently.
+- **Filters** (`util/DocumentFilters.kt`): *Magic Color* (shadow removal + white balance + single clamped luminance stretch + saturation), *Clear B&W* (Otsu, asymmetric ramp, 3×3 despeckle), *Grayscale*, *Lighten*, *Original*. The editor previews the **real** filter at reduced resolution, so preview == baked output.
 - **Camera** (`ui/camera/`): real CameraX preview, runtime permission, flash (auto/on/off via torch), batch counter, gallery import, JPEG capture to `ImageStore`.
 - **Post-capture review** (`ui/editor/CropAndFilterScreen.kt`, `reviewMode = true`): the step the original app had — *Done* opens each captured page with **auto-detected document borders**, draggable corners, live filter preview and rotation, then *Save & Next* through the batch before landing on the document.
 - **Perspective Crop & 5 Filters** (`ui/editor/`): draggable 4-corner quad backed by a **real projective warp**, 90° rotation, 5 filters rendered through `DocumentFilters`, non-destructive bake.
-- **Auto document detection** (`util/DocumentDetector.kt`): Sobel edges → extreme-point quad → robust four-line fit → validated corners. Runs automatically on every freshly captured page.
+- **Auto document detection** (`util/DocumentDetector.kt`): boundary scan → RANSAC four-line fit → validated corners. Runs on every freshly captured page and is visible immediately (review mode opens on Borders).
 - **Document Detail** (`ui/detail/`): multi-page grid with **real thumbnails**, page rotation, deletion, reordering, append scans, title **and notes** editing.
 - **Fullscreen Viewer** (`ui/viewer/`): real page bitmaps, pan and pinch-to-zoom to 4x, page navigation, OCR text sheet.
 - **Signature** (`ui/signature/`): bezier stroke canvas rasterised to a transparent PNG, composited onto pages at PDF export time.
 - **PDF Engine** (`util/PdfGenerator.kt` + `ui/pdf/`): 8 paper presets, 4 margin presets, page numbering, watermark, real page bitmaps, `FileProvider` share sheet, runs off the main thread.
 - **Recycle Bin** (`ui/trash/`): soft delete, restore, permanent purge (deletes page files too).
 - **Persistence** (`data/LibraryStore.kt`): the library survives process death.
+- **Settings** (`ui/settings/SettingsScreen.kt` + `data/SettingsStore.kt`): theme
+  mode + 6 accented palettes, in-app-camera toggle (off routes scanning through
+  the system photo picker), shutter sound, image quality (capture dimension +
+  JPEG quality), auto-save to `Pictures/DocScanner`, and PDF defaults (file-name
+  prefix, page size, DPI, orientation, image scale) plus default email
+  recipient/subject. Persisted in `settings.json`; UDF via
+  `ScannerRepository.settings` + `updateSettings`. Rows whose feature does not
+  exist (OCR language, camera engine, cloud sync) are **not** shown.
 
 ### 🚀 Roadmap: Next Features to Build (Priority Order)
 
 Pick exclusively from this list. Each one assumes the image pipeline above works.
+
+#### Priority 0 (already scoped): Settings rows that were deliberately omitted
+* **OCR language** — add to the settings screen in the same commit as
+  `util/OcrManager.kt`, not before: the row would have nothing to read it.
+* **Camera engine** — CameraX is the only engine wired; a picker with one option
+  is noise.
+* **Sync to Cloud / Sync Settings** — needs an account + transport; parked.
 
 #### Priority 1: Google ML Kit On-Device OCR (`util/OcrManager.kt`)
 * **Task**: Integrate `com.google.mlkit:text-recognition:16.0.1`.

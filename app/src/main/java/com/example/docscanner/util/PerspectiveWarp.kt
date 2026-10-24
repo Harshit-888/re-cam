@@ -87,9 +87,10 @@ object PerspectiveWarp {
     /**
      * Auto-detects the document quad.
      *
-     * Delegates to [DocumentDetector], which does Sobel edge extraction plus a
-     * robust four-line fit. This used to be a brightness bounding box here, which
-     * could not represent perspective and failed on white backgrounds.
+     * Delegates to [DocumentDetector]: edge-clamped Sobel, a per-row/column
+     * boundary scan, a RANSAC line per side, then validated intersections. Earlier
+     * generations here were a brightness bounding box and then an extreme-point
+     * quad, both of which failed on the common "page fills the frame" capture.
      *
      * Kept on this object because several call sites and the agent integration
      * contract refer to `PerspectiveWarp.detectQuad`.

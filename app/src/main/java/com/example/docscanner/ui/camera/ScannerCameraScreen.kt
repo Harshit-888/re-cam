@@ -1,6 +1,7 @@
 package com.example.docscanner.ui.camera
 
 import android.Manifest
+import android.media.MediaActionSound
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -13,18 +14,12 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.EaseInOutQuad
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,6 +36,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BurstMode
 import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.Close
@@ -48,6 +44,8 @@ import androidx.compose.material.icons.filled.Filter1
 import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -64,6 +62,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -71,26 +70,24 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.util.DocumentNaming
+import com.example.docscanner.util.GalleryExporter
 import com.example.docscanner.util.ImageStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 import java.util.UUID
 
 /** Flash behaviour for capture + torch state for the live preview. */
@@ -117,6 +114,13 @@ fun ScannerCameraScreen(
     val scope = rememberCoroutineScope()
 
     val capturedPages = remember { mutableStateListOf<ScannedPage>() }
+    // Settings are read through repository.currentSettings() at the moment of use
+    // (not copied into composition state) so a change made on the Settings screen
+    // applies to the very next shutter press.
+    val shutterSound = remember { runCatching { MediaActionSound() }.getOrNull() }
+    DisposableEffect(Unit) {
+        onDispose { runCatching { shutterSound?.release() } }
+    }
     var isBatchMode by remember { mutableStateOf(true) }
     var flashMode by remember { mutableStateOf(FlashMode.AUTO) }
     var isCapturing by remember { mutableStateOf(false) }
@@ -141,6 +145,14 @@ fun ScannerCameraScreen(
     }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var boundCamera by remember { mutableStateOf<Camera?>(null) }
+
+    // ---- zoom ------------------------------------------------------------
+    // Pinch drives `cameraControl.setZoomRatio`, not a scaled preview: the sensor
+    // crop changes, so the captured JPEG is zoomed too. Scaling only the preview
+    // would zoom the viewfinder and then hand back an unzoomed photo.
+    var zoomRatio by remember { mutableFloatStateOf(1f) }
+    var minZoomRatio by remember { mutableFloatStateOf(1f) }
+    var maxZoomRatio by remember { mutableFloatStateOf(1f) }
 
     // ---- bind CameraX -----------------------------------------------------
     DisposableEffect(hasCameraPermission) {
@@ -203,6 +215,30 @@ fun ScannerCameraScreen(
         }
     }
 
+    // ---- discover the zoom range ------------------------------------------
+    // `cameraInfo.zoomState` is a LiveData that is often still null immediately
+    // after binding, so poll briefly instead of assuming the device cannot zoom.
+    LaunchedEffect(boundCamera) {
+        val camera = boundCamera ?: return@LaunchedEffect
+        repeat(15) {
+            val state = camera.cameraInfo.zoomState.value
+            if (state != null) {
+                maxZoomRatio = state.maxZoomRatio
+                minZoomRatio = state.minZoomRatio.coerceAtLeast(1f)
+                zoomRatio = zoomRatio.coerceIn(minZoomRatio, maxOf(minZoomRatio, maxZoomRatio))
+                return@LaunchedEffect
+            }
+            kotlinx.coroutines.delay(100)
+        }
+    }
+
+    // ---- apply zoom whenever it changes -----------------------------------
+    LaunchedEffect(zoomRatio, boundCamera, minZoomRatio, maxZoomRatio) {
+        val camera = boundCamera ?: return@LaunchedEffect
+        val target = zoomRatio.coerceIn(minZoomRatio, maxOf(minZoomRatio, maxZoomRatio))
+        runCatching { camera.cameraControl.setZoomRatio(target) }
+    }
+
     // ---- gallery import ---------------------------------------------------
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia()
@@ -211,8 +247,15 @@ fun ScannerCameraScreen(
         scope.launch {
             uris.forEach { uri ->
                 val pageId = UUID.randomUUID().toString()
+                val quality = repository.currentSettings().imageQuality
                 val savedPath = withContext(Dispatchers.IO) {
-                    ImageStore.importFromUri(context, uri, pageId)
+                    ImageStore.importFromUri(
+                        context = context,
+                        uri = uri,
+                        pageId = pageId,
+                        maxDimension = quality.maxDimension,
+                        quality = quality.jpegQuality
+                    )
                 }
                 if (savedPath != null) {
                     capturedPages.add(
@@ -259,6 +302,12 @@ fun ScannerCameraScreen(
         isCapturing = true
         statusMessage = null
 
+        // Settings → Scan → Shutter sound. Many devices play their own click that
+        // an app cannot suppress; this only adds ours when the row is on.
+        if (repository.currentSettings().shutterSound) {
+            runCatching { shutterSound?.play(MediaActionSound.SHUTTER_CLICK) }
+        }
+
         val pageId = UUID.randomUUID().toString()
         val tempFile = File(context.cacheDir, "capture_$pageId.jpg")
         val options = ImageCapture.OutputFileOptions.Builder(tempFile).build()
@@ -269,8 +318,15 @@ fun ScannerCameraScreen(
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
                     scope.launch {
+                        val quality = repository.currentSettings().imageQuality
                         val savedPath = withContext(Dispatchers.IO) {
-                            ImageStore.importFromFile(context, tempFile, pageId)
+                            ImageStore.importFromFile(
+                                context = context,
+                                sourceFile = tempFile,
+                                pageId = pageId,
+                                maxDimension = quality.maxDimension,
+                                quality = quality.jpegQuality
+                            )
                         }
                         if (savedPath == null) {
                             statusMessage = "Capture failed: could not save image"
@@ -285,6 +341,23 @@ fun ScannerCameraScreen(
                                 imageUri = savedPath
                             )
                         )
+
+                        // Settings → Scan → Auto-save to Gallery. A gallery copy is a
+                        // courtesy, never a reason to fail the capture: GalleryExporter
+                        // swallows its own errors and reports success as a Boolean.
+                        if (repository.currentSettings().autoSaveToGallery) {
+                            val copied = withContext(Dispatchers.IO) {
+                                GalleryExporter.saveToGallery(
+                                    context,
+                                    File(savedPath),
+                                    GalleryExporter.pageFileName()
+                                )
+                            }
+                            if (!copied) {
+                                statusMessage = "Page saved, but the gallery copy failed"
+                            }
+                        }
+
                         isCapturing = false
                         if (!isBatchMode) commitScan()
                     }
@@ -303,63 +376,33 @@ fun ScannerCameraScreen(
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
         if (hasCameraPermission) {
-            AndroidView(
-                factory = { previewView },
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-
-        // Scrim with a transparent document window.
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val padX = size.width * 0.08f
-            val padY = size.height * 0.16f
-            val windowWidth = size.width - padX * 2
-            val windowHeight = size.height - padY * 2
-            val scrim = Color.Black.copy(alpha = 0.55f)
-
-            // Four rectangles rather than a scrim + BlendMode.Clear: clearing on
-            // the window surface is unreliable and can punch through the preview.
-            drawRect(scrim, topLeft = Offset.Zero, size = Size(size.width, padY))
-            drawRect(
-                scrim,
-                topLeft = Offset(0f, padY + windowHeight),
-                size = Size(size.width, size.height - padY - windowHeight)
-            )
-            drawRect(scrim, topLeft = Offset(0f, padY), size = Size(padX, windowHeight))
-            drawRect(
-                scrim,
-                topLeft = Offset(padX + windowWidth, padY),
-                size = Size(padX, windowHeight)
-            )
-        }
-
-        // Pulsing alignment frame.
-        val transition = rememberInfiniteTransition(label = "viewfinder")
-        val pulse by transition.animateFloat(
-            initialValue = 0.55f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(1200, easing = EaseInOutQuad),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "pulse"
-        )
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val padX = size.width * 0.08f
-            val padY = size.height * 0.16f
-            val windowWidth = size.width - padX * 2
-            val windowHeight = size.height - padY * 2
-            drawRoundRect(
-                color = Color(0xFF4FD8EB).copy(alpha = pulse),
-                topLeft = Offset(padX, padY),
-                size = Size(windowWidth, windowHeight),
-                cornerRadius = CornerRadius(24f, 24f),
-                style = Stroke(
-                    width = 3.dp.toPx(),
-                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(40f, 20f), 0f)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(maxZoomRatio) {
+                        if (maxZoomRatio <= 1.0001f) return@pointerInput
+                        detectTransformGestures(panZoomLock = true) { _, _, zoomChange, _ ->
+                            if (zoomChange != 1f) {
+                                zoomRatio = (zoomRatio * zoomChange)
+                                    .coerceIn(1f, maxZoomRatio)
+                            }
+                        }
+                    }
+            ) {
+                AndroidView(
+                    factory = { previewView },
+                    modifier = Modifier.fillMaxSize()
                 )
-            )
+            }
         }
+
+        // No scrim / guide frame: the preview is full-bleed.
+        //
+        // The old overlay drew a dark window with a pulsing dashed border. It was
+        // decorative only (never part of the captured JPEG), and it actively hurt
+        // document detection: it taught users to fill the frame right past the
+        // paper edge, so there was no page boundary left in the photo for
+        // DocumentDetector to find.
 
         // Top bar.
         Row(
@@ -486,6 +529,86 @@ fun ScannerCameraScreen(
                 .padding(bottom = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Zoom: pinch on the preview, or use these for discoverability and
+            // precision. Only shown when the device actually supports zoom.
+            AnimatedVisibility(visible = maxZoomRatio > 1.01f) {
+                Surface(
+                    shape = RoundedCornerShape(22.dp),
+                    color = Color.Black.copy(alpha = 0.55f),
+                    modifier = Modifier.padding(bottom = 14.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                    ) {
+                        IconButton(
+                            onClick = {
+                                zoomRatio = (zoomRatio - ZOOM_STEP).coerceAtLeast(1f)
+                            },
+                            enabled = zoomRatio > 1.001f,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Remove,
+                                contentDescription = "Zoom out",
+                                tint = if (zoomRatio > 1.001f) Color.White else Color.White.copy(alpha = 0.35f)
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (zoomRatio > 1.001f) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                Color.White.copy(alpha = 0.12f)
+                            },
+                            modifier = Modifier.clickable { zoomRatio = 1f }
+                        ) {
+                            Text(
+                                text = String.format(Locale.US, "%.1f×", zoomRatio),
+                                color = if (zoomRatio > 1.001f) {
+                                    MaterialTheme.colorScheme.onPrimary
+                                } else {
+                                    Color.White
+                                },
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                zoomRatio = (zoomRatio + ZOOM_STEP)
+                                    .coerceAtMost(maxZoomRatio)
+                            },
+                            enabled = zoomRatio < maxZoomRatio - 0.001f,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = "Zoom in",
+                                tint = if (zoomRatio < maxZoomRatio - 0.001f) {
+                                    Color.White
+                                } else {
+                                    Color.White.copy(alpha = 0.35f)
+                                }
+                            )
+                        }
+                        if (zoomRatio > 1.001f) {
+                            IconButton(
+                                onClick = { zoomRatio = 1f },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.RestartAlt,
+                                    contentDescription = "Reset zoom",
+                                    tint = Color.White
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -558,3 +681,6 @@ fun ScannerCameraScreen(
         }
     }
 }
+
+/** Zoom increment for the +/- buttons, in camera zoom-ratio units. */
+private const val ZOOM_STEP = 0.5f

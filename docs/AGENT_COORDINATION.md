@@ -57,12 +57,14 @@ adding a changelog entry and updating every caller in the same commit.
 | `ImageProcessingUtils.applyEnhancements(src, filter, rotation, corners)` | fun | warp → rotate → filter, in that order |
 | `DocumentFilters.apply(src, filter, maxDimension)` | fun | The real filter pipeline. Returns `src` for ORIGINAL/failure — compare identity before recycling |
 | `DocumentFilters.applyPreview(src, filter)` | fun | Same pipeline at preview resolution (WYSIWYG) |
-| `DocumentDetector.detectQuad(bitmap)` | fun | Sobel + quad fit; never throws, falls back to `FULL_FRAME` |
+| `DocumentDetector.detect(bitmap)` | fun | **Preferred.** `Detection(corners, confident)` — boundary-scan + RANSAC; never throws |
+| `DocumentDetector.detectQuad(bitmap)` | fun | Compatibility shim for `detect().corners` |
+| `DocumentFilters.stretchPoints(hist)` | fun | Clamped black/white points; the blow-out guard |
 | `PerspectiveWarp.detectQuad(bitmap)` | fun | Thin delegate to `DocumentDetector` (kept for compatibility) |
 | `PerspectiveWarp.warp(src, corners)` | fun | `Matrix.setPolyToPoly` projective warp |
 | `PdfGenerator.generatePdf(ctx, doc, config, bitmapProvider)` | fun | Blocking; **call from `Dispatchers.IO` only** |
 | `SignaturePadDialog(onDismiss, onSignatureConfirmed)` | `@Composable` | Callback receives a **PNG path**, not an opaque token |
-| `CropAndFilterScreen(docId, pageId, repository, onDone, reviewMode)` | `@Composable` | `reviewMode = true` auto-detects borders and walks the document page by page |
+| `CropAndFilterScreen(docId, pageId, repository, onDone, reviewMode)` | `@Composable` | `reviewMode = true` opens on **Borders** with auto-detection and walks the document page by page |
 | `DocumentNaming.defaultScanTitle()` | fun | **The only** sanctioned source of scan titles — it quotes pattern literals |
 | `QuadCorners.FULL_FRAME` | const | Means "no warp". Auto-detect falls back to it rather than cropping |
 | ~~`ImageProcessingUtils.getColorMatrix`~~ | **removed** | Was a global `ColorMatrix`; superseded by `DocumentFilters` |
@@ -99,6 +101,40 @@ Rebuilt 2026-10-25 after the "make it real" pass.
    (`util/OcrManager.kt`, `ui/editor/CleanupBgCanvas.kt`, `util/NamingTemplateEngine.kt`,
    `util/BackupRestoreManager.kt`).
 3. Append one line to `docs/AGENTS_CHANGELOG.md`.
+
+## 6b. Round 4 — zoom (claimed by Arena, 2026-10-25)
+
+Arena owns these two files for the zoom work; do not edit them concurrently:
+
+- `app/src/main/java/com/example/docscanner/ui/camera/ScannerCameraScreen.kt`
+  (pinch + zoom pill; zoom goes through `cameraControl.setZoomRatio` so the
+  captured JPEG is zoomed, not just the preview)
+- `app/src/main/java/com/example/docscanner/ui/editor/CropAndFilterScreen.kt`
+  (one `awaitEachGesture` handler: single finger drags a corner, single finger
+  elsewhere pans when zoomed, two fingers pinch)
+
+## 6c. Settings screen (claimed by Arena, 2026-10-25)
+
+Touched by the same change, all committed together:
+
+- New: `ui/settings/SettingsScreen.kt`, `data/SettingsStore.kt`,
+  `model/AppSettings.kt`, `util/GalleryExporter.kt`,
+  `app/src/test/.../model/AppSettingsTest.kt`
+- Changed: `MainActivity.kt` (theme from settings + system bars),
+  `theme/Theme.kt` (accent), `Navigation.kt` / `NavigationKeys.kt`
+  (`SettingsNav`), `ui/dashboard/DashboardScreen.kt` (settings icon +
+  system-picker scan path), `ui/pdf/PdfExportSheet.kt`, `util/PdfGenerator.kt`,
+  `util/PageRenderer.kt`, `util/ImageStore.kt`, `ui/camera/ScannerCameraScreen.kt`,
+  `ui/editor/CropAndFilterScreen.kt`, `ui/detail/DocumentDetailScreen.kt`,
+  `AndroidManifest.xml`.
+
+Rules for this area:
+1. New preference → add the field to `AppSettings` **and** a reader in the same
+   commit. `AGENTS.md` §2.7: no row may persist a value nothing consumes.
+2. Screens read `repository.settings` (StateFlow) or
+   `repository.currentSettings()` inside callbacks — never a local copy.
+3. Do not move settings into `library.json`; it would rewrite the whole library
+   on every toggle.
 
 ## 7. Known-good state
 

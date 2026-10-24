@@ -4,10 +4,15 @@ import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -25,7 +30,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.FitScreen
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.RotateLeft
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.outlined.Crop
@@ -60,10 +69,14 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.model.FilterType
@@ -72,11 +85,15 @@ import com.example.docscanner.util.DocumentFilters
 import com.example.docscanner.util.ImageProcessingUtils
 import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.PageRenderer
-import com.example.docscanner.util.PerspectiveWarp
+import com.example.docscanner.util.DocumentDetector
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /** Smallest allowed gap between opposing edges, in normalised units. */
 private const val MIN_GAP = 0.02f
@@ -127,9 +144,18 @@ fun CropAndFilterScreen(
     var selectedFilter by remember { mutableStateOf(FilterType.MAGIC_COLOR) }
     var rotation by remember { mutableFloatStateOf(0f) }
     var corners by remember { mutableStateOf(QuadCorners.FULL_FRAME) }
-    var isCropMode by remember { mutableStateOf(false) }
+    // In review mode the borders are the point of the screen, so open on them.
+    var isCropMode by remember { mutableStateOf(reviewMode) }
+
+    // Preview zoom + pan for precise corner placement. `zoom`/`pan` are applied on
+    // a layer OUTSIDE the rotation layer, so panning always moves the content the
+    // way the finger moved (a rotation-inner pan would drag diagonally at 90°).
+    var zoom by remember { mutableFloatStateOf(1f) }
+    var pan by remember { mutableStateOf(Offset.Zero) }
+    var grabbedCorner by remember { mutableStateOf<Int?>(null) }
     var isSaving by remember { mutableStateOf(false) }
     var isAutoDetecting by remember { mutableStateOf(false) }
+    var detectionFailed by remember { mutableStateOf(false) }
     var loadedPageId by remember { mutableStateOf<String?>(null) }
 
     // Unfiltered, downscaled source used for both detection and previewing.
@@ -147,6 +173,8 @@ fun CropAndFilterScreen(
         selectedFilter = current.filterType
         rotation = current.rotationDegrees
         corners = current.corners
+        zoom = 1f
+        pan = Offset.Zero
 
         val decoded = withContext(Dispatchers.IO) {
             ImageStore.loadBitmap(
@@ -167,15 +195,21 @@ fun CropAndFilterScreen(
         // override saved corners.
         if (current.corners.isFullFrame) {
             isAutoDetecting = true
-            val detected = withContext(Dispatchers.Default) { PerspectiveWarp.detectQuad(decoded) }
+            val detection = withContext(Dispatchers.Default) { DocumentDetector.detect(decoded) }
             isAutoDetecting = false
-            if (!detected.isFullFrame) corners = detected
+            corners = detection.corners
+            // Tell the user when the quad is a frame-edge default rather than a
+            // real edge fit, instead of silently showing nothing.
+            detectionFailed = !detection.confident
+        } else {
+            detectionFailed = false
         }
 
         loadedPageId = activePageId
 
-        // A single-page edit should lead with the photo, not the crop handles.
-        if (!reviewMode) isCropMode = false
+        // Review mode leads with the borders; a single-page edit leads with the
+        // photo so re-filtering does not require dismissing the handles.
+        isCropMode = reviewMode
     }
 
     // Render the selected filter for real, at preview resolution. Using the same
@@ -211,12 +245,13 @@ fun CropAndFilterScreen(
         isSaving = true
         scope.launch {
             val baked = PageRenderer.bake(
-                context,
-                current.copy(
+                context = context,
+                page = current.copy(
                     filterType = selectedFilter,
                     rotationDegrees = rotation,
                     corners = corners
-                )
+                ),
+                jpegQuality = repository.currentSettings().imageQuality.jpegQuality
             )
             if (baked != null) {
                 repository.updatePage(docId, activePageId) { baked }
@@ -362,9 +397,11 @@ fun CropAndFilterScreen(
                                     val source = previewSource ?: return@TextButton
                                     scope.launch {
                                         isAutoDetecting = true
-                                        corners = withContext(Dispatchers.Default) {
-                                            PerspectiveWarp.detectQuad(source)
+                                        val detection = withContext(Dispatchers.Default) {
+                                            DocumentDetector.detect(source)
                                         }
+                                        corners = detection.corners
+                                        detectionFailed = !detection.confident
                                         isAutoDetecting = false
                                     }
                                 },
@@ -404,6 +441,40 @@ fun CropAndFilterScreen(
                         .height(2.dp)
                 )
             }
+            // Tell the user when auto-detection could not find a real page edge, so
+            // a full-frame quad never looks like a silent failure.
+            if (isCropMode && detectionFailed && image != null) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 10.dp, start = 16.dp, end = 16.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp)
+                    ) {
+                        Text(
+                            "Borders not detected — drag the corners",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        IconButton(
+                            onClick = { detectionFailed = false },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Dismiss",
+                                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
             if (image == null) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator()
@@ -424,108 +495,284 @@ fun CropAndFilterScreen(
                     val frameWidth = if (swapAxes) visualHeight else visualWidth
                     val frameHeight = if (swapAxes) visualWidth else visualHeight
 
+                    val density = LocalDensity.current
+                    val frameWpx = with(density) { frameWidth.toPx() }
+                    val frameHpx = with(density) { frameHeight.toPx() }
+
+                    // Panning is bounded by what rotation actually puts on screen:
+                    // a 90° turn swaps the effective width and height.
+                    val extentX = if (swapAxes) frameHpx else frameWpx
+                    val extentY = if (swapAxes) frameWpx else frameHpx
+
+                    fun clampPanFor(scale: Float, candidate: Offset): Offset {
+                        val maxX = (max(0f, scale - 1f) * extentX) / 2f
+                        val maxY = (max(0f, scale - 1f) * extentY) / 2f
+                        return Offset(
+                            candidate.x.coerceIn(-maxX, maxX),
+                            candidate.y.coerceIn(-maxY, maxY)
+                        )
+                    }
+
                     Box(
                         modifier = Modifier
-                            .size(frameWidth, frameHeight)
-                            .align(Alignment.Center)
-                            .graphicsLayer { rotationZ = rotation }
-                    ) {
-                        Image(
-                            bitmap = image,
-                            contentDescription = "Page preview",
-                            contentScale = ContentScale.FillBounds,
-                            modifier = Modifier.fillMaxSize()
-                        )
+                            .fillMaxSize()
+                            .clipToBounds()
+                            // One gesture handler for everything: one finger drags a
+                            // corner (or pans when zoomed), two fingers pinch.
+                            .pointerInput(isCropMode, rotation, frameWpx, frameHpx) {
+                                val frameW = frameWidth.toPx()
+                                val frameH = frameHeight.toPx()
+                                val centerX = size.width / 2f
+                                val centerY = size.height / 2f
+                                val rotateRad = (rotation * PI / 180.0).toFloat()
 
-                        var grabbedCorner by remember { mutableStateOf<Int?>(null) }
+                                /**
+                                 * Screen → canvas coordinates, inverting translation,
+                                 * scale and rotation. Mirrors the layer order below:
+                                 * screen = centre + pan + zoom · R(rotation) · (canvas − centre)
+                                 */
+                                fun screenToCanvas(point: Offset): Offset {
+                                    val vx = point.x - centerX - pan.x
+                                    val vy = point.y - centerY - pan.y
+                                    val rad = -rotateRad
+                                    val c = cos(rad)
+                                    val s = sin(rad)
+                                    val rx = (vx * c - vy * s) / zoom
+                                    val ry = (vx * s + vy * c) / zoom
+                                    return Offset(rx + frameW / 2f, ry + frameH / 2f)
+                                }
 
-                        Canvas(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .pointerInput(isCropMode) {
-                                    if (!isCropMode) return@pointerInput
-                                    detectDragGestures(
-                                        onDragStart = { start ->
-                                            val nx = start.x / size.width
-                                            val ny = start.y / size.height
-                                            val distances = listOf(
-                                                distSq(nx, ny, corners.topLeftX, corners.topLeftY),
-                                                distSq(nx, ny, corners.topRightX, corners.topRightY),
-                                                distSq(nx, ny, corners.bottomRightX, corners.bottomRightY),
-                                                distSq(nx, ny, corners.bottomLeftX, corners.bottomLeftY)
-                                            )
-                                            grabbedCorner = distances
-                                                .withIndex()
-                                                .minByOrNull { it.value }
-                                                ?.takeIf { it.value < 0.05f }
-                                                ?.index
-                                        },
-                                        onDragEnd = { grabbedCorner = null },
-                                        onDragCancel = { grabbedCorner = null },
-                                        onDrag = { change, _ ->
-                                            change.consume()
-                                            val nx = (change.position.x / size.width).coerceIn(0f, 1f)
-                                            val ny = (change.position.y / size.height).coerceIn(0f, 1f)
-                                            corners = when (grabbedCorner) {
-                                                0 -> corners.copy(
-                                                    topLeftX = clamp(nx, 0f, corners.topRightX - MIN_GAP),
-                                                    topLeftY = clamp(ny, 0f, corners.bottomLeftY - MIN_GAP)
-                                                )
-                                                1 -> corners.copy(
-                                                    topRightX = clamp(nx, corners.topLeftX + MIN_GAP, 1f),
-                                                    topRightY = clamp(ny, 0f, corners.bottomRightY - MIN_GAP)
-                                                )
-                                                2 -> corners.copy(
-                                                    bottomRightX = clamp(nx, corners.bottomLeftX + MIN_GAP, 1f),
-                                                    bottomRightY = clamp(ny, corners.topRightY + MIN_GAP, 1f)
-                                                )
-                                                3 -> corners.copy(
-                                                    bottomLeftX = clamp(nx, 0f, corners.bottomRightX - MIN_GAP),
-                                                    bottomLeftY = clamp(ny, corners.topLeftY + MIN_GAP, 1f)
-                                                )
-                                                else -> corners
+                                fun grabCornerAt(point: Offset): Int? {
+                                    if (!isCropMode) return null
+                                    val canvasPoint = screenToCanvas(point)
+                                    val nx = canvasPoint.x / frameW
+                                    val ny = canvasPoint.y / frameH
+                                    if (nx < -0.15f || nx > 1.15f || ny < -0.15f || ny > 1.15f) return null
+                                    val distances = listOf(
+                                        distSq(nx, ny, corners.topLeftX, corners.topLeftY),
+                                        distSq(nx, ny, corners.topRightX, corners.topRightY),
+                                        distSq(nx, ny, corners.bottomRightX, corners.bottomRightY),
+                                        distSq(nx, ny, corners.bottomLeftX, corners.bottomLeftY)
+                                    )
+                                    return distances.withIndex().minByOrNull { it.value }
+                                        ?.takeIf { it.value < GRAB_THRESHOLD }
+                                        ?.index
+                                }
+
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    grabbedCorner = grabCornerAt(down.position)
+                                    var multiTouch = false
+
+                                    var event: PointerEvent
+                                    do {
+                                        event = awaitPointerEvent()
+                                        val pressed = event.changes.count { it.pressed }
+
+                                        if (pressed >= 2) {
+                                            // Pinch. Once a second finger lands, the
+                                            // gesture stays a pinch even if one lifts,
+                                            // so the corner never jumps mid-pinch.
+                                            multiTouch = true
+                                            grabbedCorner = null
+
+                                            val zoomChange = event.calculateZoom()
+                                            val panChange = event.calculatePan()
+                                            if (zoomChange != 1f || panChange != Offset.Zero) {
+                                                val newZoom = (zoom * zoomChange).coerceIn(1f, MAX_ZOOM)
+                                                val k = newZoom / zoom
+                                                // Keep the pinch centroid stationary.
+                                                val centroid = event.calculateCentroid(useCurrent = false)
+                                                val u = Offset(centroid.x - centerX, centroid.y - centerY)
+                                                val candidate = if (newZoom <= 1.0001f) {
+                                                    Offset.Zero
+                                                } else {
+                                                    pan * k + u * (1f - k) + panChange
+                                                }
+                                                zoom = newZoom
+                                                pan = clampPanFor(newZoom, candidate)
+                                                event.changes.forEach {
+                                                    if (it.positionChanged()) it.consume()
+                                                }
+                                            }
+                                        } else if (pressed == 1 && !multiTouch) {
+                                            val change = event.changes.first { it.pressed }
+                                            val grabbed = grabbedCorner
+                                            if (grabbed != null) {
+                                                // Corner positions are stored normalised
+                                                // to the unrotated, unscaled frame, so
+                                                // zoom and rotation change nothing here.
+                                                val canvasPoint = screenToCanvas(change.position)
+                                                val nx = (canvasPoint.x / frameW).coerceIn(0f, 1f)
+                                                val ny = (canvasPoint.y / frameH).coerceIn(0f, 1f)
+                                                corners = when (grabbed) {
+                                                    0 -> corners.copy(
+                                                        topLeftX = clamp(nx, 0f, corners.topRightX - MIN_GAP),
+                                                        topLeftY = clamp(ny, 0f, corners.bottomLeftY - MIN_GAP)
+                                                    )
+                                                    1 -> corners.copy(
+                                                        topRightX = clamp(nx, corners.topLeftX + MIN_GAP, 1f),
+                                                        topRightY = clamp(ny, 0f, corners.bottomRightY - MIN_GAP)
+                                                    )
+                                                    2 -> corners.copy(
+                                                        bottomRightX = clamp(nx, corners.bottomLeftX + MIN_GAP, 1f),
+                                                        bottomRightY = clamp(ny, corners.topRightY + MIN_GAP, 1f)
+                                                    )
+                                                    3 -> corners.copy(
+                                                        bottomLeftX = clamp(nx, 0f, corners.bottomRightX - MIN_GAP),
+                                                        bottomLeftY = clamp(ny, corners.topLeftY + MIN_GAP, 1f)
+                                                    )
+                                                    else -> corners
+                                                }
+                                                change.consume()
+                                            } else if (zoom > 1.001f) {
+                                                // One finger pans the zoomed page.
+                                                val delta = change.position - change.previousPosition
+                                                if (delta != Offset.Zero) {
+                                                    pan = clampPanFor(zoom, pan + delta)
+                                                    change.consume()
+                                                }
                                             }
                                         }
-                                    )
+                                    } while (event.changes.any { it.pressed })
+
+                                    grabbedCorner = null
+                                }
+                            }
+                    ) {
+                        // Zoom/pan live outside the rotation so a drag always moves
+                        // content in the direction the finger moved.
+                        Box(
+                            modifier = Modifier
+                                .size(frameWidth, frameHeight)
+                                .align(Alignment.Center)
+                                .graphicsLayer {
+                                    scaleX = zoom
+                                    scaleY = zoom
+                                    translationX = pan.x
+                                    translationY = pan.y
                                 }
                         ) {
-                            val w = size.width
-                            val h = size.height
-                            val points = listOf(
-                                Offset(corners.topLeftX * w, corners.topLeftY * h),
-                                Offset(corners.topRightX * w, corners.topRightY * h),
-                                Offset(corners.bottomRightX * w, corners.bottomRightY * h),
-                                Offset(corners.bottomLeftX * w, corners.bottomLeftY * h)
-                            )
-
-                            if (isCropMode) {
-                                val quad = Path().apply {
-                                    moveTo(points[0].x, points[0].y)
-                                    lineTo(points[1].x, points[1].y)
-                                    lineTo(points[2].x, points[2].y)
-                                    lineTo(points[3].x, points[3].y)
-                                    close()
-                                }
-                                // Dim outside the document, outline it, mark corners.
-                                drawPath(quad, color = Color(0xFF4FD8EB).copy(alpha = 0.10f))
-                                drawPath(
-                                    path = quad,
-                                    color = Color(0xFF4FD8EB),
-                                    style = Stroke(width = 3.dp.toPx())
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer { rotationZ = rotation }
+                            ) {
+                                Image(
+                                    bitmap = image,
+                                    contentDescription = "Page preview",
+                                    contentScale = ContentScale.FillBounds,
+                                    modifier = Modifier.fillMaxSize()
                                 )
-                                points.forEachIndexed { index, point ->
-                                    val isActive = grabbedCorner == index
-                                    drawCircle(
-                                        color = Color.White,
-                                        radius = if (isActive) 13.dp.toPx() else 11.dp.toPx(),
-                                        center = point
+
+                                Canvas(modifier = Modifier.fillMaxSize()) {
+                                    val w = size.width
+                                    val h = size.height
+                                    // The canvas is inside the zoom layer, so strokes and
+                                    // handles are divided by the scale to keep a constant
+                                    // on-screen size while zoomed in.
+                                    val invZoom = 1f / zoom
+                                    val points = listOf(
+                                        Offset(corners.topLeftX * w, corners.topLeftY * h),
+                                        Offset(corners.topRightX * w, corners.topRightY * h),
+                                        Offset(corners.bottomRightX * w, corners.bottomRightY * h),
+                                        Offset(corners.bottomLeftX * w, corners.bottomLeftY * h)
                                     )
-                                    drawCircle(
-                                        color = Color(0xFF0061A4),
-                                        radius = if (isActive) 9.dp.toPx() else 7.dp.toPx(),
-                                        center = point
-                                    )
+
+                                    if (isCropMode) {
+                                        val quad = Path().apply {
+                                            moveTo(points[0].x, points[0].y)
+                                            lineTo(points[1].x, points[1].y)
+                                            lineTo(points[2].x, points[2].y)
+                                            lineTo(points[3].x, points[3].y)
+                                            close()
+                                        }
+                                        drawPath(quad, color = Color(0xFF4FD8EB).copy(alpha = 0.10f))
+                                        drawPath(
+                                            path = quad,
+                                            color = Color(0xFF4FD8EB),
+                                            style = Stroke(width = 3.dp.toPx() * invZoom)
+                                        )
+                                        points.forEachIndexed { index, point ->
+                                            val isActive = grabbedCorner == index
+                                            drawCircle(
+                                                color = Color.White,
+                                                radius = (if (isActive) 13.dp else 11.dp).toPx() * invZoom,
+                                                center = point
+                                            )
+                                            drawCircle(
+                                                color = Color(0xFF0061A4),
+                                                radius = (if (isActive) 9.dp else 7.dp).toPx() * invZoom,
+                                                center = point
+                                            )
+                                        }
+                                    }
                                 }
+                            }
+                        }
+                    }
+
+                    // Zoom controls: pinch works, but buttons are discoverable and
+                    // give exact steps when lining up a corner.
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                        shadowElevation = 3.dp,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 4.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = {
+                                    val newZoom = (zoom / ZOOM_FACTOR).coerceAtLeast(1f)
+                                    zoom = newZoom
+                                    pan = if (newZoom <= 1.0001f) Offset.Zero else clampPanFor(newZoom, pan)
+                                },
+                                enabled = zoom > 1.001f,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Remove,
+                                    contentDescription = "Zoom out",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Text(
+                                text = "${(zoom * 100).roundToInt()}%",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.width(46.dp),
+                                textAlign = TextAlign.Center
+                            )
+                            IconButton(
+                                onClick = {
+                                    val newZoom = (zoom * ZOOM_FACTOR).coerceAtMost(MAX_ZOOM)
+                                    zoom = newZoom
+                                    pan = clampPanFor(newZoom, pan)
+                                },
+                                enabled = zoom < MAX_ZOOM - 0.001f,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = "Zoom in",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    zoom = 1f
+                                    pan = Offset.Zero
+                                },
+                                enabled = zoom > 1.001f || pan != Offset.Zero,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.FitScreen,
+                                    contentDescription = "Fit to screen",
+                                    modifier = Modifier.size(18.dp)
+                                )
                             }
                         }
                     }
@@ -550,3 +797,16 @@ private fun distSq(x1: Float, y1: Float, x2: Float, y2: Float): Float {
     val dy = y1 - y2
     return dx * dx + dy * dy
 }
+
+/** Largest preview magnification in the border/filter editor. */
+private const val MAX_ZOOM = 5f
+
+/** Multiplier applied by the +/- zoom buttons. */
+private const val ZOOM_FACTOR = 1.6f
+
+/**
+ * Squared normalised distance within which a touch counts as grabbing a corner.
+ * 0.05 ≈ 22 % of the frame width, which stays comfortable at 1x and effectively
+ * grows as the user zooms in.
+ */
+private const val GRAB_THRESHOLD = 0.05f

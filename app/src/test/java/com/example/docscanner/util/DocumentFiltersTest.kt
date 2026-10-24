@@ -48,6 +48,52 @@ class DocumentFiltersTest {
     }
 
     @Test
+    fun stretchPoints_normalPageFindsInkAndPaper() {
+        val hist = IntArray(256)
+        for (v in 30..70) hist[v] = 5      // ink
+        for (v in 235..250) hist[v] = 60   // paper
+
+        val (low, high) = DocumentFilters.stretchPoints(hist)
+
+        assertTrue("black point $low should sit in the ink", low in 25..75)
+        assertTrue("white point $high should sit at paper", high >= 230)
+    }
+
+    @Test
+    fun stretchPoints_clampsBlackPointOnABarelyPrintedPage() {
+        // 99.7 % paper with a handful of ink pixels: an unclamped 2 % percentile
+        // lands inside the paper mass and the gain explodes. This is the
+        // "washed out" regression.
+        val hist = IntArray(256)
+        hist[60] = 2
+        for (v in 240..250) hist[v] = 200
+
+        val (low, _) = DocumentFilters.stretchPoints(hist)
+
+        assertTrue("black point $low must be clamped", low <= 110)
+    }
+
+    @Test
+    fun stretchPoints_keepsAMinimumRange() {
+        val hist = IntArray(256)
+        for (v in 120..124) hist[v] = 100 // low-contrast page
+
+        val (low, high) = DocumentFilters.stretchPoints(hist)
+
+        assertTrue("range ${high - low} must not be degenerate", high - low >= 12)
+    }
+
+    @Test
+    fun stretchPoints_doesNotOverBrightenADarkPhoto() {
+        val hist = IntArray(256)
+        for (v in 40..170) hist[v] = 4
+
+        val (_, high) = DocumentFilters.stretchPoints(hist)
+
+        assertTrue("white point $high must be floored", high >= 205)
+    }
+
+    @Test
     fun percentile_returnsExpectedValues() {
         val hist = IntArray(256)
         // 10 samples at 10, 80 at 100, 10 at 250.

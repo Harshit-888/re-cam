@@ -6,6 +6,227 @@ Newest entry at the top.
 
 ---
 
+## 2026-10-25 (h) — Arena.ai — Working Settings screen
+
+### Why
+The app had no settings screen at all: the legacy APK's Settings (Theme / Scan /
+PDF / Default Email / OCR / Sync) had never been ported, and the dashboard had no
+entry point to one. This adds the page **and** the behaviour behind every row.
+
+### New files
+- `model/AppSettings.kt` — `@Serializable` settings model plus `ThemeMode`,
+  `AccentColor`, `ImageQuality`, `ExportResolution`, `PageOrientation`,
+  `ImageScale`.
+- `data/SettingsStore.kt` — `settings.json`, same debounced + atomic write
+  pattern as `LibraryStore`. Separate file so a theme toggle never rewrites the
+  document library, and so the theme is available before the first frame.
+- `ui/settings/SettingsScreen.kt` — sectioned page matching the legacy layout.
+- `util/GalleryExporter.kt` — MediaStore insert (API 29+, `IS_PENDING`) and a
+  legacy `Pictures/DocScanner` + `MediaScannerConnection` path for API 26–28.
+- `app/src/test/.../model/AppSettingsTest.kt` — defaults, JSON round-trip,
+  unknown-key tolerance (upgrade safety), accent contrast, preset ordering.
+
+### Every row does something
+| Row | Effect |
+|---|---|
+| Choose theme | `DocScannerTheme(darkTheme = …)`; status/nav bar icon polarity stays in sync via `enableEdgeToEdge(SystemBarStyle…)` |
+| Color | Overrides the four primary slots of the scheme; six hand-checked palettes |
+| Use in-app camera | Off = dashboard scan opens the **system photo picker** and imports into a new document |
+| Shutter sound | `MediaActionSound.SHUTTER_CLICK` on capture |
+| Image quality | Capture downscale target + JPEG quality, applied on capture, gallery import and editor bakes |
+| Auto-save to Gallery | Copies each captured page to `Pictures/DocScanner` |
+| Document Name | PDF file-name prefix (`Document_<title>_<ts>.pdf`) |
+| Page Size | Initial selection in the export sheet |
+| Resolution | Embedded bitmap longest edge (150/200/300 DPI) |
+| Page Orientation | Per-page axis: auto swaps landscape pages |
+| Image Scale | Fit (contain) / Fill (cover + clip) / Original (1 px = 1 pt) |
+| Default Email To / Subject | `EXTRA_EMAIL` / `EXTRA_SUBJECT` on the share intent |
+
+### Deliberately **not** added
+*OCR Language* (no OCR yet), *Camera Engine* (CameraX is the only engine),
+*Image Picker for Scanning* (we always use the system picker), *Sync to Cloud*
+(no transport). A row that persists a value nothing reads is a fake control —
+`AGENTS.md` §2.7. They are listed under roadmap Priority 0.
+
+### Signature changes (update call sites)
+- `PdfExportSheet(document, settings, onDismiss)` — new `settings` parameter.
+- `PdfExportConfig(+ pageOrientation, imageScale, fileBaseName)`.
+- `ImageStore.importFromUri / importFromFile / createPageFromUri /
+  saveEditedPage` gained `maxDimension` / `quality` parameters with defaults
+  equal to the previous constants, so existing call sites are unchanged.
+- `PageRenderer.bake / bakeBlocking(…, jpegQuality = ImageStore.JPEG_QUALITY)`.
+- `DocScannerTheme(+ accent: AccentColor = AccentColor.BLUE)`.
+- `DashboardScreen(+ onNavigateToSettings: () -> Unit)`.
+- `ScannerRepository(+ settings: StateFlow<AppSettings>, + updateSettings(),
+  + currentSettings())`.
+
+### Manifest
+`WRITE_EXTERNAL_STORAGE` with `maxSdkVersion="28"`, requested from the
+auto-save row only, on Android 8/9 only.
+
+### Version
+**1.4 (code 5)**.
+
+## 2026-10-25 (g) — Arena.ai — Shared-axis screen transitions
+
+- `Navigation.kt`: `NavDisplay` was using its default transition, which reads as a
+  hard cut. It now gets explicit specs:
+  - `transitionSpec` (push): incoming screen slides in from the trailing edge at
+    full width while the outgoing screen slides a **quarter** of the way out —
+    the parallax is what turns a screen swap into a sense of depth.
+  - `popTransitionSpec` (back): the exact reverse, so the screen you came from
+    settles back where you left it.
+  - `predictivePopTransitionSpec`: same as pop, so the edge-swipe preview during a
+    predictive back gesture matches where letting go actually lands.
+- Duration **320 ms**, `FastOutSlowInEasing` — Material's standard easing.
+- Implemented with top-level builders only (`slideInHorizontally`,
+  `slideOutHorizontally`, `togetherWith`), never `slideIntoContainer`, so the code
+  does not depend on the type of scope Navigation 3 hands the spec.
+- Transition specs live in `private fun navForwardTransition()` /
+  `navBackTransition()`; there are no per-destination overrides yet, so every
+  route shares the same motion.
+
+## 2026-10-25 (f) — Arena.ai — Share button no longer grows
+
+- `ui/detail/DocumentDetailScreen.kt` bottom bar: the four actions were
+  `TextButton`s (icon + label side by side) plus one filled `Button` in a
+  `SpaceAround` row. On a 360 dp phone the row runs out of width at the **last**
+  child, so "Share" was measured with almost no width, wrapped its label onto a
+  second line, and the pill grew taller than the three actions beside it.
+- Rebuilt as four `Modifier.weight(1f)` cells, icon above label, every cell at a
+  shared **56 dp** height (`ACTION_HEIGHT`), label `maxLines = 1`,
+  `softWrap = false`, ellipsis. Width per cell now depends only on the screen
+  width, never on the label length, so no child can be squeezed again.
+- New private composables `DocumentActionButton` / `DocumentActionContent`;
+  `Share` keeps its filled primary treatment, the other three stay text buttons.
+
+## 2026-10-25 (e) — Arena.ai — Zoom while capturing and while adjusting borders
+
+### Camera: pinch-to-zoom that actually reaches the JPEG
+- New `Box` around `AndroidView` in `ui/camera/ScannerCameraScreen.kt` with
+  `detectTransformGestures(panZoomLock = true)`; pinch multiplies `zoomRatio`.
+- Zoom is applied through **`cameraControl.setZoomRatio`**, i.e. a sensor crop —
+  not a scaled preview `View`. That is the difference between "the viewfinder
+  looks zoomed" and "the saved photo is zoomed".
+- `minZoomRatio` / `maxZoomRatio` come from `camera.cameraInfo.zoomState`, which
+  CameraX fills in asynchronously after binding, so a short polling
+  `LaunchedEffect` reads them instead of assuming the device cannot zoom.
+  Everything is clamped to that range; the pinch handler and buttons both honour it.
+- Discoverable control: a translucent pill above the shutter with `−`, `1.0×`,
+  `+` and a reset button. Hidden entirely when `maxZoomRatio <= 1.01f`, so
+  fixed-focus devices see no dead UI. Tapping the factor label resets to 1×.
+- `ZOOM_STEP = 0.5f`.
+
+### Editor: pinch / pan / zoom in border-adjust and filter preview
+- `ui/editor/CropAndFilterScreen.kt` now renders through two nested `Box`es:
+  outer = `scaleX/scaleY` + `translationX/translationY`, inner = `rotationZ`.
+  Zoom therefore works with a rotated page and panning always follows the finger.
+- One unified `awaitEachGesture` handler replaced `detectDragGestures`:
+  - one finger started on a corner handle (within `GRAB_THRESHOLD`, normalised)
+    moves that corner, exactly as before;
+  - one finger anywhere else pans once `zoom > 1`;
+  - two fingers pinch around `calculateCentroid(useCurrent = false)`, so the point
+    between the fingers stays put while scaling.
+  - once a gesture becomes multi-touch it never falls back to corner dragging,
+    so lifting one finger out of a pinch cannot fling a corner across the page.
+- `screenToCanvas()` inverts translation → scale → rotation, so a finger maps to
+  the right normalised corner coordinate at any zoom and rotation.
+- Pan is clamped to `(zoom − 1) · extent / 2`, with the extents swapped when the
+  rotation is a multiple of 90°, so the page can never be dragged off-screen.
+- Corner handles and the quad stroke are divided by the zoom factor while
+  drawing, so they keep a constant on-screen size instead of ballooning at 5×.
+- Buttons: `−` / percentage / `+` / `FitScreen` reset at the bottom centre;
+  `MAX_ZOOM = 5f`, `ZOOM_FACTOR = 1.6f`.
+- Zoom and pan reset when the page changes — no bleed between pages.
+
+### Coordination notes for Antigravity
+- Only two files changed: `ui/camera/ScannerCameraScreen.kt` and
+  `ui/editor/CropAndFilterScreen.kt`. Do not re-run `detectDragGestures` there.
+- If a device reports `maxZoomRatio` but pinching does nothing, the effect that
+  calls `setZoomRatio` is keyed on `zoomRatio`; check that `boundCamera` is set
+  (it is assigned inside the CameraX bind callback).
+
+## 2026-10-25 (d) — Arena.ai — Punchy filters, working detection, clean viewfinder
+
+Follow-up to user testing: *"the magic color and black and white still seems a bit
+off… the border detection is not working and also remove the static border on the
+camera when capturing photos."*
+
+### 🐞 Why detection *looked* like it never ran
+`CropAndFilterScreen` only drew the quad when `isCropMode` was true, and
+`isCropMode` started `false` in **review mode** — the post-capture screen the user
+was judging. Detection could succeed and the borders would still be invisible
+until "Borders" was tapped. The screen now opens in Borders mode in review mode.
+
+### Detector: boundary scan replaces extreme points
+`DocumentDetector` rewritten **again** (see the file header for the three
+generations). The previous Sobel→extreme-point version failed on the most common
+capture: the page fills the frame, so (a) Sobel skipped the 1-px frame border
+where the page edge lived, and (b) interior text edges outnumbered the page edge,
+so the extreme points landed on text → invalid quad → silent `FULL_FRAME`.
+
+Now:
+1. Sobel with **clamped indices**, so an edge on the frame border still produces a
+   gradient.
+2. Lower, percentile-based threshold (`max(18, p75×0.85, p97×0.18)`).
+3. **Boundary scan** — per row, first strong edge from the left and last from the
+   right; per column, first from the top and last from the bottom. Scanning inward
+   from the frame edge hits the paper boundary before any text.
+4. **RANSAC line fit per side** (220 deterministic iterations, 1.2 % tolerance,
+   ≥14 inliers) then least-squares refit on inliers — survives curled corners and
+   stray shadows.
+5. Intersect the four lines. **A side with no visible boundary falls back to the
+   frame edge** (the page runs past the frame), which is geometrically correct
+   rather than a failure.
+6. Validate slopes (|a| ≤ 1.1), convexity, bounds, side lengths, area.
+7. Extreme-point quad retained as a fallback for small/rotated documents.
+
+New `DocumentDetector.detect()` returns `Detection(corners, confident)`, where
+`confident` is true only when ≥3 sides were fitted from real edges. The editor
+shows *"Borders not detected — drag the corners"* when it is false.
+
+### Filters: colour cast + blow-out fixed, tuned punchier
+- **One stretch for all channels.** Magic Color previously stretched R, G and B
+  independently with different percentiles — three different gains on the same
+  paper pixel = pink/green whites. Contrast now comes from a single **luminance**
+  histogram; only white balance is per-channel.
+- **Clamped stretch points** (`stretchPoints`, new and unit-tested): 2 % black
+  point capped at 110, 90 % white point floored at 205. An unbounded black point
+  was the "washed out on a lightly printed page" bug — with little ink the
+  percentile landed inside the paper mass and the gain blew mid-tones to white.
+- Punchier: `MAGIC_COLOR_CURVE 0.55 → 0.62`, saturation `1.18 → 1.15` (more
+  contrast, less chroma push), `GRAYSCALE_CURVE 0.35 → 0.42`.
+- **B&W despeckle.** The symmetric ramp left paper noise just above the threshold
+  pure black → speckle. Now `INK_CUT_FACTOR 0.95` / `PAPER_CUT_FACTOR 1.05`
+  (asymmetric, paper whites out early) plus a **3×3 majority vote** read straight
+  from the luminance buffer (no extra full-frame allocation): ≥6 paper neighbours
+  → white, ≤3 → black, otherwise keep the ramped value so glyph edges stay
+  anti-aliased.
+
+### Camera: guide frame removed
+Both decorative overlays are gone from `ScannerCameraScreen` — the dark scrim with
+the cut-out window and the pulsing dashed frame — along with 12 now-unused imports.
+They were never part of the captured JPEG, and they were actively harmful: they
+taught users to fill the frame right past the paper edge, leaving no boundary for
+the detector to find.
+
+### Signature changes
+| Symbol | Before | After |
+| :--- | :--- | :--- |
+| `DocumentDetector.detect` | — | **new** `(Bitmap) -> Detection` |
+| `DocumentDetector.Detection` | — | **new** `data class(corners, confident)` |
+| `DocumentDetector.detectQuad` | `(Bitmap) -> QuadCorners` | unchanged signature, now delegates to `detect().corners` |
+| `DocumentFilters.stretchPoints` | — | **new** internal, unit-tested |
+| `CropAndFilterScreen` `isCropMode` | started `false` | **starts `reviewMode`** |
+
+### Tests
+`DocumentFiltersTest` gains four cases for `stretchPoints`: normal page, the
+barely-printed clamp, the minimum-range guard, and the dark-photo floor.
+
+`versionCode 4`, `versionName 1.3`.
+
+---
+
 ## 2026-10-25 (d) — Antigravity — Filters test fix & build verified
 
 - Fixed `DocumentFiltersTest.curveLut_darkensMidtones`: updated assertion to verify shadow/ink darkening (`lut[96] < 96`) rather than the midpoint index 128 (since standard smoothstep $3t^2 - 2t^3$ has inflection at $t=0.5$, meaning $t = 128/255 > 0.5$ preserves midpoint while pulling down values $t < 0.5$).

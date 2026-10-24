@@ -8,6 +8,8 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import com.example.docscanner.model.Document
+import com.example.docscanner.model.ImageScale
+import com.example.docscanner.model.PageOrientation
 import com.example.docscanner.model.PdfExportConfig
 import com.example.docscanner.model.ScannedPage
 import java.io.File
@@ -39,8 +41,8 @@ object PdfGenerator {
         bitmapProvider: (ScannedPage) -> Bitmap?
     ): File {
         val pdfDocument = PdfDocument()
-        val paperWidth = config.paperSize.widthPt
-        val paperHeight = config.paperSize.heightPt
+        val presetWidth = config.paperSize.widthPt
+        val presetHeight = config.paperSize.heightPt
         val margin = config.margins.marginPt
 
         val footerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -60,14 +62,27 @@ object PdfGenerator {
 
         try {
             for (index in pages.indices) {
+                val scannedPage = pages[index]
+                val bitmap = bitmapProvider(scannedPage)
+
+                // Orientation is decided per page, which is the whole point of
+                // "Auto": a landscape photo of a receipt should not be squeezed
+                // onto a portrait sheet. Presets keep their native axis
+                // (a business card is landscape, a receipt roll is portrait).
+                val landscape = when (config.pageOrientation) {
+                    PageOrientation.PORTRAIT -> false
+                    PageOrientation.LANDSCAPE -> true
+                    PageOrientation.AUTO -> bitmap != null && bitmap.width > bitmap.height
+                }
+                val paperWidth = if (landscape) maxOf(presetWidth, presetHeight) else minOf(presetWidth, presetHeight)
+                val paperHeight = if (landscape) minOf(presetWidth, presetHeight) else maxOf(presetWidth, presetHeight)
+
                 val pageInfo = PdfDocument.PageInfo.Builder(paperWidth, paperHeight, index + 1).create()
                 val pdfPage = pdfDocument.startPage(pageInfo)
                 val canvas = pdfPage.canvas
-                val scannedPage = pages[index]
 
                 canvas.drawColor(Color.WHITE)
 
-                val bitmap = bitmapProvider(scannedPage)
                 if (bitmap != null) {
                     val printableLeft = margin.toFloat()
                     val printableTop = margin.toFloat()
@@ -83,18 +98,41 @@ object PdfGenerator {
                     if (printableWidth > 0f && printableHeight > 0f) {
                         val imageWidth = bitmap.width.toFloat()
                         val imageHeight = bitmap.height.toFloat()
-                        val scale = minOf(printableWidth / imageWidth, printableHeight / imageHeight)
-                        val destWidth = imageWidth * scale
-                        val destHeight = imageHeight * scale
+                        val (destWidth, destHeight) = when (config.imageScale) {
+                            // Whole page visible, aspect kept, bands on one axis.
+                            ImageScale.FIT -> {
+                                val scale = minOf(printableWidth / imageWidth, printableHeight / imageHeight)
+                                imageWidth * scale to imageHeight * scale
+                            }
+                            // Cover the sheet; overflow is clipped, never squeezed.
+                            ImageScale.FILL -> {
+                                val scale = maxOf(printableWidth / imageWidth, printableHeight / imageHeight)
+                                imageWidth * scale to imageHeight * scale
+                            }
+                            // 1 image pixel per PDF point (1/72 in), centred.
+                            ImageScale.ORIGINAL -> imageWidth to imageHeight
+                        }
                         val destLeft = printableLeft + (printableWidth - destWidth) / 2f
                         val destTop = printableTop + (printableHeight - destHeight) / 2f
 
+                        canvas.save()
+                        if (config.imageScale != ImageScale.FIT) {
+                            // Without this the cropped overflow would print into the
+                            // margins — and, on the last page, off the sheet.
+                            canvas.clipRect(
+                                printableLeft,
+                                printableTop,
+                                printableRight,
+                                printableBottom
+                            )
+                        }
                         canvas.drawBitmap(
                             bitmap,
                             null,
                             RectF(destLeft, destTop, destLeft + destWidth, destTop + destHeight),
                             Paint(Paint.FILTER_BITMAP_FLAG)
                         )
+                        canvas.restore()
                     }
                 } else {
                     // Visible, honest failure rather than a silently blank sheet.
@@ -129,11 +167,12 @@ object PdfGenerator {
             }
 
             val exportDir = ImageStore.exportsDir(context)
-            val safeTitle = document.title
-                .replace(Regex("[^a-zA-Z0-9_-]"), "_")
-                .take(60)
-                .ifBlank { "document" }
-            val outputFile = File(exportDir, "${safeTitle}_${System.currentTimeMillis()}.pdf")
+            val safeTitle = sanitiseFileName(document.title).take(60).ifBlank { "document" }
+            // Settings → PDF → Document Name is the file name prefix, so exports
+            // land in a folder sorted by whatever the user picked.
+            val prefix = sanitiseFileName(config.fileBaseName).take(40)
+            val baseName = if (prefix.isBlank()) safeTitle else "${prefix}_$safeTitle"
+            val outputFile = File(exportDir, "${baseName}_${System.currentTimeMillis()}.pdf")
 
             FileOutputStream(outputFile).use { stream -> pdfDocument.writeTo(stream) }
             return outputFile
@@ -141,4 +180,9 @@ object PdfGenerator {
             pdfDocument.close()
         }
     }
+
+    /** Keeps file names to characters every filesystem and share target accepts. */
+    private fun sanitiseFileName(raw: String): String =
+        raw.trim().replace(Regex("[^a-zA-Z0-9_-]+"), "_").trim('_')
+
 }
