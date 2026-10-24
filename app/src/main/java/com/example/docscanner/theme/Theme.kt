@@ -61,7 +61,11 @@ private val LightColorScheme = lightColorScheme(
 @Composable
 fun DocScannerTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    /**
+     * Off by default: the Material 3 Expressive palette in `Color.kt` is this
+     * app's identity, and dynamic colour was silently overriding it on API 31+.
+     */
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {

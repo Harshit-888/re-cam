@@ -2,11 +2,9 @@ package com.example.docscanner.util
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import com.example.docscanner.model.Document
@@ -15,10 +13,24 @@ import com.example.docscanner.model.ScannedPage
 import java.io.File
 import java.io.FileOutputStream
 
+/**
+ * Multi-page PDF compiler.
+ *
+ * Pages are **real page bitmaps** supplied by [bitmapProvider] — normally
+ * [PageRenderer.bitmapForExport], which returns the already-baked JPEG (warp,
+ * rotation, filter and signature applied). Nothing here invents content.
+ *
+ * `android.graphics.pdf.PdfDocument` cannot encrypt output, which is why
+ * [PdfExportConfig] carries no password field.
+ *
+ * Blocking. Always call this from `Dispatchers.IO`.
+ */
 object PdfGenerator {
 
     /**
-     * Generates a multi-page PDF file from a Document and configuration
+     * @param bitmapProvider page -> bitmap to draw, or `null` to leave the page
+     *   blank (a real possibility if the JPEG is missing on disk).
+     * @return the written PDF in `cacheDir/exports`.
      */
     fun generatePdf(
         context: Context,
@@ -31,98 +43,102 @@ object PdfGenerator {
         val paperHeight = config.paperSize.heightPt
         val margin = config.margins.marginPt
 
-        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        val footerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.DKGRAY
-            textSize = 10f
+            textSize = 9f
             textAlign = Paint.Align.CENTER
         }
 
         val watermarkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(40, 0, 0, 0)
-            textSize = 36f
+            color = Color.argb(38, 0, 0, 0)
             textAlign = Paint.Align.CENTER
+            isFakeBoldText = true
         }
 
         val pages = document.pages
         val totalPages = pages.size
 
-        for (i in pages.indices) {
-            val pageInfo = PdfDocument.PageInfo.Builder(paperWidth, paperHeight, i + 1).create()
-            val pdfPage = pdfDocument.startPage(pageInfo)
-            val canvas = pdfPage.canvas
+        try {
+            for (index in pages.indices) {
+                val pageInfo = PdfDocument.PageInfo.Builder(paperWidth, paperHeight, index + 1).create()
+                val pdfPage = pdfDocument.startPage(pageInfo)
+                val canvas = pdfPage.canvas
+                val scannedPage = pages[index]
 
-            // White page background
-            canvas.drawColor(Color.WHITE)
+                canvas.drawColor(Color.WHITE)
 
-            val scannedPage = pages[i]
-            val bitmap = bitmapProvider(scannedPage)
+                val bitmap = bitmapProvider(scannedPage)
+                if (bitmap != null) {
+                    val printableLeft = margin.toFloat()
+                    val printableTop = margin.toFloat()
+                    val printableRight = (paperWidth - margin).toFloat()
+                    val printableBottom = if (config.includePageNumbers) {
+                        (paperHeight - margin - 16).toFloat()
+                    } else {
+                        (paperHeight - margin).toFloat()
+                    }
+                    val printableWidth = printableRight - printableLeft
+                    val printableHeight = printableBottom - printableTop
 
-            if (bitmap != null) {
-                // Apply rotation and filter enhancements
-                val enhancedBitmap = ImageProcessingUtils.applyEnhancements(
-                    bitmap,
-                    scannedPage.filterType,
-                    scannedPage.rotationDegrees
-                )
+                    if (printableWidth > 0f && printableHeight > 0f) {
+                        val imageWidth = bitmap.width.toFloat()
+                        val imageHeight = bitmap.height.toFloat()
+                        val scale = minOf(printableWidth / imageWidth, printableHeight / imageHeight)
+                        val destWidth = imageWidth * scale
+                        val destHeight = imageHeight * scale
+                        val destLeft = printableLeft + (printableWidth - destWidth) / 2f
+                        val destTop = printableTop + (printableHeight - destHeight) / 2f
 
-                // Calculate printable area
-                val printableLeft = margin.toFloat()
-                val printableTop = margin.toFloat()
-                val printableRight = (paperWidth - margin).toFloat()
-                val printableBottom = if (config.includePageNumbers) {
-                    (paperHeight - margin - 20).toFloat()
+                        canvas.drawBitmap(
+                            bitmap,
+                            null,
+                            RectF(destLeft, destTop, destLeft + destWidth, destTop + destHeight),
+                            Paint(Paint.FILTER_BITMAP_FLAG)
+                        )
+                    }
                 } else {
-                    (paperHeight - margin).toFloat()
+                    // Visible, honest failure rather than a silently blank sheet.
+                    val notice = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        color = Color.LTGRAY
+                        textSize = 12f
+                        textAlign = Paint.Align.CENTER
+                    }
+                    canvas.drawText(
+                        "Page ${index + 1} image unavailable",
+                        paperWidth / 2f,
+                        paperHeight / 2f,
+                        notice
+                    )
                 }
 
-                val printableWidth = printableRight - printableLeft
-                val printableHeight = printableBottom - printableTop
-
-                // Maintain aspect ratio
-                val imgWidth = enhancedBitmap.width.toFloat()
-                val imgHeight = enhancedBitmap.height.toFloat()
-                val scale = minOf(printableWidth / imgWidth, printableHeight / imgHeight)
-
-                val destWidth = imgWidth * scale
-                val destHeight = imgHeight * scale
-                val destLeft = printableLeft + (printableWidth - destWidth) / 2f
-                val destTop = printableTop + (printableHeight - destHeight) / 2f
-
-                val destRect = RectF(destLeft, destTop, destLeft + destWidth, destTop + destHeight)
-                canvas.drawBitmap(enhancedBitmap, null, destRect, null)
-            }
-
-            // Draw optional watermark
-            scannedPage.watermarkText?.let { watermark ->
-                if (watermark.isNotBlank()) {
+                scannedPage.watermarkText?.takeIf { it.isNotBlank() }?.let { watermark ->
+                    watermarkPaint.textSize = paperWidth * 0.11f
                     canvas.save()
                     canvas.rotate(-35f, paperWidth / 2f, paperHeight / 2f)
                     canvas.drawText(watermark, paperWidth / 2f, paperHeight / 2f, watermarkPaint)
                     canvas.restore()
                 }
+
+                if (config.includePageNumbers) {
+                    val footerY = (paperHeight - margin / 2f - 2f)
+                        .coerceIn(paperHeight - 20f, paperHeight - 6f)
+                    canvas.drawText("${index + 1} / $totalPages", paperWidth / 2f, footerY, footerPaint)
+                }
+
+                pdfDocument.finishPage(pdfPage)
             }
 
-            // Draw footer page number
-            if (config.includePageNumbers) {
-                val footerY = (paperHeight - margin / 2f - 4).coerceAtLeast((paperHeight - 14).toFloat())
-                canvas.drawText("${i + 1} / $totalPages", paperWidth / 2f, footerY, textPaint)
-            }
+            val exportDir = ImageStore.exportsDir(context)
+            val safeTitle = document.title
+                .replace(Regex("[^a-zA-Z0-9_-]"), "_")
+                .take(60)
+                .ifBlank { "document" }
+            val outputFile = File(exportDir, "${safeTitle}_${System.currentTimeMillis()}.pdf")
 
-            pdfDocument.finishPage(pdfPage)
+            FileOutputStream(outputFile).use { stream -> pdfDocument.writeTo(stream) }
+            return outputFile
+        } finally {
+            pdfDocument.close()
         }
-
-        // Save output to app cache directory
-        val exportDir = File(context.cacheDir, "exports")
-        if (!exportDir.exists()) exportDir.mkdirs()
-
-        val safeTitle = document.title.replace(Regex("[^a-zA-Z0-9_-]"), "_")
-        val outputFile = File(exportDir, "${safeTitle}_${System.currentTimeMillis()}.pdf")
-
-        FileOutputStream(outputFile).use { fos ->
-            pdfDocument.writeTo(fos)
-        }
-        pdfDocument.close()
-
-        return outputFile
     }
 }

@@ -1,107 +1,149 @@
-# DocScanner (Modern Clean-Room Android Document Scanner)
+# DocScanner — Modern Clean-Room Android Document Scanner
 
-A modern, high-performance Android document scanner application built from scratch with **Kotlin 2.2**, **Jetpack Compose (BOM 2026.03.01)**, and **Material 3 Expressive UI**. Clean-room engineered to replace legacy document scanners with modern architecture, no advertising SDKs, and zero DRM dependencies.
+A ground-up Android document scanner in **Kotlin**, **Jetpack Compose** and
+**Material 3 Expressive**, replacing a legacy ad-funded scanner
+(`com.indymobileapp.document.scanner`) with modern architecture, real image
+processing, no advertising SDKs and no DRM dependencies.
 
-Verified and fully functional on **Android 12+ (API 31–36)**.
+Clean-room: no code from the original APK. The reverse-engineered feature catalog
+that informed this rebuild is in
+[`doc_scanner_architecture_spec.html`](./doc_scanner_architecture_spec.html).
 
----
-
-## 🚀 Key Features & Implemented Workflows
-
-1. **Dashboard & Organization (`ui/dashboard/`)**:
-   - Real-time instant search across document titles and tags.
-   - Filter chips for folders (All, Business, Personal, Receipts, ID Cards, Legal).
-   - Dense Grid vs. List view switcher with animated transition.
-   - Sorting by Date Modified, Alphabetical (A–Z), and Page Count.
-   - Extended Floating Action Button (FAB) for Camera and Batch Scanning.
-
-2. **Camera & Viewfinder (`ui/camera/`)**:
-   - CameraX integration with real-time document alignment quad overlay.
-   - Batch capture counter for continuous multi-page scanning.
-   - Flash modes: Torch, Auto, Off.
-   - Direct system photo gallery album picker.
-
-3. **Perspective Crop & 5 ColorMatrix Filters (`ui/editor/`)**:
-   - Interactive 4-corner draggable polygon perspective warp canvas.
-   - Hardware-accelerated real-time color filters (`util/ImageProcessingUtils.kt`):
-     - **Original**: Natural camera colors.
-     - **Magic Color** (Doc Level 1): Saturation boost & shadow flattening.
-     - **Clear B&W** (Doc Level 2): Extreme luminance contrast for crisp document text.
-     - **Grayscale**: Perceptual 8-bit monochromatic conversion.
-     - **Lighten**: Dark background lifting preserving ink density.
-   - 90° lossless rotation.
-
-4. **Multi-Page Document Detail Manager (`ui/detail/`)**:
-   - Multi-page grid preview with thumbnail indicators.
-   - Page reordering, rotation, deletion, and append new scans.
-   - One-tap actions: Add Digital Signature, Add Watermark, and Export PDF.
-
-5. **Fullscreen Inspector (`ui/viewer/`)**:
-   - High-resolution pan & pinch-to-zoom (up to 4x).
-   - Horizontal swipe paging across scanned pages.
-   - Page details and OCR bottom sheet.
-
-6. **Digital Handwritten Signature Pad (`ui/signature/`)**:
-   - Pressure-sensitive drawing canvas with smooth quad bezier paths.
-   - Pen stroke thickness slider.
-   - Ink color options: Executive Black, Deep Blue, Crimson Red.
-
-7. **Multi-Page PDF Compiler & Sizing Engine (`util/PdfGenerator.kt` & `ui/pdf/`)**:
-   - Hardware-accelerated PDF generation using Android `PdfDocument`.
-   - **7 Standard Paper Sizing Presets**:
-     - A4 (595 × 842 pt)
-     - US Letter (612 × 792 pt)
-     - US Legal (612 × 1008 pt)
-     - A3 (842 × 1191 pt)
-     - A5 (420 × 595 pt)
-     - Executive (522 × 756 pt)
-     - Business Card (241 × 153 pt)
-   - Margin configurations: None, Normal, Wide.
-   - Page numbering (Header / Footer presets).
-   - Direct integration with Android system ShareSheet.
-
-8. **Recycle Bin / Trash System (`ui/trash/`)**:
-   - Soft deletion tracking.
-   - Instant document restoration to active folders.
-   - Permanent document purge.
+> **Building with an AI agent?** Read [`AGENTS.md`](./AGENTS.md) first — and if you
+> are Antigravity, read [`docs/AGENT_COORDINATION.md`](./docs/AGENT_COORDINATION.md)
+> so your edits don't collide with Arena.ai's branch.
 
 ---
 
-## 🛠️ Architecture & Tech Stack
+## 🚀 What actually works
 
-- **UI Framework**: 100% Jetpack Compose with Material 3 Expressive UI
-- **Navigation**: Jetpack Navigation 3 (Type-Safe navigation keys)
-- **Architecture Pattern**: Unidirectional Data Flow (UDF) with Kotlin `StateFlow` and Repository pattern
-- **Image Processing**: Android `ColorMatrix` hardware pipelines + Android Graphics Canvas
-- **Build System**: Gradle 9.1.0, Android Gradle Plugin (AGP) 9.0.1, Kotlin 2.2.0
-- **Min SDK / Compile SDK**: Min SDK 26 (Android 8.0) • Compile/Target SDK 36 (Android 16)
+Every feature below is end-to-end: it captures or imports real pixels, stores them
+in app-private storage, and renders them back.
+
+1. **Dashboard & organisation** (`ui/dashboard/`)
+   - Instant search across titles, tags and extracted text.
+   - Folder chips (create folders with a colour), grid/list switcher, sorting by
+     modified/created/A–Z.
+   - Cover thumbnails are the **real first page**, not an icon.
+
+2. **Camera capture** (`ui/camera/`)
+   - Live **CameraX** preview, runtime permission flow, back-camera still capture.
+   - Flash modes Auto / On / Off, wired to both `ImageCapture` flash and the torch.
+   - Batch mode with a live page counter, or single mode that auto-commits.
+   - Gallery import through the system photo picker (no storage permission needed).
+   - EXIF orientation is baked into pixels, so portrait shots aren't sideways.
+
+3. **Perspective correction & filters** (`ui/editor/`)
+   - Four draggable corner handles over the **real photograph**.
+   - Genuine projective warp (`Matrix.setPolyToPoly`) — the crop actually moves
+     pixels now.
+   - 5 `ColorMatrix` enhancements previewed live over the photo: *Original*,
+     *Magic Color*, *Clear B&W*, *Grayscale*, *Lighten*.
+   - 90° rotation, "Full Page" reset, and a brightness-based "Auto Detect".
+   - Non-destructive: the pristine capture is never overwritten, so repeated edits
+     don't accumulate JPEG loss.
+
+4. **Document detail** (`ui/detail/`)
+   - Multi-page grid with real thumbnails and filter/watermark badges.
+   - Page rotation, deletion (cleans up the JPEGs), reordering, and appending
+     more scans.
+   - Rename, watermark (applied at PDF time), signature, PDF export.
+
+5. **Fullscreen viewer** (`ui/viewer/`)
+   - Real page bitmap, pan + pinch-zoom to 4×, page navigation, rotation.
+   - Recognised-text sheet with copy-to-clipboard (populated by the OCR roadmap
+     item).
+
+6. **Digital signature** (`ui/signature/`)
+   - Bezier-smoothed stroke canvas, thickness slider, three ink colours.
+   - Rasterised to a transparent PNG and composited onto the page at the
+     bottom-right, so it survives into thumbnails, the viewer and the PDF.
+
+7. **PDF export** (`util/PdfGenerator.kt`, `ui/pdf/`)
+   - Real page bitmaps, 72 DPI point geometry, aspect-preserving fit.
+   - **8 paper presets**, 4 margin presets, optional page numbering, watermark.
+   - Runs on `Dispatchers.IO` (no ANR on long documents).
+   - Shares through a `FileProvider` + the system share sheet.
+
+8. **Recycle bin** (`ui/trash/`) — soft delete, restore, permanent purge
+   (including deleting page files from disk).
+
+9. **Persistence** (`data/LibraryStore.kt`) — the whole library is a
+   `library.json` snapshot written atomically, so it survives process death.
 
 ---
 
-## 📖 Complete Specification & AI Blueprint
+## 🗂️ Where data lives
 
-For the complete reverse-engineering catalog, decompiled activity mappings, and AI model context schema, see:
-- [`doc_scanner_architecture_spec.html`](./doc_scanner_architecture_spec.html)
+```
+files/library.json                     document + folder metadata (atomic snapshot)
+files/pages/<pageId>.jpg               pristine capture — never overwritten
+files/pages/<pageId>_edited.jpg        warp + rotation + filter + signature bake
+files/signatures/<uuid>.png            transparent signature strokes
+cache/exports/<title>_<ts>.pdf         generated PDFs (share target)
+```
+
+`ScannedPage.imageUri` is always an **absolute path in this app's private
+storage**. `content://` URIs are imported first, never stored.
 
 ---
 
-## 🔨 Building & Running
+## 🛠️ Architecture & tech stack
 
-### Requirements
-- Java JDK 21+
-- Android SDK 36 (Build Tools 36.0.0)
+| Concern | Choice |
+| :--- | :--- |
+| UI | 100% Jetpack Compose, Material 3 Expressive, no XML layouts |
+| Navigation | Navigation 3 with type-safe `NavKey`s |
+| State | UDF — `ScannerRepository` + `StateFlow`, injected from `MainActivity` |
+| DI | Constructor parameters. No service locator, no singleton |
+| Persistence | `kotlinx.serialization` JSON snapshot |
+| Camera | CameraX 1.4.2 (`Preview` + `ImageCapture` + `PreviewView`) |
+| Image pipeline | `Matrix` / `Canvas` / `ColorMatrix`, sampled decode + `LruCache` |
+| PDF | `android.graphics.pdf.PdfDocument` |
+| Build | Gradle 9.1.0, AGP 9.0.1, Kotlin 2.3.20 |
+| SDK | minSdk 26 (Android 8) · target/compile 36 (Android 16) |
 
-### Build Debug APK:
+Versions live in [`gradle/libs.versions.toml`](./gradle/libs.versions.toml) — that
+file is authoritative if this table drifts.
+
+---
+
+## 📄 PDF paper presets
+
+| Preset | Points | Metric / Imperial |
+| :--- | :--- | :--- |
+| A4 | 595 × 842 | 210 × 297 mm |
+| US Letter | 612 × 792 | 8.5 × 11 in |
+| US Legal | 612 × 1008 | 8.5 × 14 in |
+| A3 | 842 × 1191 | 297 × 420 mm |
+| A5 | 420 × 595 | 148 × 210 mm |
+| Executive | 522 × 756 | 7.25 × 10.5 in |
+| Business Card | 243 × 153 | 85.6 × 54 mm (ID-1) |
+| Receipt | 226 × 600 | 80 mm thermal roll |
+
+Margins: None (0 pt), Compact (10 pt), Standard (25 pt), Wide (40 pt).
+
+---
+
+## 🔨 Building & running
+
+Requirements: JDK 17+ (21 recommended) and Android SDK 36 with Build Tools 36.
+
 ```bash
 ./gradlew assembleDebug
-```
-
-The output APK will be generated at:
-```
-app/build/outputs/apk/debug/app-debug.apk
-```
-
-### Install directly to connected device:
-```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+> The Arena.ai agent sandbox has no JDK/Android SDK, so builds produced there are
+> **unverified**. If a build fails, the compiler is right — see
+> `docs/AGENTS_CHANGELOG.md` for the dependency versions that may need bumping.
+
+---
+
+## 🗺️ Roadmap
+
+Both are tracked in `AGENTS.md` §4 with implementation notes:
+1. ML Kit on-device OCR (`util/OcrManager.kt`) — fills the existing OCR sheet.
+2. White-out eraser (`ui/editor/CleanupBgCanvas.kt`).
+3. Naming templates (`util/NamingTemplateEngine.kt`).
+4. ZIP backup/restore (`util/BackupRestoreManager.kt`).
