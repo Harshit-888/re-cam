@@ -78,7 +78,7 @@ The goal is a state-of-the-art, privacy-respecting, high-performance Android doc
 | **Image Storage** | `filesDir/pages/<pageId>.jpg` + `_edited.jpg` bakes | [`util/ImageStore.kt`](app/src/main/java/com/example/docscanner/util/ImageStore.kt) |
 | **Image Loading** | Sampled decode + `LruCache` + `rememberPageImage()` | [`util/PageImageLoader.kt`](app/src/main/java/com/example/docscanner/util/PageImageLoader.kt) |
 | **Perspective Correction** | `Matrix.setPolyToPoly` 4-point projective warp | [`util/PerspectiveWarp.kt`](app/src/main/java/com/example/docscanner/util/PerspectiveWarp.kt) |
-| **Image Processing** | Real pixel pipeline: illumination normalisation, grey-world white balance, percentile stretch, Otsu B&W (**not** a global `ColorMatrix`) | [`util/ImageProcessingUtils.kt`](app/src/main/java/com/example/docscanner/util/ImageProcessingUtils.kt) |
+| **Image Processing** | Ported from the original APK: `fa1.H` estimator (100×100, 2 % cutoffs, `(R+G+B)/3`), *Lighten* = linear stretch, document filters = paper-max normalisation + ink curve, Otsu B&W (**not** a global `ColorMatrix`) | [`util/ImageProcessingUtils.kt`](app/src/main/java/com/example/docscanner/util/ImageProcessingUtils.kt) |
 | **Camera** | CameraX 1.4.2 (`PreviewView` in `AndroidView`) | [`ui/camera/ScannerCameraScreen.kt`](app/src/main/java/com/example/docscanner/ui/camera/ScannerCameraScreen.kt) |
 | **PDF Engine** | Native `android.graphics.pdf.PdfDocument` @ 72 DPI, **IO dispatcher only** | [`util/PdfGenerator.kt`](app/src/main/java/com/example/docscanner/util/PdfGenerator.kt) |
 

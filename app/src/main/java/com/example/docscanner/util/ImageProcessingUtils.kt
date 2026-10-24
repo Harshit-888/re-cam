@@ -13,10 +13,12 @@ object ImageProcessingUtils {
      * Full enhancement pipeline, in the order the geometry demands:
      * **warp → rotate → colour**.
      *
-     * Colour work is delegated to [DocumentFilters], which does real illumination
-     * normalisation, white balance, percentile stretch and (for *Clear B&W*) Otsu
-     * thresholding. Earlier revisions used a global [android.graphics.ColorMatrix]
-     * here and the results looked washed out or clipped.
+     * Colour work is delegated to [DocumentFilters], whose maths is ported from
+     * the original APK (`docs/ORIGINAL_APP_FILTER_SPEC.md`): `fa1.H` estimation,
+     * a linear stretch for *Lighten*, paper-max illumination normalisation for the
+     * two document filters and Otsu for *Clear B&W*. Earlier revisions used a
+     * global [android.graphics.ColorMatrix] here and the results looked washed out
+     * or clipped.
      *
      * The source bitmap is never recycled: the caller owns it (it is usually a
      * cached decode).

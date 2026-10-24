@@ -18,6 +18,72 @@ Newest entry at the top.
 - Verified build and unit test suite: `./gradlew assembleDebug testDebugUnitTest` passed cleanly in 35s.
 - Built `app-debug.apk` (versionCode 5, versionName 1.4).
 
+## 2026-10-25 (k) — Arena.ai — Filters rebuilt against the decompiled original
+
+### What changed and why
+The previous filters were tuned by eye. They are now derived from `base.apk`
+(`com.indymobileapp.document.scanner`), using
+`docs/ORIGINAL_APP_FILTER_SPEC.md` **and the bytecode itself** in
+`docs/original_apk_pipeline_artifacts.zip` (`fa1.smali`, `wv3.smali`,
+`tw3.smali`, `lu3.smali`, `qx3.smali`).
+
+Three things in the old pipeline were simply never in the original:
+
+| Old behaviour | Reality in the APK | Now |
+|---|---|---|
+| Every filter did a percentile stretch | only *Lighten* uses the estimated points; `enhanceDocument` is not even passed them | stretch is *Lighten*-only |
+| Points clamped to `[110, 205]` | `fa1.H` walks the histogram with **no clamp**, 2 % from each end | no clamp (one guarded edge case, below) |
+| *Grayscale* was enhanced | `qx3` gray branch is literally `cvtColor(BGR2GRAY)` | pure Rec.601 desaturation |
+| Luma = Rec.601 (0.299/0.587/0.114) | `(R + G + B) / 3`, integer division | estimator uses the mean |
+
+### Transcribed exactly (do not "improve")
+- **Estimation** (`fa1.H`): bilinear downscale to **100 × 100**, four 256-bin
+  histograms, luminance `(R+G+B)/3`, then walk up/down until **200 samples**
+  (2 % of 10 000) accumulate. The off-by-one is preserved on purpose: the black
+  point ends up **one bin above** the crossing bin (post-increment) and the white
+  point **one bin below** (pre-decrement). `DocumentFiltersTest` pins both.
+- **Classification** (`wv3` static initialiser, read as raw hex):
+  doc pixel = `R≥80 && G≥80 && B≥70 && (R−B)≤110 && B−20 ≤ G ≤ R+20`;
+  photo pixel = `R≥60 && G≥100 && B≥120 && R≤G≤B`;
+  `documentImage = docRatio > 60 % || photoRatio > 60 %`.
+- **Lighten** (`tw3` → `enhancePhoto`): `clamp((I − black) / (white − black) × 255)`
+  applied equally to R, G, B. No curve, no illumination model.
+
+### Reconstruction (native `libimageproc.so` was not in the artifacts)
+`enhanceDocument(level, colorMode)` is native and no `.so` was supplied, so its
+tone curve cannot be transcribed. It is rebuilt from the documented behaviour,
+with every knob in one block at the top of `DocumentFilters`:
+
+1. **Paper map** — per-channel block *maximum* (paper is the brightest thing in a
+   patch that also contains print, so a max rejects ink instead of averaging it),
+   block = short edge / 20, then two 3×3 blurs so the grid cannot show through.
+2. **Divide** — `I / paper · 255` per channel. Because the map is per channel this
+   removes the light's colour cast as well as shadows, which is the "white balance
+   against the estimated paper background" the native code returns as `bgColor`.
+   Gain is capped at 4.5× (paper floored at 57) so a finger over the lens cannot
+   become white paper.
+3. **Ink curve** — endpoints pinned: bottom 6 % → black, top 7 % → white, gamma
+   1.28 in between, so print reads black and paper noise snaps to white.
+4. **Saturation** 1.18 about luminance for *Magic Color* only.
+5. **Clear B&W** — the same normalisation, then Otsu, then a soft ramp
+   (`max(6, 6 % of threshold)`) and a 3×3 majority vote per the spec's
+   "morphological smoothing".
+
+### One deliberate deviation
+`fa1.H` has no guard for `blackPoint > whitePoint`, which happens whenever ink
+covers under 2 % of the page — both cutoffs then land on the paper spike and a
+naive stretch paints the page black. `Lighten` now leaves such a page untouched
+below a span of 8. Documented at the constant, covered by a unit test.
+
+### Tests
+`DocumentFiltersTest` rewritten: the 41/244 off-by-one, photo vs document
+classification, the lighten LUT endpoints, curve monotonicity + midtone
+darkening, Rec.601 values, Otsu behaviour. Removed tests for
+`stretchPoints`/`curveLut`/`percentile`, which no longer exist.
+
+### Version
+**1.5 (code 6)**.
+
 ## 2026-10-25 (h) — Arena.ai — Working Settings screen
 
 
