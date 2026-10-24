@@ -76,7 +76,7 @@ Keep this table short. Delete your row when the change lands.
 
 | Agent | Status | Files | Intent |
 | :--- | :--- | :--- | :--- |
-| Antigravity | ✅ merged | `gradle.properties`, docs | Build verified; Kotlin daemon memory |
+| Antigravity | ✅ committed | `docs/ORIGINAL_APP_FILTER_SPEC.md`, `docs/AGENTS_CHANGELOG.md` | Reverse-engineered native filter spec & decompiled algorithms |
 | Arena.ai | ✅ committed | `util/DocumentNaming.kt`, `ui/editor/CropAndFilterScreen.kt`, `Navigation.kt`, `NavigationKeys.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/PerspectiveWarp.kt`, `app/build.gradle.kts`, tests + docs | Done-button crash fix, post-capture review flow, folder move, note editing |
 
 ## 5. File ownership map

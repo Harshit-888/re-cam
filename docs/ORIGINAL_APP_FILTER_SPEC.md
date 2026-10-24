@@ -131,3 +131,100 @@ Before filtering, every page passes through `fa1.H(bitmap)` to extract image met
 3. Validated with `PSOpenCV.calculateIOU(context, quad1, quad2)`:
    - Must achieve **IoU $\ge 0.96$** to be accepted as automated convergence.
    - Otherwise, user manual adjust corners mode is triggered.
+
+---
+
+## 6. Native ELF Analysis (`libimageproc.so`)
+
+The native library `libimageproc.so` (138,664 bytes, ARM64-v8a) was extracted from device split `split_config.arm64_v8a.apk` and analyzed.
+
+### Binary Profile
+- **Architecture**: ELF 64-bit LSB shared object, ARM aarch64, Android API 24, NDK r28c.
+- **Stripped**: Stripped (`.symtab` stripped; `.dynsym` present at offset `0x000002f8`, size `0x0f00`).
+- **Text Section**: `.text` at `0x00008bb4`, size `0x00017ad0` (97,000 bytes).
+- **Dependencies**: Dynamically links against `libopencv_java4.so` (23,465,088 bytes), `libc++_shared.so`, `libc.so`, `libm.so`.
+
+### UND (Imported) Symbol Breakdown (77 total)
+- **28 OpenCV Symbols** (`_ZN2cv*`):
+  `cv::LUT`, `cv::cvtColor`, `cv::GaussianBlur`, `cv::medianBlur`, `cv::resize`, `cv::Laplacian`, `cv::erode`, `cv::dilate`, `cv::Canny`, `cv::HoughLines`, `cv::findContours`, `cv::drawContours`, `cv::approxPolyDP`, `cv::arcLength`, `cv::contourArea`, `cv::isContourConvex`, `cv::operator>=`, `cv::mixChannels`, `cv::line`, `cv::getPerspectiveTransform`, `cv::warpPerspective`, `cv::Mat::create`, `cv::Mat::release`.
+- **17 libc++ Symbols**: `std::*` vectors/allocators, `operator new`/`delete`, `__cxa_throw`, `__cxa_allocate_exception`.
+- **32 libc / libm / POSIX**: `malloc`, `free`, `memcpy`, `acos`, `atan2f`, `pthread_rwlock_*`, `dl_iterate_phdr`.
+
+### Exported JNI Function Table
+| Virtual Address | Size (bytes) | JNI Symbol | Role |
+|:---|:---|:---|:---|
+| `0x0000f5d4` | 608 | `Java_com_indymobile_app_PSOpenCV_enhancePhoto` | Photo / Lighten filter |
+| `0x00010178` | 5,168 | `Java_com_indymobile_app_PSOpenCV_enhanceDocument` | Magic Color & Clear B&W |
+| `0x000115a8` | 3,068 | `Java_com_indymobile_app_PSOpenCV_enhanceSignature` | Signature stamp isolation |
+| `0x0000f834` | 392 | `Java_com_indymobile_app_PSOpenCV_signatureFilter` | Signature thresholding |
+| `0x0001ab68` | 6,748 | `Java_com_indymobile_app_PSOpenCV_detectPageBorder` | Contour & Hough boundary detection |
+| `0x0001c660` | 216 | `Java_com_indymobile_app_PSOpenCV_perspectiveTransformRect` | Perspective warp |
+| `0x0001c738` | 584 | `Java_com_indymobile_app_PSOpenCV_calculateIOU` | Quad intersection-over-union |
+
+---
+
+## 7. Decompiled Native C Implementations
+
+### `enhancePhoto` (Lighten Filter Algorithm)
+Native function disassembled from `0x0000f5d4`:
+```c
+JNIEXPORT void JNICALL Java_com_indymobile_app_PSOpenCV_enhancePhoto(
+    JNIEnv *env, jclass clazz, jobject context,
+    jlong srcMatAddr, jlong dstMatAddr,
+    jint blackPoint, jint whitePoint, jint colorMode)
+{
+    cv::Mat* src = (cv::Mat*)srcMatAddr;
+    cv::Mat* dst = (cv::Mat*)dstMatAddr;
+
+    // Build 256-entry dynamic 1D LUT in memory
+    cv::Mat lut(1, 256, CV_8UC1);
+    uint8_t* p = lut.ptr();
+    double range = (double)(whitePoint - blackPoint);
+    if (range <= 0.0) range = 1.0;
+
+    for (int v = 0; v < 256; v++) {
+        if (v <= blackPoint) {
+            p[v] = 0;
+        } else if (v >= whitePoint) {
+            p[v] = 255;
+        } else {
+            double scaled = ((double)(v - blackPoint) / range) * 255.0 + 0.5;
+            p[v] = (uint8_t)std::clamp((int)scaled, 0, 255);
+        }
+    }
+
+    // Apply lookup table via OpenCV
+    cv::LUT(*src, lut, *dst);
+
+    // Grayscale post-processing if colorMode == 2
+    if (colorMode == 2) {
+        cv::cvtColor(*dst, *dst, cv::COLOR_BGR2GRAY);
+    }
+}
+```
+
+### `enhanceDocument` (Magic Color & Clear B&W Algorithm)
+Native function disassembled from `0x00010178`:
+1. Instantiates `ColorizingRadius` illumination model.
+2. Computes adaptive kernel radius via `computeRadius(width, height, dpi, level)`.
+3. Runs morphological operations: `cv::dilate` followed by `cv::erode` (opening) to construct a background illumination surface.
+4. Divides foreground channels by background surface, normalizing shadows and page curvature.
+5. Level 1 (Magic Color): Sharpens midtone contrast, preserving stamp/logo chromaticity; returns `ColorizingRadius::getBackgroundColor()` as packed `0x00RRGGBB`.
+6. Level 2 (Clear B&W): Applies Otsu/adaptive binarization on normalized luminance, maintaining anti-aliased edge transitions.
+
+---
+
+## 8. Actionable Guidance for Clean-Room Reimplementation (`DocumentFilters.kt`)
+
+1. **Dynamic Range / Histogram Sampling**:
+   - Scale sample to $100 \times 100$ pixels.
+   - Walk cumulative histogram from 0 to find `blackPoint` ($\ge 200$ samples / 2%).
+   - Walk cumulative histogram from 255 downwards to find `whitePoint` ($\ge 200$ samples / 2%).
+2. **Lighten Preset**:
+   - Use exact linear interpolation formula: $\text{clamp}\left(\frac{v - \text{blackPoint}}{\text{whitePoint} - \text{blackPoint}} \times 255.0 + 0.5, 0, 255\right)$.
+3. **Magic Color Preset**:
+   - Perform illumination normalization (box/min-max or morphological dilation/erosion) before tone curves.
+   - Do not hardcode static LUTs; paper background color varies per document and must be estimated dynamically.
+4. **Clear B&W Preset**:
+   - Normalize paper background before thresholding, preventing dark gradient corners in unevenly lit documents.
+
