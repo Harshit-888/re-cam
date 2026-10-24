@@ -140,6 +140,39 @@ Pick exclusively from this list. Each one assumes the image pipeline above works
 
 ---
 
+## 🔧 4b. If the build breaks after the 2026-10-25 refactor
+
+That change (Arena.ai, `docs/AGENTS_CHANGELOG.md`) was **not compile-verified** —
+the Arena sandbox has no JDK or Android SDK. Diagnose in this order:
+
+1. **Dependency resolution fails** → the pinned versions were guesses. Bump
+   `cameraX` / `kotlinxSerializationJson` in `gradle/libs.versions.toml` to the
+   latest versions your SDK can resolve. Nothing else needs to change.
+2. **`LibrarySnapshot.serializer()` unresolved** → the serialization plugin is not
+   applied. Check `alias(libs.plugins.kotlin.serialization)` in
+   `app/build.gradle.kts` (it must also be declared `apply false` in the root).
+3. **`LocalLifecycleOwner` unresolved** → it must come from
+   `androidx.lifecycle.compose`, not the deprecated
+   `androidx.compose.ui.platform` path.
+4. **CameraX symbol errors** (`surfaceProvider`, `flashMode`, `hasFlashUnit`) →
+   version drift; adjust to the API in the version you resolved rather than
+   downgrading the whole pipeline.
+5. **Material icon unresolved** → `material-icons-extended` must stay a
+   dependency; the new screens use `FilterAlt`, `ContentCopy`, `BurstMode`, etc.
+6. **Anything else** → the compiler is authoritative. Fix forward; do not revert
+   the image pipeline to placeholder rendering. If a revert seems necessary, log
+   why in `docs/AGENTS_CHANGELOG.md` first so the other agent doesn't re-add it.
+
+Runtime smoke test after it builds, in this order (each step depends on the last):
+
+1. Grant camera permission → preview appears (not a black box).
+2. Capture → the page appears in the dashboard with a **real thumbnail**.
+3. Kill from recents, reopen → the document is **still there**.
+4. Open the page → crop/filter in the editor → Save → thumbnail updates.
+5. Export PDF → share sheet opens with a real PDF (not a Toast).
+
+---
+
 ## 🧪 5. Validation Checklist for AI Agents
 
 Before declaring any feature complete:
