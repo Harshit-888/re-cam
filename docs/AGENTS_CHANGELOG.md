@@ -4,7 +4,12 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
----
+## 2026-10-25 (k) — Antigravity — Native libimageproc.so disassembled & exact OpenCV filter algorithms extracted
+
+- Extracted ARM64 native library `libimageproc.so` (138,664 bytes) from connected device split APK `split_config.arm64_v8a.apk`.
+- Disassembled and analyzed all 7 exported JNI functions (`enhancePhoto`, `enhanceDocument`, `enhanceSignature`, `signatureFilter`, `detectPageBorder`, `perspectiveTransformRect`, `calculateIOU`).
+- Verified zero static LUT tables exist; `enhancePhoto` computes a dynamic 256-entry linear stretch LUT in RAM (`cv::LUT`), while `enhanceDocument` performs morphological background estimation (`ColorizingRadius` via `cv::dilate`/`cv::erode`) to divide paper illumination.
+- Updated `docs/ORIGINAL_APP_FILTER_SPEC.md` with binary symbol profile (77 UND symbols, 28 OpenCV primitives), decompiled C source logic, and actionable guidance for Kotlin reimplementation in `DocumentFilters.kt`.
 
 ## 2026-10-25 (j) — Antigravity — Reverse-engineered filter spec from original base APK
 
