@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -59,8 +58,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.model.ScannedPage
@@ -146,33 +147,39 @@ fun DocumentDetailScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceAround,
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(onClick = { onAddPageCamera(docId) }) {
-                        Icon(Icons.Default.AddAPhoto, contentDescription = null)
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Add Page")
-                    }
-                    TextButton(onClick = { showSignatureDialog = true }) {
-                        Icon(Icons.Outlined.Draw, contentDescription = null)
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Signature")
-                    }
-                    TextButton(onClick = { showWatermarkDialog = true }) {
-                        Icon(Icons.Outlined.BrandingWatermark, contentDescription = null)
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Watermark")
-                    }
-                    Button(
+                    // Four equal cells with the icon above the label. Side-by-side
+                    // icon + text did not fit on a 360dp phone: the Row ran out of
+                    // width at the last child, "Share" wrapped onto a second line and
+                    // its pill grew taller than the other three actions.
+                    DocumentActionButton(
+                        label = "Add Page",
+                        icon = Icons.Default.AddAPhoto,
+                        onClick = { onAddPageCamera(docId) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    DocumentActionButton(
+                        label = "Signature",
+                        icon = Icons.Outlined.Draw,
+                        onClick = { showSignatureDialog = true },
+                        modifier = Modifier.weight(1f)
+                    )
+                    DocumentActionButton(
+                        label = "Watermark",
+                        icon = Icons.Outlined.BrandingWatermark,
+                        onClick = { showWatermarkDialog = true },
+                        modifier = Modifier.weight(1f)
+                    )
+                    DocumentActionButton(
+                        label = "Share",
+                        icon = Icons.Default.Share,
                         onClick = { showPdfExportSheet = true },
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        Icon(Icons.Default.Share, contentDescription = null)
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Share")
-                    }
+                        primary = true,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
             }
         }
@@ -500,3 +507,64 @@ fun PageGridItem(
         }
     }
 }
+
+/**
+ * One action in the document bottom bar: icon above label, fixed height.
+ *
+ * Both variants share the same height and padding so the primary Share button can
+ * never end up taller or shorter than the three text actions next to it, and the
+ * label is single-line so a long word can never wrap and inflate the row.
+ */
+@Composable
+private fun DocumentActionButton(
+    label: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    primary: Boolean = false
+) {
+    val contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+    if (primary) {
+        Button(
+            onClick = onClick,
+            shape = RoundedCornerShape(18.dp),
+            contentPadding = contentPadding,
+            modifier = modifier.height(ACTION_HEIGHT)
+        ) {
+            DocumentActionContent(label = label, icon = icon)
+        }
+    } else {
+        TextButton(
+            onClick = onClick,
+            contentPadding = contentPadding,
+            modifier = modifier.height(ACTION_HEIGHT)
+        ) {
+            DocumentActionContent(label = label, icon = icon)
+        }
+    }
+}
+
+@Composable
+private fun DocumentActionContent(label: String, icon: ImageVector) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/** Shared height for every bottom-bar action, so none can grow taller than its peers. */
+private val ACTION_HEIGHT = 56.dp

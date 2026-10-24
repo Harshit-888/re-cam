@@ -6,6 +6,20 @@ Newest entry at the top.
 
 ---
 
+## 2026-10-25 (f) — Arena.ai — Share button no longer grows
+
+- `ui/detail/DocumentDetailScreen.kt` bottom bar: the four actions were
+  `TextButton`s (icon + label side by side) plus one filled `Button` in a
+  `SpaceAround` row. On a 360 dp phone the row runs out of width at the **last**
+  child, so "Share" was measured with almost no width, wrapped its label onto a
+  second line, and the pill grew taller than the three actions beside it.
+- Rebuilt as four `Modifier.weight(1f)` cells, icon above label, every cell at a
+  shared **56 dp** height (`ACTION_HEIGHT`), label `maxLines = 1`,
+  `softWrap = false`, ellipsis. Width per cell now depends only on the screen
+  width, never on the label length, so no child can be squeezed again.
+- New private composables `DocumentActionButton` / `DocumentActionContent`;
+  `Share` keeps its filled primary treatment, the other three stay text buttons.
+
 ## 2026-10-25 (e) — Arena.ai — Zoom while capturing and while adjusting borders
 
 ### Camera: pinch-to-zoom that actually reaches the JPEG
