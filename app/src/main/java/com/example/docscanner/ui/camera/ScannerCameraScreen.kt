@@ -18,6 +18,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BurstMode
 import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.Close
@@ -41,6 +43,8 @@ import androidx.compose.material.icons.filled.Filter1
 import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -57,6 +61,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -69,6 +74,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.example.docscanner.data.ScannerRepository
@@ -79,6 +85,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 import java.util.UUID
 
 /** Flash behaviour for capture + torch state for the live preview. */
@@ -129,6 +136,14 @@ fun ScannerCameraScreen(
     }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var boundCamera by remember { mutableStateOf<Camera?>(null) }
+
+    // ---- zoom ------------------------------------------------------------
+    // Pinch drives `cameraControl.setZoomRatio`, not a scaled preview: the sensor
+    // crop changes, so the captured JPEG is zoomed too. Scaling only the preview
+    // would zoom the viewfinder and then hand back an unzoomed photo.
+    var zoomRatio by remember { mutableFloatStateOf(1f) }
+    var minZoomRatio by remember { mutableFloatStateOf(1f) }
+    var maxZoomRatio by remember { mutableFloatStateOf(1f) }
 
     // ---- bind CameraX -----------------------------------------------------
     DisposableEffect(hasCameraPermission) {
@@ -189,6 +204,30 @@ fun ScannerCameraScreen(
                 camera.cameraControl.enableTorch(flashMode == FlashMode.ON)
             }
         }
+    }
+
+    // ---- discover the zoom range ------------------------------------------
+    // `cameraInfo.zoomState` is a LiveData that is often still null immediately
+    // after binding, so poll briefly instead of assuming the device cannot zoom.
+    LaunchedEffect(boundCamera) {
+        val camera = boundCamera ?: return@LaunchedEffect
+        repeat(15) {
+            val state = camera.cameraInfo.zoomState.value
+            if (state != null) {
+                maxZoomRatio = state.maxZoomRatio
+                minZoomRatio = state.minZoomRatio.coerceAtLeast(1f)
+                zoomRatio = zoomRatio.coerceIn(minZoomRatio, maxOf(minZoomRatio, maxZoomRatio))
+                return@LaunchedEffect
+            }
+            kotlinx.coroutines.delay(100)
+        }
+    }
+
+    // ---- apply zoom whenever it changes -----------------------------------
+    LaunchedEffect(zoomRatio, boundCamera, minZoomRatio, maxZoomRatio) {
+        val camera = boundCamera ?: return@LaunchedEffect
+        val target = zoomRatio.coerceIn(minZoomRatio, maxOf(minZoomRatio, maxZoomRatio))
+        runCatching { camera.cameraControl.setZoomRatio(target) }
     }
 
     // ---- gallery import ---------------------------------------------------
@@ -291,10 +330,24 @@ fun ScannerCameraScreen(
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
         if (hasCameraPermission) {
-            AndroidView(
-                factory = { previewView },
-                modifier = Modifier.fillMaxSize()
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(maxZoomRatio) {
+                        if (maxZoomRatio <= 1.0001f) return@pointerInput
+                        detectTransformGestures(panZoomLock = true) { _, _, zoomChange, _ ->
+                            if (zoomChange != 1f) {
+                                zoomRatio = (zoomRatio * zoomChange)
+                                    .coerceIn(1f, maxZoomRatio)
+                            }
+                        }
+                    }
+            ) {
+                AndroidView(
+                    factory = { previewView },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
 
         // No scrim / guide frame: the preview is full-bleed.
@@ -430,6 +483,86 @@ fun ScannerCameraScreen(
                 .padding(bottom = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Zoom: pinch on the preview, or use these for discoverability and
+            // precision. Only shown when the device actually supports zoom.
+            AnimatedVisibility(visible = maxZoomRatio > 1.01f) {
+                Surface(
+                    shape = RoundedCornerShape(22.dp),
+                    color = Color.Black.copy(alpha = 0.55f),
+                    modifier = Modifier.padding(bottom = 14.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                    ) {
+                        IconButton(
+                            onClick = {
+                                zoomRatio = (zoomRatio - ZOOM_STEP).coerceAtLeast(1f)
+                            },
+                            enabled = zoomRatio > 1.001f,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Remove,
+                                contentDescription = "Zoom out",
+                                tint = if (zoomRatio > 1.001f) Color.White else Color.White.copy(alpha = 0.35f)
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (zoomRatio > 1.001f) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                Color.White.copy(alpha = 0.12f)
+                            },
+                            modifier = Modifier.clickable { zoomRatio = 1f }
+                        ) {
+                            Text(
+                                text = String.format(Locale.US, "%.1f×", zoomRatio),
+                                color = if (zoomRatio > 1.001f) {
+                                    MaterialTheme.colorScheme.onPrimary
+                                } else {
+                                    Color.White
+                                },
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                zoomRatio = (zoomRatio + ZOOM_STEP)
+                                    .coerceAtMost(maxZoomRatio)
+                            },
+                            enabled = zoomRatio < maxZoomRatio - 0.001f,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = "Zoom in",
+                                tint = if (zoomRatio < maxZoomRatio - 0.001f) {
+                                    Color.White
+                                } else {
+                                    Color.White.copy(alpha = 0.35f)
+                                }
+                            )
+                        }
+                        if (zoomRatio > 1.001f) {
+                            IconButton(
+                                onClick = { zoomRatio = 1f },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.RestartAlt,
+                                    contentDescription = "Reset zoom",
+                                    tint = Color.White
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -502,3 +635,6 @@ fun ScannerCameraScreen(
         }
     }
 }
+
+/** Zoom increment for the +/- buttons, in camera zoom-ratio units. */
+private const val ZOOM_STEP = 0.5f

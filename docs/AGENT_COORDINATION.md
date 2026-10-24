@@ -102,6 +102,17 @@ Rebuilt 2026-10-25 after the "make it real" pass.
    `util/BackupRestoreManager.kt`).
 3. Append one line to `docs/AGENTS_CHANGELOG.md`.
 
+## 6b. Round 4 — zoom (claimed by Arena, 2026-10-25)
+
+Arena owns these two files for the zoom work; do not edit them concurrently:
+
+- `app/src/main/java/com/example/docscanner/ui/camera/ScannerCameraScreen.kt`
+  (pinch + zoom pill; zoom goes through `cameraControl.setZoomRatio` so the
+  captured JPEG is zoomed, not just the preview)
+- `app/src/main/java/com/example/docscanner/ui/editor/CropAndFilterScreen.kt`
+  (one `awaitEachGesture` handler: single finger drags a corner, single finger
+  elsewhere pans when zoomed, two fingers pinch)
+
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-25 (`./gradlew assembleDebug testDebugUnitTest` passed).

@@ -6,6 +6,52 @@ Newest entry at the top.
 
 ---
 
+## 2026-10-25 (e) — Arena.ai — Zoom while capturing and while adjusting borders
+
+### Camera: pinch-to-zoom that actually reaches the JPEG
+- New `Box` around `AndroidView` in `ui/camera/ScannerCameraScreen.kt` with
+  `detectTransformGestures(panZoomLock = true)`; pinch multiplies `zoomRatio`.
+- Zoom is applied through **`cameraControl.setZoomRatio`**, i.e. a sensor crop —
+  not a scaled preview `View`. That is the difference between "the viewfinder
+  looks zoomed" and "the saved photo is zoomed".
+- `minZoomRatio` / `maxZoomRatio` come from `camera.cameraInfo.zoomState`, which
+  CameraX fills in asynchronously after binding, so a short polling
+  `LaunchedEffect` reads them instead of assuming the device cannot zoom.
+  Everything is clamped to that range; the pinch handler and buttons both honour it.
+- Discoverable control: a translucent pill above the shutter with `−`, `1.0×`,
+  `+` and a reset button. Hidden entirely when `maxZoomRatio <= 1.01f`, so
+  fixed-focus devices see no dead UI. Tapping the factor label resets to 1×.
+- `ZOOM_STEP = 0.5f`.
+
+### Editor: pinch / pan / zoom in border-adjust and filter preview
+- `ui/editor/CropAndFilterScreen.kt` now renders through two nested `Box`es:
+  outer = `scaleX/scaleY` + `translationX/translationY`, inner = `rotationZ`.
+  Zoom therefore works with a rotated page and panning always follows the finger.
+- One unified `awaitEachGesture` handler replaced `detectDragGestures`:
+  - one finger started on a corner handle (within `GRAB_THRESHOLD`, normalised)
+    moves that corner, exactly as before;
+  - one finger anywhere else pans once `zoom > 1`;
+  - two fingers pinch around `calculateCentroid(useCurrent = false)`, so the point
+    between the fingers stays put while scaling.
+  - once a gesture becomes multi-touch it never falls back to corner dragging,
+    so lifting one finger out of a pinch cannot fling a corner across the page.
+- `screenToCanvas()` inverts translation → scale → rotation, so a finger maps to
+  the right normalised corner coordinate at any zoom and rotation.
+- Pan is clamped to `(zoom − 1) · extent / 2`, with the extents swapped when the
+  rotation is a multiple of 90°, so the page can never be dragged off-screen.
+- Corner handles and the quad stroke are divided by the zoom factor while
+  drawing, so they keep a constant on-screen size instead of ballooning at 5×.
+- Buttons: `−` / percentage / `+` / `FitScreen` reset at the bottom centre;
+  `MAX_ZOOM = 5f`, `ZOOM_FACTOR = 1.6f`.
+- Zoom and pan reset when the page changes — no bleed between pages.
+
+### Coordination notes for Antigravity
+- Only two files changed: `ui/camera/ScannerCameraScreen.kt` and
+  `ui/editor/CropAndFilterScreen.kt`. Do not re-run `detectDragGestures` there.
+- If a device reports `maxZoomRatio` but pinching does nothing, the effect that
+  calls `setZoomRatio` is keyed on `zoomRatio`; check that `boundCamera` is set
+  (it is assigned inside the CameraX bind callback).
+
 ## 2026-10-25 (d) — Arena.ai — Punchy filters, working detection, clean viewfinder
 
 Follow-up to user testing: *"the magic color and black and white still seems a bit
