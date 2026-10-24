@@ -7,6 +7,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /**
  * Document enhancement rebuilt against the **decompiled original APK**
@@ -128,6 +129,49 @@ object DocumentFilters {
     private const val PAPER_OPEN_MIN_RADIUS = 1
 
     /**
+     * How much of the frame's own paper level the illumination surface may be
+     * pulled *below*, when the frame reads as a document.
+     *
+     * The divide is `I / paper · 255`, so wherever the surface dips, everything
+     * above it is pushed to white. On a page that is the whole point: a 30 %
+     * shadow has to become paper. 0.25 leaves the absolute gain ceiling below to
+     * do the work, i.e. a real page keeps essentially the shadow removal it had.
+     */
+    private const val PAPER_RELATIVE_FLOOR_DOCUMENT = 0.25f
+
+    /**
+     * The same bound for a frame that is **not** a document — see
+     * [classifiesAsDocument].
+     *
+     * Without it, a photo taken in a dark room is divided by its own darkness:
+     * the laptop screen in the middle of such a frame measures 230 while the
+     * room around it measures 15, so the surface follows the room down and every
+     * shadow becomes white paper. Measured on exactly such a frame (4000 × 3000,
+     * mean luminance 51): the unbounded divide turned 13.2 % of the picture pure
+     * white; at this bound it is 2.5 %, against 1.0 % in the original capture,
+     * and the blacks stay black (49 % → 52 % of pixels under 30).
+     *
+     * 0.62 is the highest bound that leaves a dark scene alone. Anything above
+     * ~0.7 starts flattening real photographs; anything below ~0.5 leaves the
+     * glow around the screen.
+     */
+    private const val PAPER_RELATIVE_FLOOR_SCENE = 0.62f
+
+    /**
+     * Luminance the frame is normalised to before it is classified.
+     *
+     * `wv3`'s thresholds (`R ≥ 80`, `G ≥ 80`, `B ≥ 70`) are absolute, so they
+     * answer "is this a bright flat surface", not "is this a page". A page
+     * photographed at half exposure scores 33 % and would be misread as a photo;
+     * scaling the frame up to this level before asking makes the question
+     * exposure-invariant. Only ever brightens, never darkens.
+     */
+    private const val CLASSIFY_LUMA_TARGET = 240f
+
+    /** Ceiling on that brightening, so a near-black frame cannot be blown up. */
+    private const val CLASSIFY_MAX_GAIN = 8f
+
+    /**
      * Ceiling on the illumination gain. A patch must never be amplified more than
      * this, or a dark corner (or a finger over the lens) turns into white paper.
      */
@@ -221,19 +265,8 @@ object DocumentFilters {
             val g = (p ushr 8) and 0xFF
             val b = p and 0xFF
 
-            // Document pixel: neutral-ish and not too dark.
-            if (r >= DOC_MIN_R && g >= DOC_MIN_G && b >= DOC_MIN_B &&
-                (r - b) <= DOC_MAX_RB_DIFF &&
-                g >= b - CHROMA_TOLERANCE && g <= r + CHROMA_TOLERANCE
-            ) {
-                documentPixels++
-            }
-            // Photo pixel: blue-dominant highlight, i.e. a sky-like gradient.
-            if (r >= PHOTO_MIN_R && g >= PHOTO_MIN_G && b >= PHOTO_MIN_B &&
-                r <= g && g <= b
-            ) {
-                photoPixels++
-            }
+            if (isDocumentPixel(r, g, b)) documentPixels++
+            if (isPhotoPixel(r, g, b)) photoPixels++
 
             // `(R + G + B) / 3` with integer division, exactly as compiled.
             val luminance = (r + g + b) / 3
@@ -281,6 +314,101 @@ object DocumentFilters {
             documentRatio = documentRatio,
             photoRatio = photoRatio
         )
+    }
+
+    /** Document pixel, straight from `wv3`'s static initialiser. */
+    private fun isDocumentPixel(r: Int, g: Int, b: Int): Boolean =
+        r >= DOC_MIN_R && g >= DOC_MIN_G && b >= DOC_MIN_B &&
+            (r - b) <= DOC_MAX_RB_DIFF &&
+            g >= b - CHROMA_TOLERANCE && g <= r + CHROMA_TOLERANCE
+
+    /** Photo pixel: blue-dominant highlight, i.e. a sky-like gradient. */
+    private fun isPhotoPixel(r: Int, g: Int, b: Int): Boolean =
+        r >= PHOTO_MIN_R && g >= PHOTO_MIN_G && b >= PHOTO_MIN_B && r <= g && g <= b
+
+    /**
+     * `wv3`'s verdict — "is this frame a lit flat surface or a scene?" — with the
+     * exposure dependence taken out.
+     *
+     * The original computes this for every capture (`fa1.H` →
+     * `PSImageEstimationInfoBean.imageType`) but the bake path never consults it,
+     * so the port ignored it too. It is exactly the question the illumination
+     * model needs answered, though: a page has to have its shadows divided out,
+     * while a photo of a dark room must not, and the two are indistinguishable
+     * from brightness alone.
+     *
+     * The classifier's thresholds are absolute, so the frame is first scaled to
+     * [CLASSIFY_LUMA_TARGET]. Measured on the same synthetic page at full exposure
+     * and at 35 %: `documentRatio` 83.1 % against 83.1 % (soft lighting), and
+     * 67.5 % against 68.5 % (hard lighting) — i.e. exposure no longer changes the
+     * answer, whereas without the scaling the 35 % copy scored 33 % and flipped to
+     * "photo".
+     *
+     * Scaling only ever brightens and the gain is capped, so a genuinely dark
+     * frame is not lifted into a false positive: the frame this was written for
+     * (4000 × 3000, mean luminance 51) scores `documentRatio` 29.5 %,
+     * `photoRatio` 4.9 %, and is correctly treated as a scene.
+     */
+    internal fun classifiesAsDocument(pixels: IntArray): Boolean {
+        if (pixels.isEmpty()) return false
+
+        // Sample a subset rather than every pixel: this is a ratio, so a few
+        // hundred thousand samples of a 12 MP frame is far more than enough, and
+        // it keeps the classifier off the hot path. sqrt() rather than a fixed
+        // divisor so the cost grows with the square root of the frame.
+        val stride = max(1, ceil(sqrt(pixels.size.toFloat() / 10_000f)).toInt())
+
+        // The frame's own white level, as the 98th percentile of luminance: a
+        // specular highlight (a lamp, a window) must not be mistaken for "this
+        // frame is already bright enough".
+        val histogram = IntArray(256)
+        var samples = 0
+        var index = 0
+        while (index < pixels.size) {
+            val p = pixels[index]
+            histogram[(((p ushr 16) and 0xFF) + ((p ushr 8) and 0xFF) + (p and 0xFF)) / 3]++
+            samples++
+            index += stride
+        }
+        if (samples == 0) return false
+
+        val cutoff = (samples * 0.98f).toInt()
+        var seen = 0
+        var peak = 255
+        for (bin in 0 until 256) {
+            seen += histogram[bin]
+            if (seen > cutoff) {
+                peak = bin
+                break
+            }
+        }
+
+        val gain = (CLASSIFY_LUMA_TARGET / max(1, peak)).coerceIn(1f, CLASSIFY_MAX_GAIN)
+
+        var documentPixels = 0
+        var photoPixels = 0
+        var total = 0
+        index = 0
+        while (index < pixels.size) {
+            val p = pixels[index]
+            val r = (((p ushr 16) and 0xFF) * gain).roundToInt().coerceIn(0, 255)
+            val g = (((p ushr 8) and 0xFF) * gain).roundToInt().coerceIn(0, 255)
+            val b = ((p and 0xFF) * gain).roundToInt().coerceIn(0, 255)
+            if (isDocumentPixel(r, g, b)) documentPixels++
+            if (isPhotoPixel(r, g, b)) photoPixels++
+            total++
+            index += stride
+        }
+        if (total == 0) return false
+
+        // Both rules, exactly as `documentImage` is defined in `wv3`. Note what a
+        // *scene* looks like under those rules: a landscape is sky (which the
+        // photo rule accepts) plus dark ground (which both rules reject), so it
+        // scores well under 60 % and is correctly not a document. The frame this
+        // was written for — a lit screen in a dark room — scores 29.5 %.
+        val documentRatio = documentPixels * 100f / total
+        val photoRatio = photoPixels * 100f / total
+        return documentRatio > CLASSIFICATION_RATIO || photoRatio > CLASSIFICATION_RATIO
     }
 
     // ==================================================================================
@@ -520,14 +648,22 @@ object DocumentFilters {
     // Paper map / normalisation
     // ==================================================================================
 
-    /** A coarse per-channel paper-white map, sampled bilinearly at any pixel. */
+    /**
+     * A coarse per-channel paper-white map, sampled bilinearly at any pixel.
+     *
+     * [floorR]/[floorG]/[floorB] are the lowest value the surface may be treated
+     * as, per channel; they carry the gain ceiling that keeps a dark scene dark.
+     */
     private class PaperMap(
         val r: FloatArray,
         val g: FloatArray,
         val b: FloatArray,
         val gw: Int,
         val gh: Int,
-        val block: Float
+        val block: Float,
+        val floorR: Float,
+        val floorG: Float,
+        val floorB: Float
     )
 
     /**
@@ -565,7 +701,46 @@ object DocumentFilters {
             gridB = boxBlur3(gridB, gw, gh)
         }
 
-        return PaperMap(gridR, gridG, gridB, gw, gh, cell.toFloat())
+        // The frame's own paper level, per channel: the level the surface is
+        // allowed to climb to, but not arbitrarily far below. See
+        // PAPER_RELATIVE_FLOOR_SCENE for the measurement behind this.
+        val relative = if (classifiesAsDocument(pixels)) {
+            PAPER_RELATIVE_FLOOR_DOCUMENT
+        } else {
+            PAPER_RELATIVE_FLOOR_SCENE
+        }
+        return PaperMap(
+            r = gridR,
+            g = gridG,
+            b = gridB,
+            gw = gw,
+            gh = gh,
+            block = cell.toFloat(),
+            floorR = max(PAPER_FLOOR, relative * litLevel(gridR)),
+            floorG = max(PAPER_FLOOR, relative * litLevel(gridG)),
+            floorB = max(PAPER_FLOOR, relative * litLevel(gridB))
+        )
+    }
+
+    /**
+     * The level of the lit paper in a channel plane — the 95th percentile of the
+     * smoothed surface.
+     *
+     * Not the maximum: a single specular highlight (a lamp, a window) is not the
+     * paper, and using it would set the floor far too high. Not the mean either,
+     * which on a page with a large dark photo block is dragged down into the
+     * middle of the tonal range.
+     */
+    private fun litLevel(grid: FloatArray): Float {
+        val histogram = IntArray(256)
+        for (value in grid) histogram[value.roundToInt().coerceIn(0, 255)]++
+        var seen = 0
+        val target = (grid.size * 0.95f).toInt()
+        for (bin in 0 until 256) {
+            seen += histogram[bin]
+            if (seen > target) return bin.toFloat()
+        }
+        return 255f
     }
 
     /**
@@ -780,16 +955,17 @@ object DocumentFilters {
     private const val PAPER_FLOOR = 255f / MAX_ILLUMINATION_GAIN
 
     /**
-     * `I / paper · 255` per channel, clamped into 0…255.
+     * `I / paper · 255` per channel, clamped into 0…255, with `paper` held at or
+     * above the map's per-channel floor so the gain cannot run away in darkness.
      *
      * Writes into [out] rather than allocating: this runs once per pixel on a
      * 2000 px page. [out] is caller-owned, so a preview render and a bake running
      * on different dispatchers cannot corrupt each other.
      */
     private fun normalise(pixel: Int, paper: PaperMap, x: Int, y: Int, out: IntArray) {
-        val paperR = max(PAPER_FLOOR, sample(paper.r, paper, x, y))
-        val paperG = max(PAPER_FLOOR, sample(paper.g, paper, x, y))
-        val paperB = max(PAPER_FLOOR, sample(paper.b, paper, x, y))
+        val paperR = max(paper.floorR, sample(paper.r, paper, x, y))
+        val paperG = max(paper.floorG, sample(paper.g, paper, x, y))
+        val paperB = max(paper.floorB, sample(paper.b, paper, x, y))
 
         out[0] = (((pixel ushr 16) and 0xFF) * 255f / paperR).roundToInt().coerceIn(0, 255)
         out[1] = (((pixel ushr 8) and 0xFF) * 255f / paperG).roundToInt().coerceIn(0, 255)
