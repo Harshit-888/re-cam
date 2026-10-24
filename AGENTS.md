@@ -104,10 +104,11 @@ private storage. Never store a `content://` URI in it — import first.
 ## 📊 4. Current State Matrix
 
 ### ✅ Working end-to-end
-- **Dashboard** (`ui/dashboard/`): instant search over titles/tags/OCR text, folder chips, grid vs list, sorting, extended FAB, folder creation.
+- **Dashboard** (`ui/dashboard/`): instant search over titles/tags/OCR text, folder chips, grid vs list, sorting, extended FAB, folder creation, and *Move to folder…* on every document card.
 - **Camera** (`ui/camera/`): real CameraX preview, runtime permission, flash (auto/on/off via torch), batch counter, gallery import, JPEG capture to `ImageStore`.
+- **Post-capture review** (`ui/editor/CropAndFilterScreen.kt`, `reviewMode = true`): the step the original app had — *Done* opens each captured page with **auto-detected document borders**, draggable corners, live filter preview and rotation, then *Save & Next* through the batch before landing on the document.
 - **Perspective Crop & 5 Filters** (`ui/editor/`): draggable 4-corner quad backed by a **real projective warp**, 90° rotation, 5 `ColorMatrix` filters, non-destructive bake.
-- **Document Detail** (`ui/detail/`): multi-page grid with **real thumbnails**, page rotation, deletion, reordering, append scans.
+- **Document Detail** (`ui/detail/`): multi-page grid with **real thumbnails**, page rotation, deletion, reordering, append scans, title **and notes** editing.
 - **Fullscreen Viewer** (`ui/viewer/`): real page bitmaps, pan and pinch-to-zoom to 4x, page navigation, OCR text sheet.
 - **Signature** (`ui/signature/`): bezier stroke canvas rasterised to a transparent PNG, composited onto pages at PDF export time.
 - **PDF Engine** (`util/PdfGenerator.kt` + `ui/pdf/`): 8 paper presets, 4 margin presets, page numbering, watermark, real page bitmaps, `FileProvider` share sheet, runs off the main thread.
@@ -168,8 +169,11 @@ Runtime smoke test after it builds, in this order (each step depends on the last
 1. Grant camera permission → preview appears (not a black box).
 2. Capture → the page appears in the dashboard with a **real thumbnail**.
 3. Kill from recents, reopen → the document is **still there**.
-4. Open the page → crop/filter in the editor → Save → thumbnail updates.
-5. Export PDF → share sheet opens with a real PDF (not a Toast).
+4. Press **Done** → the review screen opens with borders auto-detected; *Save & Next*
+   walks every captured page, *Finish* lands on the document.
+5. Open the page → crop/filter in the editor → Save → thumbnail updates.
+6. Long-press a card menu → *Move to folder…* → the folder chip filters it in.
+7. Export PDF → share sheet opens with a real PDF (not a Toast).
 
 ---
 
@@ -179,19 +183,22 @@ Before declaring any feature complete:
 
 1. **Compilation**: run `./gradlew assembleDebug` and verify **BUILD SUCCESSFUL**.
    * Arena.ai cannot do this — say so explicitly rather than claiming a build passed.
-2. **Real pixels**: confirm the feature renders a bitmap that originated from a
+2. **Unit tests**: run `./gradlew testDebugUnitTest`. `DocumentNamingTest` guards a
+   crash that shipped once: an unquoted literal inside a `SimpleDateFormat`
+   pattern (`"Scan yyyy-MM-dd"`) throws `Illegal pattern character 'c'`.
+3. **Real pixels**: confirm the feature renders a bitmap that originated from a
    file in `filesDir/pages/`. Opening the screen must show the captured document,
    not an icon or a drawn placeholder.
-3. **Restart test**: kill the app from recents, reopen, and confirm the document
+4. **Restart test**: kill the app from recents, reopen, and confirm the document
    is still there (`LibraryStore` round-trip).
-4. **File Placement**:
+5. **File Placement**:
    - Screens live in `ui/<feature>/<Feature>Screen.kt`.
    - Shared composables live in `ui/common/`.
    - Domain models live in `model/Models.kt`.
    - Repository operations live in `data/ScannerRepository.kt`.
    - Pure processing utilities live in `util/`.
-5. **Coordination**: claimed the files in `docs/AGENT_COORDINATION.md` §4 and
+6. **Coordination**: claimed the files in `docs/AGENT_COORDINATION.md` §4 and
    appended to `docs/AGENTS_CHANGELOG.md` if you deleted or renamed anything.
-6. **Architecture Spec**: refer to [`doc_scanner_architecture_spec.html`](doc_scanner_architecture_spec.html) for
+7. **Architecture Spec**: refer to [`doc_scanner_architecture_spec.html`](doc_scanner_architecture_spec.html) for
    the reverse-engineered feature catalog, paper dimensions, and activity mappings —
    but treat this file as authoritative where they disagree.

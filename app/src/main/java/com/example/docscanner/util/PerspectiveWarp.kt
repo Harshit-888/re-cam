@@ -97,7 +97,9 @@ object PerspectiveWarp {
      * a Canny mask if a true quad is needed.
      */
     fun detectQuad(bitmap: Bitmap): QuadCorners {
-        val fallback = QuadCorners.inset(0.06f)
+        // When detection is inconclusive, report the FULL frame: silently
+        // trimming 6% off every edge could cut real content off the user's page.
+        val fallback = QuadCorners.FULL_FRAME
         val gridWidth = 64
         val gridHeight = (64.0 * bitmap.height / bitmap.width).roundToInt().coerceIn(48, 96)
 

@@ -58,6 +58,9 @@ adding a changelog entry and updating every caller in the same commit.
 | `PerspectiveWarp.warp(src, corners)` | fun | `Matrix.setPolyToPoly` projective warp |
 | `PdfGenerator.generatePdf(ctx, doc, config, bitmapProvider)` | fun | Blocking; **call from `Dispatchers.IO` only** |
 | `SignaturePadDialog(onDismiss, onSignatureConfirmed)` | `@Composable` | Callback receives a **PNG path**, not an opaque token |
+| `CropAndFilterScreen(docId, pageId, repository, onDone, reviewMode)` | `@Composable` | `reviewMode = true` auto-detects borders and walks the document page by page |
+| `DocumentNaming.defaultScanTitle()` | fun | **The only** sanctioned source of scan titles — it quotes pattern literals |
+| `QuadCorners.FULL_FRAME` | const | Means "no warp". Auto-detect falls back to it rather than cropping |
 
 ## 4. In-flight changes
 
@@ -65,7 +68,8 @@ Keep this table short. Delete your row when the change lands.
 
 | Agent | Status | Files | Intent |
 | :--- | :--- | :--- | :--- |
-| Arena.ai | ✅ committed | see `docs/AGENTS_CHANGELOG.md` | Real image pipeline, CameraX, persistence, PDF, warp |
+| Antigravity | ✅ merged | `gradle.properties`, docs | Build verified; Kotlin daemon memory |
+| Arena.ai | ✅ committed | `util/DocumentNaming.kt`, `ui/editor/CropAndFilterScreen.kt`, `Navigation.kt`, `NavigationKeys.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/PerspectiveWarp.kt`, `app/build.gradle.kts`, tests + docs | Done-button crash fix, post-capture review flow, folder move, note editing |
 
 ## 5. File ownership map
 

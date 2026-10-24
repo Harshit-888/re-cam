@@ -127,7 +127,7 @@ fun DocumentDetailScreen(
                 },
                 actions = {
                     IconButton(onClick = { showRenameDialog = true }) {
-                        Icon(Icons.Outlined.Edit, contentDescription = "Rename")
+                        Icon(Icons.Outlined.Edit, contentDescription = "Edit title and notes")
                     }
                     IconButton(onClick = { showPdfExportSheet = true }) {
                         Icon(Icons.Outlined.PictureAsPdf, contentDescription = "Export PDF")
@@ -269,17 +269,30 @@ fun DocumentDetailScreen(
 
     if (showRenameDialog) {
         var newTitle by remember { mutableStateOf(document.title) }
+        var newNotes by remember { mutableStateOf(document.notes) }
         AlertDialog(
             onDismissRequest = { showRenameDialog = false },
-            title = { Text("Rename Document") },
+            title = { Text("Edit document") },
             text = {
-                OutlinedTextField(
-                    value = newTitle,
-                    onValueChange = { newTitle = it },
-                    singleLine = true,
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Column {
+                    OutlinedTextField(
+                        value = newTitle,
+                        onValueChange = { newTitle = it },
+                        label = { Text("Title") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = newNotes,
+                        onValueChange = { newNotes = it },
+                        label = { Text("Notes") },
+                        minLines = 3,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             },
             confirmButton = {
                 Button(
@@ -287,6 +300,7 @@ fun DocumentDetailScreen(
                         if (newTitle.isNotBlank()) {
                             repository.updateDocumentTitle(docId, newTitle)
                         }
+                        repository.setDocumentNotes(docId, newNotes)
                         showRenameDialog = false
                     }
                 ) {

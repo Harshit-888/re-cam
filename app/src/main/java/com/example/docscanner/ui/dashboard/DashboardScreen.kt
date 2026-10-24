@@ -52,6 +52,7 @@ fun DashboardScreen(
     var isGridView by remember { mutableStateOf(true) }
     var showFolderDialog by remember { mutableStateOf(false) }
     var showSortMenu by remember { mutableStateOf(false) }
+    var moveDocId by remember { mutableStateOf<String?>(null) }
 
     // Filter active (non-trash) documents matching search and folder
     val activeDocs = remember(documents, searchQuery, selectedFolderId, sortOption) {
@@ -208,7 +209,8 @@ fun DashboardScreen(
                         DocumentGridCard(
                             document = doc,
                             onClick = { onNavigateToDetail(doc.id) },
-                            onDelete = { repository.moveToTrash(doc.id) }
+                            onDelete = { repository.moveToTrash(doc.id) },
+                            onMoveToFolder = { moveDocId = doc.id }
                         )
                     }
                 }
@@ -222,12 +224,26 @@ fun DashboardScreen(
                         DocumentListCard(
                             document = doc,
                             onClick = { onNavigateToDetail(doc.id) },
-                            onDelete = { repository.moveToTrash(doc.id) }
+                            onDelete = { repository.moveToTrash(doc.id) },
+                            onMoveToFolder = { moveDocId = doc.id }
                         )
                     }
                 }
             }
         }
+    }
+
+    moveDocId?.let { docId ->
+        val current = documents.find { it.id == docId }
+        MoveToFolderDialog(
+            folders = folders,
+            currentFolderId = current?.folderId,
+            onDismiss = { moveDocId = null },
+            onSelect = { folderId ->
+                repository.moveDocumentToFolder(docId, folderId)
+                moveDocId = null
+            }
+        )
     }
 
     if (showFolderDialog) {
@@ -324,7 +340,8 @@ fun FolderFilterRow(
 fun DocumentGridCard(
     document: Document,
     onClick: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onMoveToFolder: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val dateFormat = remember { SimpleDateFormat("MMM d, yyyy", Locale.getDefault()) }
@@ -409,6 +426,14 @@ fun DocumentGridCard(
                             onDismissRequest = { showMenu = false }
                         ) {
                             DropdownMenuItem(
+                                text = { Text("Move to folder…") },
+                                leadingIcon = { Icon(Icons.Default.DriveFileMove, contentDescription = null) },
+                                onClick = {
+                                    showMenu = false
+                                    onMoveToFolder()
+                                }
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Move to Trash") },
                                 leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
                                 onClick = {
@@ -436,7 +461,8 @@ fun DocumentGridCard(
 fun DocumentListCard(
     document: Document,
     onClick: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onMoveToFolder: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val dateFormat = remember { SimpleDateFormat("MMM d, yyyy • h:mm a", Locale.getDefault()) }
@@ -521,6 +547,14 @@ fun DocumentListCard(
                     expanded = showMenu,
                     onDismissRequest = { showMenu = false }
                 ) {
+                    DropdownMenuItem(
+                        text = { Text("Move to folder…") },
+                        leadingIcon = { Icon(Icons.Default.DriveFileMove, contentDescription = null) },
+                        onClick = {
+                            showMenu = false
+                            onMoveToFolder()
+                        }
+                    )
                     DropdownMenuItem(
                         text = { Text("Move to Trash") },
                         leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
@@ -646,4 +680,88 @@ fun CreateFolderDialog(
             }
         }
     )
+}
+
+/**
+ * Picks the folder a document belongs to. "No folder" clears the assignment,
+ * which is how a document also leaves a folder.
+ */
+@Composable
+fun MoveToFolderDialog(
+    folders: List<Folder>,
+    currentFolderId: String?,
+    onDismiss: () -> Unit,
+    onSelect: (String?) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Move to folder") },
+        text = {
+            Column {
+                FolderOptionRow(
+                    label = "No folder",
+                    colorHex = null,
+                    selected = currentFolderId == null,
+                    onClick = { onSelect(null) }
+                )
+                folders.forEach { folder ->
+                    FolderOptionRow(
+                        label = folder.name,
+                        colorHex = folder.colorHex,
+                        selected = currentFolderId == folder.id,
+                        onClick = { onSelect(folder.id) }
+                    )
+                }
+                if (folders.isEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "No folders yet. Create one with the New Folder chip.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun FolderOptionRow(
+    label: String,
+    colorHex: Long?,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (colorHex != null) {
+            Box(
+                modifier = Modifier
+                    .size(12.dp)
+                    .background(Color(colorHex), CircleShape)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f)
+        )
+        if (selected) {
+            Icon(
+                Icons.Default.Check,
+                contentDescription = "Current folder",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
 }
