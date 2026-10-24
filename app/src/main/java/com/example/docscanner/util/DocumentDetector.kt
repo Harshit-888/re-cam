@@ -138,7 +138,7 @@ object DocumentDetector {
         if (scan != null) {
             val quad = quadFromBoundaries(scan, w, h)
             if (quad != null) {
-                return Detection(quad.corners, quad.confident)
+                return quad
             }
         }
 
@@ -250,7 +250,7 @@ object DocumentDetector {
      * Assembles the quad from the four lines, substituting the frame edge for any
      * side that could not be fitted.
      */
-    private fun quadFromBoundaries(scan: BoundaryScan, w: Int, h: Int): Pair<QuadCorners, Boolean>? {
+    private fun quadFromBoundaries(scan: BoundaryScan, w: Int, h: Int): Detection? {
         val wf = w.toFloat()
         val hf = h.toFloat()
 
@@ -272,7 +272,7 @@ object DocumentDetector {
         val bl = intersectXY(left, bottom) ?: return null
 
         return validate(floatArrayOf(tl[0], tr[0], br[0], bl[0]), floatArrayOf(tl[1], tr[1], br[1], bl[1]), w, h)
-            ?.let { it to (scan.fittedSides >= 3) }
+            ?.let { Detection(it, scan.fittedSides >= 3) }
     }
 
     /**

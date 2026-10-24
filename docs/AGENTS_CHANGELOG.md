@@ -6,7 +6,14 @@ Newest entry at the top.
 
 ---
 
+## 2026-10-25 (i) — Antigravity — DocumentDetector compilation fix & build verified
+
+- Fixed compiler error in `DocumentDetector.kt`: `quadFromBoundaries` returned `Pair<QuadCorners, Boolean>?` while caller accessed `.corners` and `.confident`. Changed `quadFromBoundaries` to return `Detection?` directly (`Detection(it, scan.fittedSides >= 3)`).
+- Verified build and unit test suite: `./gradlew assembleDebug testDebugUnitTest` passed cleanly in 35s.
+- Built `app-debug.apk` (versionCode 5, versionName 1.4).
+
 ## 2026-10-25 (h) — Arena.ai — Working Settings screen
+
 
 ### Why
 The app had no settings screen at all: the legacy APK's Settings (Theme / Scan /

@@ -139,6 +139,6 @@ Rules for this area:
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-25 (`./gradlew assembleDebug testDebugUnitTest` passed).
-Document filters + edge quad detection verified. APK built successfully at `app/build/outputs/apk/debug/app-debug.apk` (versionCode 3, versionName 1.2).
+Fixed DocumentDetector.kt compiler error; verified Settings screen, slide transitions, zoom, and test suite. APK built successfully at `app/build/outputs/apk/debug/app-debug.apk` (versionCode 5, versionName 1.4).
 
 
