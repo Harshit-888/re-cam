@@ -2,18 +2,37 @@ package com.example.docscanner.ui.pdf
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
 import android.widget.Toast
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -24,7 +43,11 @@ import com.example.docscanner.model.Document
 import com.example.docscanner.model.PaperSize
 import com.example.docscanner.model.PdfExportConfig
 import com.example.docscanner.model.PdfMargin
+import com.example.docscanner.util.PageRenderer
 import com.example.docscanner.util.PdfGenerator
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -34,13 +57,15 @@ fun PdfExportSheet(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
     var selectedPaperSize by remember { mutableStateOf(PaperSize.A4) }
     var selectedMargin by remember { mutableStateOf(PdfMargin.STANDARD) }
     var includePageNumbers by remember { mutableStateOf(true) }
     var isGenerating by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isGenerating) onDismiss() },
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
     ) {
         Column(
@@ -64,7 +89,7 @@ fun PdfExportSheet(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        "${document.title} (${document.pages.size} pages)",
+                        "${document.title} • ${document.pages.size} pages",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -73,19 +98,14 @@ fun PdfExportSheet(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // Paper Size Dropdown / Carousel
-            Text("Paper Size Preset:", style = MaterialTheme.typography.labelMedium)
+            Text("Paper size", style = MaterialTheme.typography.labelMedium)
             Spacer(modifier = Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                listOf(PaperSize.A4, PaperSize.LETTER, PaperSize.LEGAL).forEach { size ->
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(PaperSize.entries.toList(), key = { it.name }) { size ->
                     FilterChip(
                         selected = selectedPaperSize == size,
                         onClick = { selectedPaperSize = size },
-                        label = { Text(size.name) },
-                        modifier = Modifier.weight(1f),
+                        label = { Text(size.label) },
                         shape = RoundedCornerShape(14.dp)
                     )
                 }
@@ -93,19 +113,14 @@ fun PdfExportSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Page Margins Selector
-            Text("Page Margins:", style = MaterialTheme.typography.labelMedium)
+            Text("Margins", style = MaterialTheme.typography.labelMedium)
             Spacer(modifier = Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                listOf(PdfMargin.NONE, PdfMargin.COMPACT, PdfMargin.STANDARD).forEach { margin ->
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(PdfMargin.entries.toList(), key = { it.name }) { margin ->
                     FilterChip(
                         selected = selectedMargin == margin,
                         onClick = { selectedMargin = margin },
                         label = { Text(margin.label) },
-                        modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(14.dp)
                     )
                 }
@@ -113,15 +128,18 @@ fun PdfExportSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Include Page Numbers Switch
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("Footer Page Numbers", style = MaterialTheme.typography.bodyMedium)
-                    Text("e.g. 1 / 3 at bottom center", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Footer page numbers", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "e.g. 1 / ${document.pages.size} at the bottom centre",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
                 Switch(
                     checked = includePageNumbers,
@@ -131,86 +149,88 @@ fun PdfExportSheet(
 
             Spacer(modifier = Modifier.height(28.dp))
 
-            // Action Button
             Button(
+                enabled = !isGenerating && document.pages.isNotEmpty(),
                 onClick = {
+                    if (document.pages.isEmpty()) return@Button
                     isGenerating = true
-                    try {
-                        val config = PdfExportConfig(
-                            paperSize = selectedPaperSize,
-                            margins = selectedMargin,
-                            includePageNumbers = includePageNumbers
-                        )
-
-                        // Generate PDF with simulated high-res document page renderings
-                        val pdfFile = PdfGenerator.generatePdf(
-                            context = context,
-                            document = document,
-                            config = config,
-                            bitmapProvider = { page ->
-                                createSamplePageBitmap(page.pageIndex + 1, document.title)
+                    val config = PdfExportConfig(
+                        paperSize = selectedPaperSize,
+                        margins = selectedMargin,
+                        includePageNumbers = includePageNumbers
+                    )
+                    scope.launch {
+                        val result = runCatching {
+                            withContext(Dispatchers.IO) {
+                                PdfGenerator.generatePdf(
+                                    context = context,
+                                    document = document,
+                                    config = config,
+                                    bitmapProvider = { page ->
+                                        PageRenderer.bitmapForExport(
+                                            context,
+                                            page,
+                                            config.maxImageDimensionPx
+                                        )
+                                    }
+                                )
                             }
-                        )
-
-                        // Share via Intent
-                        sharePdfFile(context, pdfFile, document.title)
-                        onDismiss()
-                    } catch (e: Exception) {
-                        Toast.makeText(context, "Export error: ${e.message}", Toast.LENGTH_SHORT).show()
-                    } finally {
+                        }
                         isGenerating = false
+                        result
+                            .onSuccess { file ->
+                                sharePdf(context, file, document.title)
+                                onDismiss()
+                            }
+                            .onFailure { error ->
+                                Toast.makeText(
+                                    context,
+                                    "Export failed: ${error.message ?: "unknown error"}",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
                     }
                 },
-                enabled = !isGenerating,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(54.dp),
                 shape = RoundedCornerShape(20.dp)
             ) {
                 if (isGenerating) {
-                    CircularProgressIndicator(color = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(24.dp))
+                    CircularProgressIndicator(
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text("Compiling pages…", fontWeight = FontWeight.Bold)
                 } else {
                     Icon(Icons.Default.Share, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Generate & Share PDF", fontWeight = FontWeight.Bold)
                 }
             }
+
+            if (document.pages.isEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    "Add at least one page before exporting.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
         }
     }
 }
 
-private fun createSamplePageBitmap(pageNum: Int, title: String): Bitmap {
-    val width = 1200
-    val height = 1600
-    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(bitmap)
-    canvas.drawColor(Color.WHITE)
-
-    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.BLACK
-        textSize = 48f
-        typeface = android.graphics.Typeface.DEFAULT_BOLD
-    }
-    canvas.drawText(title, 80f, 160f, paint)
-
-    val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.DKGRAY
-        textSize = 32f
-    }
-    canvas.drawText("Page $pageNum - High Resolution Document Scan", 80f, 220f, subPaint)
-
-    val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.LTGRAY
-        strokeWidth = 4f
-    }
-    for (y in 300..1400 step 70) {
-        canvas.drawLine(80f, y.toFloat(), (width - 80).toFloat(), y.toFloat(), linePaint)
-    }
-
-    return bitmap
-}
-
-private fun sharePdfFile(context: Context, file: File, title: String) {
+/**
+ * Shares the PDF through the system sheet.
+ *
+ * Requires the `FileProvider` declared in `AndroidManifest.xml` with
+ * `res/xml/file_paths.xml`; without it every share threw and silently fell back
+ * to the Toast, which is exactly what the previous revision did.
+ */
+private fun sharePdf(context: Context, file: File, title: String) {
     try {
         val uri = FileProvider.getUriForFile(
             context,
@@ -223,9 +243,12 @@ private fun sharePdfFile(context: Context, file: File, title: String) {
             putExtra(Intent.EXTRA_SUBJECT, title)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(shareIntent, "Share Document PDF"))
+        context.startActivity(Intent.createChooser(shareIntent, "Share document PDF"))
     } catch (e: Exception) {
-        // Fallback for simple share without fileprovider
-        Toast.makeText(context, "Saved PDF to ${file.absolutePath}", Toast.LENGTH_LONG).show()
+        Toast.makeText(
+            context,
+            "PDF saved to ${file.absolutePath}\nSharing unavailable: ${e.message}",
+            Toast.LENGTH_LONG
+        ).show()
     }
 }

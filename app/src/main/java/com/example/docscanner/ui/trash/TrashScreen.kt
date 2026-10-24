@@ -24,7 +24,7 @@ import java.util.*
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TrashScreen(
-    repository: ScannerRepository = ScannerRepository.instance,
+    repository: ScannerRepository,
     onNavigateBack: () -> Unit
 ) {
     val documents by repository.documents.collectAsState()

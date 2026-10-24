@@ -31,13 +31,14 @@ import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.model.Document
 import com.example.docscanner.model.DocumentSortOption
 import com.example.docscanner.model.Folder
+import com.example.docscanner.ui.common.PageThumbnail
 import java.text.SimpleDateFormat
 import java.util.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
-    repository: ScannerRepository = ScannerRepository.instance,
+    repository: ScannerRepository,
     onNavigateToCamera: (String?) -> Unit,
     onNavigateToDetail: (String) -> Unit,
     onNavigateToTrash: () -> Unit
@@ -346,12 +347,23 @@ fun DocumentGridCard(
                     .background(MaterialTheme.colorScheme.surfaceContainerHighest),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    Icons.Default.Description,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
-                    modifier = Modifier.size(56.dp)
-                )
+                val cover = document.pages.firstOrNull()
+                if (cover != null) {
+                    PageThumbnail(
+                        page = cover,
+                        modifier = Modifier.fillMaxSize(),
+                        reqWidth = 360,
+                        reqHeight = 480,
+                        fallbackIconSize = 56.dp
+                    )
+                } else {
+                    Icon(
+                        Icons.Default.Description,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+                        modifier = Modifier.size(56.dp)
+                    )
+                }
 
                 // Page count pill
                 Surface(
@@ -451,12 +463,23 @@ fun DocumentListCard(
                     .background(MaterialTheme.colorScheme.surfaceContainerHighest),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    Icons.Default.Description,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(32.dp)
-                )
+                val cover = document.pages.firstOrNull()
+                if (cover != null) {
+                    PageThumbnail(
+                        page = cover,
+                        modifier = Modifier.fillMaxSize(),
+                        reqWidth = 180,
+                        reqHeight = 240,
+                        fallbackIconSize = 28.dp
+                    )
+                } else {
+                    Icon(
+                        Icons.Default.Description,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.width(16.dp))

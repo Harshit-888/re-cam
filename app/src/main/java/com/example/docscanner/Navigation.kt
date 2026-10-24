@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
+import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.ui.camera.ScannerCameraScreen
 import com.example.docscanner.ui.dashboard.DashboardScreen
 import com.example.docscanner.ui.detail.DocumentDetailScreen
@@ -11,8 +12,15 @@ import com.example.docscanner.ui.editor.CropAndFilterScreen
 import com.example.docscanner.ui.trash.TrashScreen
 import com.example.docscanner.ui.viewer.PageViewerScreen
 
+/**
+ * Navigation 3 graph.
+ *
+ * The [ScannerRepository] is threaded through explicitly from
+ * [MainActivity] into every screen — the single dependency-injection mechanism in
+ * this app. Do not replace it with a static accessor.
+ */
 @Composable
-fun MainNavigation() {
+fun MainNavigation(repository: ScannerRepository) {
     val backStack = rememberNavBackStack(DashboardNav)
 
     NavDisplay(
@@ -21,6 +29,7 @@ fun MainNavigation() {
         entryProvider = entryProvider {
             entry<DashboardNav> {
                 DashboardScreen(
+                    repository = repository,
                     onNavigateToCamera = { docId ->
                         backStack.add(ScannerCameraNav(docId))
                     },
@@ -36,7 +45,10 @@ fun MainNavigation() {
             entry<ScannerCameraNav> { key ->
                 ScannerCameraScreen(
                     targetDocId = key.targetDocId,
+                    repository = repository,
                     onFinishScan = { docId ->
+                        // Replace the camera with the detail screen so Back returns
+                        // to the dashboard rather than reopening the viewfinder.
                         backStack.removeLastOrNull()
                         backStack.add(DocumentDetailNav(docId))
                     },
@@ -49,6 +61,7 @@ fun MainNavigation() {
             entry<DocumentDetailNav> { key ->
                 DocumentDetailScreen(
                     docId = key.docId,
+                    repository = repository,
                     onNavigateBack = {
                         backStack.removeLastOrNull()
                     },
@@ -68,6 +81,7 @@ fun MainNavigation() {
                 CropAndFilterScreen(
                     docId = key.docId,
                     pageId = key.pageId,
+                    repository = repository,
                     onDone = {
                         backStack.removeLastOrNull()
                     }
@@ -78,6 +92,7 @@ fun MainNavigation() {
                 PageViewerScreen(
                     docId = key.docId,
                     pageId = key.pageId,
+                    repository = repository,
                     onNavigateBack = {
                         backStack.removeLastOrNull()
                     },
@@ -89,6 +104,7 @@ fun MainNavigation() {
 
             entry<TrashNav> {
                 TrashScreen(
+                    repository = repository,
                     onNavigateBack = {
                         backStack.removeLastOrNull()
                     }

@@ -1,45 +1,84 @@
 package com.example.docscanner.data
 
+import android.content.Context
 import com.example.docscanner.model.Document
-import com.example.docscanner.model.FilterType
 import com.example.docscanner.model.Folder
-import com.example.docscanner.model.QuadCorners
+import com.example.docscanner.model.LibrarySnapshot
 import com.example.docscanner.model.ScannedPage
+import com.example.docscanner.util.ImageStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import java.util.UUID
 
-class ScannerRepository {
+/**
+ * Single source of truth for documents and folders.
+ *
+ * UDF contract: every mutation goes through a method here, updates a
+ * [MutableStateFlow], and is persisted by [LibraryStore] as a side effect.
+ * Screens never mutate models directly.
+ *
+ * **No global singleton.** Instances are created by `MainActivity` with the
+ * application context and passed down; see `AGENTS.md` §2.6.
+ *
+ * The constructor reads `library.json` synchronously (a few KB of JSON). That is
+ * deliberate: it means the first composition already sees the restored library
+ * instead of flashing an empty state.
+ */
+class ScannerRepository(context: Context) {
 
-    private val _folders = MutableStateFlow<List<Folder>>(
-        listOf(
-            Folder(id = "folder_work", name = "Work & Contracts", colorHex = 0xFF3F51B5),
-            Folder(id = "folder_tax", name = "Tax & Financials", colorHex = 0xFF4CAF50),
-            Folder(id = "folder_personal", name = "Personal & ID", colorHex = 0xFFFF9800)
-        )
+    private val appContext = context.applicationContext
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val store = LibraryStore(appContext, scope)
+
+    private val restored: LibrarySnapshot? = store.load()
+
+    private val _folders = MutableStateFlow(
+        restored?.folders?.takeIf { it.isNotEmpty() } ?: defaultFolders()
     )
     val folders: StateFlow<List<Folder>> = _folders.asStateFlow()
 
-    private val _documents = MutableStateFlow<List<Document>>(
-        createInitialMockDocuments()
-    )
+    private val _documents = MutableStateFlow(restored?.documents ?: emptyList())
     val documents: StateFlow<List<Document>> = _documents.asStateFlow()
 
-    fun getDocumentById(id: String): Document? {
-        return _documents.value.find { it.id == id }
+    init {
+        // Persist every subsequent change. `combine` emits once immediately, which
+        // also normalises a fresh install's default folders to disk.
+        scope.launch {
+            combine(_documents, _folders) { documents, folders ->
+                LibrarySnapshot(
+                    schemaVersion = LibraryStore.CURRENT_SCHEMA_VERSION,
+                    folders = folders,
+                    documents = documents
+                )
+            }.collect { store.schedule(it) }
+        }
     }
 
+    // ------------------------------------------------------------- reads
+
+    fun getDocumentById(id: String): Document? = _documents.value.find { it.id == id }
+
+    // --------------------------------------------------------- documents
+
+    /** Adds a document. Page ids are assigned here; caller-supplied ones are replaced. */
     fun addDocument(title: String, folderId: String? = null, pages: List<ScannedPage>): Document {
         val now = System.currentTimeMillis()
         val docId = UUID.randomUUID().toString()
-        val formattedPages = pages.mapIndexed { index, p ->
-            p.copy(id = UUID.randomUUID().toString(), documentId = docId, pageIndex = index)
+        val formattedPages = pages.mapIndexed { index, page ->
+            page.copy(documentId = docId, pageIndex = index)
         }
         val newDoc = Document(
             id = docId,
-            title = title.ifBlank { "Scanned Document ${now % 10000}" },
+            title = title.ifBlank { "Scan ${now % 10000}" },
             createdDate = now,
             modifiedDate = now,
             folderId = folderId,
@@ -51,24 +90,50 @@ class ScannerRepository {
 
     fun updateDocumentTitle(id: String, newTitle: String) {
         _documents.update { docs ->
-            docs.map { if (it.id == id) it.copy(title = newTitle, modifiedDate = System.currentTimeMillis()) else it }
+            docs.map {
+                if (it.id == id) {
+                    it.copy(title = newTitle, modifiedDate = System.currentTimeMillis())
+                } else {
+                    it
+                }
+            }
         }
     }
 
     fun moveDocumentToFolder(docId: String, folderId: String?) {
         _documents.update { docs ->
-            docs.map { if (it.id == docId) it.copy(folderId = folderId, modifiedDate = System.currentTimeMillis()) else it }
+            docs.map {
+                if (it.id == docId) {
+                    it.copy(folderId = folderId, modifiedDate = System.currentTimeMillis())
+                } else {
+                    it
+                }
+            }
         }
     }
+
+    fun setDocumentNotes(docId: String, notes: String) {
+        _documents.update { docs ->
+            docs.map {
+                if (it.id == docId) {
+                    it.copy(notes = notes, modifiedDate = System.currentTimeMillis())
+                } else {
+                    it
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------- pages
 
     fun updatePage(docId: String, pageId: String, update: (ScannedPage) -> ScannedPage) {
         _documents.update { docs ->
             docs.map { doc ->
                 if (doc.id == docId) {
-                    val updatedPages = doc.pages.map { page ->
-                        if (page.id == pageId) update(page) else page
-                    }
-                    doc.copy(pages = updatedPages, modifiedDate = System.currentTimeMillis())
+                    doc.copy(
+                        pages = doc.pages.map { page -> if (page.id == pageId) update(page) else page },
+                        modifiedDate = System.currentTimeMillis()
+                    )
                 } else {
                     doc
                 }
@@ -80,12 +145,13 @@ class ScannerRepository {
         _documents.update { docs ->
             docs.map { doc ->
                 if (doc.id == docId) {
-                    val newPages = doc.pages + page.copy(
-                        id = UUID.randomUUID().toString(),
-                        documentId = docId,
-                        pageIndex = doc.pages.size
+                    doc.copy(
+                        pages = doc.pages + page.copy(
+                            documentId = docId,
+                            pageIndex = doc.pages.size
+                        ),
+                        modifiedDate = System.currentTimeMillis()
                     )
-                    doc.copy(pages = newPages, modifiedDate = System.currentTimeMillis())
                 } else {
                     doc
                 }
@@ -94,118 +160,137 @@ class ScannerRepository {
     }
 
     fun deletePage(docId: String, pageId: String) {
+        var deleted: ScannedPage? = null
         _documents.update { docs ->
             docs.map { doc ->
                 if (doc.id == docId) {
-                    val remaining = doc.pages.filterNot { it.id == pageId }
-                        .mapIndexed { index, p -> p.copy(pageIndex = index) }
-                    doc.copy(pages = remaining, modifiedDate = System.currentTimeMillis())
+                    val page = doc.pages.find { it.id == pageId }
+                    if (page != null) deleted = page
+                    doc.copy(
+                        pages = doc.pages
+                            .filterNot { it.id == pageId }
+                            .mapIndexed { index, p -> p.copy(pageIndex = index) },
+                        modifiedDate = System.currentTimeMillis()
+                    )
                 } else {
                     doc
                 }
             }
         }
+        deleted?.let { page -> scope.launch { ImageStore.deletePageFiles(appContext, page) } }
     }
+
+    /**
+     * Moves a page within its document and renumbers the rest.
+     *
+     * Previously advertised as "Live on Device" in the README while not existing
+     * at all; this is the real implementation.
+     */
+    fun movePage(docId: String, fromIndex: Int, toIndex: Int) {
+        _documents.update { docs ->
+            docs.map { doc ->
+                if (doc.id != docId) {
+                    doc
+                } else if (fromIndex !in doc.pages.indices || toIndex !in doc.pages.indices || fromIndex == toIndex) {
+                    doc
+                } else {
+                    val reordered = doc.pages.toMutableList().apply {
+                        add(toIndex, removeAt(fromIndex))
+                    }
+                    doc.copy(
+                        pages = reordered.mapIndexed { index, p -> p.copy(pageIndex = index) },
+                        modifiedDate = System.currentTimeMillis()
+                    )
+                }
+            }
+        }
+    }
+
+    fun setPageOcrText(docId: String, pageId: String, text: String) {
+        updatePage(docId, pageId) { it.copy(ocrText = text) }
+    }
+
+    // ------------------------------------------------------------- trash
 
     fun moveToTrash(docId: String) {
         _documents.update { docs ->
-            docs.map { if (it.id == docId) it.copy(isTrash = true, modifiedDate = System.currentTimeMillis()) else it }
+            docs.map {
+                if (it.id == docId) {
+                    it.copy(isTrash = true, modifiedDate = System.currentTimeMillis())
+                } else {
+                    it
+                }
+            }
         }
     }
 
     fun restoreFromTrash(docId: String) {
         _documents.update { docs ->
-            docs.map { if (it.id == docId) it.copy(isTrash = false, modifiedDate = System.currentTimeMillis()) else it }
+            docs.map {
+                if (it.id == docId) {
+                    it.copy(isTrash = false, modifiedDate = System.currentTimeMillis())
+                } else {
+                    it
+                }
+            }
         }
     }
 
+    /** Removes the document and its page files from disk. */
     fun deletePermanently(docId: String) {
-        _documents.update { docs -> docs.filterNot { it.id == docId } }
+        var pages: List<ScannedPage> = emptyList()
+        _documents.update { docs ->
+            docs.find { it.id == docId }?.let { pages = it.pages }
+            docs.filterNot { it.id == docId }
+        }
+        if (pages.isNotEmpty()) {
+            scope.launch { ImageStore.deleteDocumentFiles(appContext, pages) }
+        }
     }
 
     fun emptyTrash() {
+        val trashed = _documents.value.filter { it.isTrash }
         _documents.update { docs -> docs.filterNot { it.isTrash } }
-    }
-
-    fun addFolder(name: String, colorHex: Long) {
-        val newFolder = Folder(id = UUID.randomUUID().toString(), name = name, colorHex = colorHex)
-        _folders.update { it + newFolder }
-    }
-
-    companion object {
-        val instance by lazy { ScannerRepository() }
-
-        private fun createInitialMockDocuments(): List<Document> {
-            val now = System.currentTimeMillis()
-            return listOf(
-                Document(
-                    id = "doc_contract_01",
-                    title = "Independent Contractor Agreement",
-                    createdDate = now - 86400000 * 2,
-                    modifiedDate = now - 3600000 * 5,
-                    folderId = "folder_work",
-                    tags = listOf("Legal", "Signed", "Urgent"),
-                    notes = "Signed agreement with client for mobile app architecture.",
-                    pages = listOf(
-                        ScannedPage(
-                            id = "p1",
-                            documentId = "doc_contract_01",
-                            pageIndex = 0,
-                            imageUri = "mock_contract_p1",
-                            filterType = FilterType.MAGIC_COLOR,
-                            rotationDegrees = 0f,
-                            ocrText = "INDEPENDENT CONTRACTOR AGREEMENT\nBetween Indy Mobile Ltd and Client\nEffective Date: October 2026\nTerms: Confidential and Binding."
-                        ),
-                        ScannedPage(
-                            id = "p2",
-                            documentId = "doc_contract_01",
-                            pageIndex = 1,
-                            imageUri = "mock_contract_p2",
-                            filterType = FilterType.CLEAR_BW,
-                            rotationDegrees = 0f,
-                            ocrText = "Section 4. Deliverables and Timeline\nFinal delivery verified and approved by both parties."
-                        )
-                    )
-                ),
-                Document(
-                    id = "doc_invoice_02",
-                    title = "Q4 Tax Invoice #2026-881",
-                    createdDate = now - 86400000 * 5,
-                    modifiedDate = now - 86400000 * 1,
-                    folderId = "folder_tax",
-                    tags = listOf("Tax", "Expense"),
-                    notes = "Hardware equipment purchase receipt for deduction.",
-                    pages = listOf(
-                        ScannedPage(
-                            id = "p3",
-                            documentId = "doc_invoice_02",
-                            pageIndex = 0,
-                            imageUri = "mock_invoice_p1",
-                            filterType = FilterType.MAGIC_COLOR,
-                            ocrText = "TAX INVOICE\nVendor: Tech World Solutions\nTotal: $1,450.00\nPayment Status: PAID"
-                        )
-                    )
-                ),
-                Document(
-                    id = "doc_passport_03",
-                    title = "Passport & Travel Visa",
-                    createdDate = now - 86400000 * 14,
-                    modifiedDate = now - 86400000 * 14,
-                    folderId = "folder_personal",
-                    tags = listOf("ID", "Travel"),
-                    notes = "Scanned international travel passport and entry clearance.",
-                    pages = listOf(
-                        ScannedPage(
-                            id = "p4",
-                            documentId = "doc_passport_03",
-                            pageIndex = 0,
-                            imageUri = "mock_passport_p1",
-                            filterType = FilterType.ORIGINAL,
-                            ocrText = "PASSPORT\nType: P\nCode: USA\nSurname: DOE\nGiven Names: JOHN"
-                        )
-                    )
-                )
-            )
+        if (trashed.isNotEmpty()) {
+            scope.launch {
+                trashed.forEach { ImageStore.deleteDocumentFiles(appContext, it.pages) }
+            }
         }
     }
+
+    // ----------------------------------------------------------- folders
+
+    fun addFolder(name: String, colorHex: Long) {
+        val folder = Folder(id = UUID.randomUUID().toString(), name = name, colorHex = colorHex)
+        _folders.update { it + folder }
+    }
+
+    fun renameFolder(folderId: String, name: String) {
+        _folders.update { folders ->
+            folders.map { if (it.id == folderId) it.copy(name = name) else it }
+        }
+    }
+
+    fun deleteFolder(folderId: String) {
+        _folders.update { folders -> folders.filterNot { it.id == folderId } }
+        _documents.update { docs ->
+            docs.map { if (it.folderId == folderId) it.copy(folderId = null) else it }
+        }
+    }
+
+    // -------------------------------------------------------- lifecycle
+
+    /**
+     * Cancels the persistence scope. Call from the owning Activity's
+     * `onDestroy` only when finishing (not on configuration change).
+     */
+    fun close() {
+        scope.cancel()
+    }
+
+    private fun defaultFolders(): List<Folder> = listOf(
+        Folder(id = "folder_work", name = "Work & Contracts", colorHex = 0xFF3F51B5),
+        Folder(id = "folder_tax", name = "Tax & Financials", colorHex = 0xFF4CAF50),
+        Folder(id = "folder_personal", name = "Personal & ID", colorHex = 0xFFFF9800)
+    )
 }

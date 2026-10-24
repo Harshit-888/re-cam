@@ -675,7 +675,7 @@
               <td><strong>6. PDF Compiler & Sizing</strong></td>
               <td><span class="inline-code">PdfSettingsActivity</span><br><span class="inline-code">PdfPreviewActivity</span></td>
               <td><span class="inline-code">util/PdfGenerator.kt</span><br><span class="inline-code">ui/pdf/PdfExportSheet.kt</span></td>
-              <td>7 standard paper sizes (A4, Letter, Legal, Business Card), margin configs, page numbering, direct Android ShareSheet.</td>
+              <td>8 paper presets (A4, Letter, Legal, A3, A5, Executive, Business Card, Receipt), 4 margin presets, page numbering, FileProvider share sheet, generated from real page bitmaps off the main thread.</td>
               <td><span class="badge badge-live">Live on Device</span></td>
             </tr>
             <tr>
@@ -820,10 +820,10 @@
               <td>Pocket notebooks, medical prescriptions</td>
             </tr>
             <tr>
-              <td><strong>Business Card</strong></td>
-              <td><span class="inline-code">241 pt</span></td>
+              <td><strong>Business Card (ID-1)</strong></td>
+              <td><span class="inline-code">243 pt</span></td>
               <td><span class="inline-code">153 pt</span></td>
-              <td>85 × 54 mm</td>
+              <td>85.6 × 54 mm</td>
               <td>ID cards, business cards, badges</td>
             </tr>
           </tbody>
@@ -905,11 +905,14 @@
   },
   "rebuilt_app": {
     "package": "com.example.docscanner",
-    "workspace": "d:/Desktop/apk-rev/doc-scanner",
+    "workspace": "Harshit-888/re-cam (branch arena/a1adc686-re-cam)",
     "ui_stack": "Jetpack Compose + Material 3 Expressive",
     "gradle_version": "9.1.0",
     "agp_version": "9.0.1",
-    "kotlin_version": "2.2.0"
+    "kotlin_version": "2.3.20",
+    "min_sdk": 26,
+    "persistence": "library.json snapshot (LibraryStore)",
+    "camera": "CameraX 1.4.2 Preview + ImageCapture"
   },
   "modules": [
     { "id": "dashboard", "path": "ui/dashboard/DashboardScreen.kt", "status": "LIVE" },
@@ -1023,7 +1026,7 @@ recognizer.<span class="fun">process</span>(image)
         "DocumentDetailScreen (Multi-page grid, Page reorder, Rotate 90, Delete/Add page)",
         "PageViewerScreen (Pan and Zoom up to 4x, OCR bottom sheet)",
         "SignaturePadDialog (Digital handwritten canvas, stroke thickness, 3 ink colors)",
-        "PdfExportSheet (7 Paper presets: A4, Letter, Legal, Business Card, PDF margins, System ShareSheet)",
+        "PdfExportSheet (8 paper presets, 4 margin presets, page numbers, FileProvider share)",
         "TrashScreen (Soft delete, Restore, Permanent purge)"
       ]
     }

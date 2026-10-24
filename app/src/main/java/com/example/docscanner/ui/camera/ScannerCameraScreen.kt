@@ -1,24 +1,73 @@
 package com.example.docscanner.ui.camera
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.*
+import androidx.compose.animation.core.EaseInOutQuad
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.BurstMode
+import androidx.compose.material.icons.filled.Camera
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Filter1
+import androidx.compose.material.icons.filled.FlashAuto
+import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.outlined.PhotoLibrary
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -28,98 +77,288 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import com.example.docscanner.data.ScannerRepository
-import com.example.docscanner.model.FilterType
 import com.example.docscanner.model.ScannedPage
+import com.example.docscanner.util.ImageStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 
+/** Flash behaviour for capture + torch state for the live preview. */
+private enum class FlashMode { AUTO, ON, OFF }
+
+/**
+ * Live document capture.
+ *
+ * This screen renders a real CameraX preview into a [PreviewView] host and saves
+ * every shutter press as a JPEG through [ImageStore] (EXIF-corrected and stored in
+ * `filesDir/pages`). The previous revision drew a black box, faked a shutter, and
+ * recorded a path that never existed.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScannerCameraScreen(
     targetDocId: String? = null,
-    repository: ScannerRepository = ScannerRepository.instance,
+    repository: ScannerRepository,
     onFinishScan: (docId: String) -> Unit,
     onClose: () -> Unit
 ) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
+
     val capturedPages = remember { mutableStateListOf<ScannedPage>() }
     var isBatchMode by remember { mutableStateOf(true) }
-    var flashMode by remember { mutableStateOf(0) } // 0: Auto, 1: On, 2: Off
-    var isShutterPressed by remember { mutableStateOf(false) }
+    var flashMode by remember { mutableStateOf(FlashMode.AUTO) }
+    var isCapturing by remember { mutableStateOf(false) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
 
-    // Multi-photo gallery picker
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickMultipleVisualMedia()
-    ) { uris ->
-        if (uris.isNotEmpty()) {
-            uris.forEach { uri ->
-                capturedPages.add(
-                    ScannedPage(
-                        id = UUID.randomUUID().toString(),
-                        documentId = targetDocId ?: "",
-                        pageIndex = capturedPages.size,
-                        imageUri = uri.toString(),
-                        filterType = FilterType.MAGIC_COLOR
-                    )
-                )
+    var hasCameraPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted -> hasCameraPermission = granted }
+
+    LaunchedEffect(Unit) {
+        if (!hasCameraPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    val previewView = remember {
+        PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
+    }
+    var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
+    var boundCamera by remember { mutableStateOf<Camera?>(null) }
+
+    // ---- bind CameraX -----------------------------------------------------
+    DisposableEffect(hasCameraPermission) {
+        if (!hasCameraPermission) {
+            onDispose { }
+        } else {
+            val providerFuture = ProcessCameraProvider.getInstance(context)
+            val executor = ContextCompat.getMainExecutor(context)
+            var provider: ProcessCameraProvider? = null
+
+            providerFuture.addListener(
+                {
+                    try {
+                        val resolved = providerFuture.get().also { provider = it }
+                        val preview = Preview.Builder().build().also {
+                            it.setSurfaceProvider(previewView.surfaceProvider)
+                        }
+                        val capture = ImageCapture.Builder()
+                            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                            .build()
+
+                        resolved.unbindAll()
+                        val camera = resolved.bindToLifecycle(
+                            lifecycleOwner,
+                            CameraSelector.DEFAULT_BACK_CAMERA,
+                            preview,
+                            capture
+                        )
+                        imageCapture = capture
+                        boundCamera = camera
+                    } catch (t: Throwable) {
+                        statusMessage = "Camera unavailable: ${t.message ?: "unknown error"}"
+                    }
+                },
+                executor
+            )
+
+            onDispose {
+                runCatching { provider?.unbindAll() }
+                imageCapture = null
+                boundCamera = null
             }
         }
     }
 
-    // Viewfinder pulsing corner animation
-    val infiniteTransition = rememberInfiniteTransition(label = "viewfinder")
-    val borderPulse by infiniteTransition.animateFloat(
-        initialValue = 0.6f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = EaseInOutQuad),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulse"
-    )
+    // ---- apply flash / torch whenever the mode changes --------------------
+    LaunchedEffect(flashMode, boundCamera, imageCapture) {
+        val camera = boundCamera ?: return@LaunchedEffect
+        val capture = imageCapture ?: return@LaunchedEffect
+        capture.flashMode = when (flashMode) {
+            FlashMode.AUTO -> ImageCapture.FLASH_MODE_AUTO
+            FlashMode.ON -> ImageCapture.FLASH_MODE_ON
+            FlashMode.OFF -> ImageCapture.FLASH_MODE_OFF
+        }
+        // Torch only makes sense for the live preview when the user forced flash on.
+        runCatching {
+            if (camera.cameraInfo.hasFlashUnit()) {
+                camera.cameraControl.enableTorch(flashMode == FlashMode.ON)
+            }
+        }
+    }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-    ) {
-        // Document Guide Viewfinder Overlay
+    // ---- gallery import ---------------------------------------------------
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            uris.forEach { uri ->
+                val pageId = UUID.randomUUID().toString()
+                val savedPath = withContext(Dispatchers.IO) {
+                    ImageStore.importFromUri(context, uri, pageId)
+                }
+                if (savedPath != null) {
+                    capturedPages.add(
+                        ScannedPage(
+                            id = pageId,
+                            documentId = targetDocId ?: "",
+                            pageIndex = capturedPages.size,
+                            imageUri = savedPath
+                        )
+                    )
+                } else {
+                    statusMessage = "Could not import one of the selected images"
+                }
+            }
+        }
+    }
+
+    // ---- finalise a scan into the library ---------------------------------
+    fun commitScan() {
+        if (capturedPages.isEmpty()) return
+        val docId = if (targetDocId != null) {
+            capturedPages.forEach { repository.addPageToDocument(targetDocId, it) }
+            targetDocId
+        } else {
+            val title = SimpleDateFormat("Scan yyyy-MM-dd HH:mm", Locale.getDefault())
+                .format(Date())
+            repository.addDocument(title, null, capturedPages.toList()).id
+        }
+        onFinishScan(docId)
+    }
+
+    // ---- shutter ----------------------------------------------------------
+    fun capturePage() {
+        val capture = imageCapture ?: run {
+            statusMessage = "Camera is still starting up"
+            return
+        }
+        if (isCapturing) return
+        isCapturing = true
+        statusMessage = null
+
+        val pageId = UUID.randomUUID().toString()
+        val tempFile = File(context.cacheDir, "capture_$pageId.jpg")
+        val options = ImageCapture.OutputFileOptions.Builder(tempFile).build()
+
+        capture.takePicture(
+            options,
+            ContextCompat.getMainExecutor(context),
+            object : ImageCapture.OnImageSavedCallback {
+                override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                    scope.launch {
+                        val savedPath = withContext(Dispatchers.IO) {
+                            ImageStore.importFromFile(context, tempFile, pageId)
+                        }
+                        if (savedPath == null) {
+                            statusMessage = "Capture failed: could not save image"
+                            isCapturing = false
+                            return@launch
+                        }
+                        capturedPages.add(
+                            ScannedPage(
+                                id = pageId,
+                                documentId = targetDocId ?: "",
+                                pageIndex = capturedPages.size,
+                                imageUri = savedPath
+                            )
+                        )
+                        isCapturing = false
+                        if (!isBatchMode) commitScan()
+                    }
+                }
+
+                override fun onError(exception: ImageCaptureException) {
+                    statusMessage = "Capture failed: ${exception.message ?: "unknown error"}"
+                    isCapturing = false
+                    runCatching { tempFile.delete() }
+                }
+            }
+        )
+    }
+
+    // ---- UI ---------------------------------------------------------------
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+
+        if (hasCameraPermission) {
+            AndroidView(
+                factory = { previewView },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        // Scrim with a transparent document window.
         Canvas(modifier = Modifier.fillMaxSize()) {
             val padX = size.width * 0.08f
             val padY = size.height * 0.16f
-            val rectWidth = size.width - padX * 2
-            val rectHeight = size.height - padY * 2
+            val windowWidth = size.width - padX * 2
+            val windowHeight = size.height - padY * 2
+            val scrim = Color.Black.copy(alpha = 0.55f)
 
-            // Dark semi-transparent scrim around document
+            // Four rectangles rather than a scrim + BlendMode.Clear: clearing on
+            // the window surface is unreliable and can punch through the preview.
+            drawRect(scrim, topLeft = Offset.Zero, size = Size(size.width, padY))
             drawRect(
-                color = Color.Black.copy(alpha = 0.5f),
-                size = size
+                scrim,
+                topLeft = Offset(0f, padY + windowHeight),
+                size = Size(size.width, size.height - padY - windowHeight)
             )
-
-            // Transparent document target cutout
-            drawRoundRect(
-                color = Color.Transparent,
-                topLeft = Offset(padX, padY),
-                size = Size(rectWidth, rectHeight),
-                cornerRadius = CornerRadius(24f, 24f),
-                blendMode = androidx.compose.ui.graphics.BlendMode.Clear
+            drawRect(scrim, topLeft = Offset(0f, padY), size = Size(padX, windowHeight))
+            drawRect(
+                scrim,
+                topLeft = Offset(padX + windowWidth, padY),
+                size = Size(padX, windowHeight)
             )
+        }
 
-            // Animated glowing edge border
+        // Pulsing alignment frame.
+        val transition = rememberInfiniteTransition(label = "viewfinder")
+        val pulse by transition.animateFloat(
+            initialValue = 0.55f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1200, easing = EaseInOutQuad),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "pulse"
+        )
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val padX = size.width * 0.08f
+            val padY = size.height * 0.16f
+            val windowWidth = size.width - padX * 2
+            val windowHeight = size.height - padY * 2
             drawRoundRect(
-                color = Color(0xFF4FD8EB).copy(alpha = borderPulse),
+                color = Color(0xFF4FD8EB).copy(alpha = pulse),
                 topLeft = Offset(padX, padY),
-                size = Size(rectWidth, rectHeight),
+                size = Size(windowWidth, windowHeight),
                 cornerRadius = CornerRadius(24f, 24f),
                 style = Stroke(
-                    width = 4.dp.toPx(),
+                    width = 3.dp.toPx(),
                     pathEffect = PathEffect.dashPathEffect(floatArrayOf(40f, 20f), 0f)
                 )
             )
         }
 
-        // Top Controls Bar
+        // Top bar.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -130,12 +369,13 @@ fun ScannerCameraScreen(
         ) {
             IconButton(
                 onClick = onClose,
-                colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Black.copy(alpha = 0.6f))
+                colors = IconButtonDefaults.iconButtonColors(
+                    containerColor = Color.Black.copy(alpha = 0.6f)
+                )
             ) {
                 Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
             }
 
-            // Batch mode pill toggle
             Surface(
                 shape = RoundedCornerShape(20.dp),
                 color = Color.Black.copy(alpha = 0.6f),
@@ -161,28 +401,35 @@ fun ScannerCameraScreen(
                 }
             }
 
-            // Flash mode toggle
             IconButton(
-                onClick = { flashMode = (flashMode + 1) % 3 },
-                colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Black.copy(alpha = 0.6f))
+                onClick = {
+                    flashMode = when (flashMode) {
+                        FlashMode.AUTO -> FlashMode.ON
+                        FlashMode.ON -> FlashMode.OFF
+                        FlashMode.OFF -> FlashMode.AUTO
+                    }
+                },
+                colors = IconButtonDefaults.iconButtonColors(
+                    containerColor = Color.Black.copy(alpha = 0.6f)
+                )
             ) {
-                val (flashIcon, flashColor) = when (flashMode) {
-                    1 -> Icons.Default.FlashOn to Color(0xFFFFD700)
-                    2 -> Icons.Default.FlashOff to Color.White
-                    else -> Icons.Default.FlashAuto to Color.White
+                val (icon, tint) = when (flashMode) {
+                    FlashMode.ON -> Icons.Default.FlashOn to Color(0xFFFFD700)
+                    FlashMode.OFF -> Icons.Default.FlashOff to Color.White
+                    FlashMode.AUTO -> Icons.Default.FlashAuto to Color.White
                 }
-                Icon(flashIcon, contentDescription = "Flash", tint = flashColor)
+                Icon(icon, contentDescription = "Flash mode", tint = tint)
             }
         }
 
-        // Live Capture Counter Banner
+        // Page counter.
         AnimatedVisibility(
             visible = capturedPages.isNotEmpty(),
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 90.dp)
+                .padding(top = 96.dp)
         ) {
             Surface(
                 shape = RoundedCornerShape(16.dp),
@@ -199,7 +446,36 @@ fun ScannerCameraScreen(
             }
         }
 
-        // Bottom Camera Controls
+        // Permission / error messaging.
+        if (!hasCameraPermission || statusMessage != null) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = Color.Black.copy(alpha = 0.75f),
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(32.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = statusMessage
+                            ?: "Camera permission is required to scan documents.",
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    if (!hasCameraPermission) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
+                            Text("Grant permission")
+                        }
+                    }
+                }
+            }
+        }
+
+        // Bottom controls.
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -214,7 +490,6 @@ fun ScannerCameraScreen(
                 horizontalArrangement = Arrangement.SpaceAround,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Gallery import button
                 IconButton(
                     onClick = {
                         photoPickerLauncher.launch(
@@ -227,70 +502,43 @@ fun ScannerCameraScreen(
                 ) {
                     Icon(
                         Icons.Outlined.PhotoLibrary,
-                        contentDescription = "Import Gallery",
+                        contentDescription = "Import from gallery",
                         tint = Color.White,
                         modifier = Modifier.size(28.dp)
                     )
                 }
 
-                // Shutter Button with press animation
                 Box(
                     modifier = Modifier
                         .size(84.dp)
                         .border(4.dp, Color.White, CircleShape)
                         .padding(6.dp)
                         .clip(CircleShape)
-                        .background(if (isShutterPressed) Color(0xFF4FD8EB) else Color.White)
-                        .clickable {
-                            isShutterPressed = true
-                            // Capture simulated page
-                            val newPage = ScannedPage(
-                                id = UUID.randomUUID().toString(),
-                                documentId = targetDocId ?: "",
-                                pageIndex = capturedPages.size,
-                                imageUri = "captured_scan_${System.currentTimeMillis()}",
-                                filterType = FilterType.MAGIC_COLOR
-                            )
-                            capturedPages.add(newPage)
-
-                            if (!isBatchMode) {
-                                // In single mode, directly save and proceed
-                                val finalDocId = if (targetDocId != null) {
-                                    repository.addPageToDocument(targetDocId, newPage)
-                                    targetDocId
-                                } else {
-                                    val newDoc = repository.addDocument("Scanned Doc", null, listOf(newPage))
-                                    newDoc.id
-                                }
-                                onFinishScan(finalDocId)
-                            }
-                            isShutterPressed = false
-                        },
+                        .background(if (isCapturing) Color(0xFF4FD8EB) else Color.White)
+                        .clickable { capturePage() },
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        Icons.Default.Camera,
-                        contentDescription = "Capture",
-                        tint = Color.Black,
-                        modifier = Modifier.size(36.dp)
-                    )
+                    if (isCapturing) {
+                        CircularProgressIndicator(
+                            color = Color.Black,
+                            strokeWidth = 3.dp,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    } else {
+                        Icon(
+                            Icons.Default.Camera,
+                            contentDescription = "Capture page",
+                            tint = Color.Black,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
                 }
 
-                // Done / Finish Button
                 if (capturedPages.isNotEmpty()) {
                     FilledTonalButton(
-                        onClick = {
-                            val finalDocId = if (targetDocId != null) {
-                                capturedPages.forEach { repository.addPageToDocument(targetDocId, it) }
-                                targetDocId
-                            } else {
-                                val newDoc = repository.addDocument("New Scan", null, capturedPages.toList())
-                                newDoc.id
-                            }
-                            onFinishScan(finalDocId)
-                        },
+                        onClick = { commitScan() },
                         shape = RoundedCornerShape(20.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors(
+                        colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
                             containerColor = MaterialTheme.colorScheme.primary
                         )
                     ) {

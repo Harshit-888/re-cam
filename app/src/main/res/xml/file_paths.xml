@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Paths the FileProvider in AndroidManifest.xml is allowed to expose for
+  ACTION_SEND. Exported PDFs live in cacheDir/exports; page JPEGs and signature
+  PNGs stay in filesDir and are only shared deliberately.
+-->
+<paths>
+    <cache-path name="exports" path="exports/" />
+    <files-path name="pages" path="pages/" />
+    <files-path name="signatures" path="signatures/" />
+</paths>
