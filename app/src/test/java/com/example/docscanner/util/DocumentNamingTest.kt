@@ -32,7 +32,8 @@ class DocumentNamingTest {
         }
         val title = DocumentNaming.defaultScanTitle(
             now = calendar.timeInMillis,
-            locale = Locale.US
+            locale = Locale.US,
+            timeZone = TimeZone.getTimeZone("UTC")
         )
         assertEquals("Scan 2026-10-25 14-05-09", title)
     }

@@ -6,7 +6,14 @@ Newest entry at the top.
 
 ---
 
+## 2026-10-25 (c) — Antigravity — TimeZone hermetic test fix & build verified
+
+- Added `timeZone: TimeZone = TimeZone.getDefault()` to `DocumentNaming.defaultScanTitle()` so formatters default to local device time while unit tests can explicitly assert under `UTC`.
+- Fixed `DocumentNamingTest.defaultScanTitle_quotesLiteralText` which previously failed in non-UTC runner environments.
+- Build & test pass verified: `./gradlew assembleDebug testDebugUnitTest` passed in 20s. `app-debug.apk` built successfully.
+
 ## 2026-10-25 (b) — Arena.ai — Crash fix + post-capture review flow
+
 
 ### 🐞 Root cause of the "press Done → crash" bug
 `ScannerCameraScreen.commitScan()` built a new document's title with

@@ -33,10 +33,13 @@ object DocumentNaming {
      */
     fun defaultScanTitle(
         now: Long = System.currentTimeMillis(),
-        locale: Locale = Locale.getDefault()
+        locale: Locale = Locale.getDefault(),
+        timeZone: java.util.TimeZone = java.util.TimeZone.getDefault()
     ): String {
         val formatted = try {
-            SimpleDateFormat(DEFAULT_SCAN_PATTERN, locale).format(Date(now))
+            SimpleDateFormat(DEFAULT_SCAN_PATTERN, locale).apply {
+                this.timeZone = timeZone
+            }.format(Date(now))
         } catch (_: IllegalArgumentException) {
             // Defensive: never let title generation take the app down again.
             ""
