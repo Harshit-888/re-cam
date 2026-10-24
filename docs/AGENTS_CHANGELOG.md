@@ -6,6 +6,25 @@ Newest entry at the top.
 
 ---
 
+## 2026-10-25 (g) — Arena.ai — Shared-axis screen transitions
+
+- `Navigation.kt`: `NavDisplay` was using its default transition, which reads as a
+  hard cut. It now gets explicit specs:
+  - `transitionSpec` (push): incoming screen slides in from the trailing edge at
+    full width while the outgoing screen slides a **quarter** of the way out —
+    the parallax is what turns a screen swap into a sense of depth.
+  - `popTransitionSpec` (back): the exact reverse, so the screen you came from
+    settles back where you left it.
+  - `predictivePopTransitionSpec`: same as pop, so the edge-swipe preview during a
+    predictive back gesture matches where letting go actually lands.
+- Duration **320 ms**, `FastOutSlowInEasing` — Material's standard easing.
+- Implemented with top-level builders only (`slideInHorizontally`,
+  `slideOutHorizontally`, `togetherWith`), never `slideIntoContainer`, so the code
+  does not depend on the type of scope Navigation 3 hands the spec.
+- Transition specs live in `private fun navForwardTransition()` /
+  `navBackTransition()`; there are no per-destination overrides yet, so every
+  route shares the same motion.
+
 ## 2026-10-25 (f) — Arena.ai — Share button no longer grows
 
 - `ui/detail/DocumentDetailScreen.kt` bottom bar: the four actions were
