@@ -6,7 +6,14 @@ Newest entry at the top.
 
 ---
 
+## 2026-10-25 — Antigravity — Build verified & daemon memory configured
+
+- Verified compilation and built `app-debug.apk` (`./gradlew assembleDebug` SUCCESS in 1m 17s).
+- Added `kotlin.daemon.jvmargs=-Xmx2048m` and bounded Gradle daemon metaspace to 512m in `gradle.properties` to prevent JVM native allocation failure during Compose + Kotlin 2.3.20 compilation on Windows.
+- All new dependencies (CameraX 1.4.2, kotlinx-serialization-json 1.9.0) resolved and compiled cleanly without version bumps needed.
+
 ## 2026-10-25 — Arena.ai — "Make it real" pass
+
 
 **Why:** the app was a high-fidelity UI shell. No code path ever read, wrote or
 displayed a real image. Camera, PDF pages, thumbnails and the viewer were all

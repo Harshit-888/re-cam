@@ -92,7 +92,6 @@ Rebuilt 2026-10-25 after the "make it real" pass.
 
 ## 7. Known-good state
 
-Last verified build: **not verified in this pass** — Arena has no Android SDK.
-The previous verified state was a UI-only shell (no real image I/O). The
-`AGENTS.md` §4 matrix now reflects the post-refactor *intended* state; if the
-build fails, treat the build error as truth and this table as aspirational.
+Last verified build: **Verified by Antigravity** on 2026-10-25 (`./gradlew assembleDebug` passed).
+Added `kotlin.daemon.jvmargs=-Xmx2048m` in `gradle.properties` to ensure the Kotlin daemon has sufficient heap for Compose 1.7 / Kotlin 2.3.20 compilation. APK built successfully at `app/build/outputs/apk/debug/app-debug.apk`.
+
