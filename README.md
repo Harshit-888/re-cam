@@ -34,11 +34,18 @@ in app-private storage, and renders them back.
    - EXIF orientation is baked into pixels, so portrait shots aren't sideways.
 
 3. **Perspective correction & filters** (`ui/editor/`)
-   - Four draggable corner handles over the **real photograph**.
+   - Four draggable corner handles over the **real photograph**, positioned by
+     automatic edge-based detection (`DocumentDetector`: Sobel → extreme-point
+     quad → robust line fit → validated corners).
    - Genuine projective warp (`Matrix.setPolyToPoly`) — the crop actually moves
      pixels now.
-   - 5 `ColorMatrix` enhancements previewed live over the photo: *Original*,
-     *Magic Color*, *Clear B&W*, *Grayscale*, *Lighten*.
+   - 5 enhancements computed per-pixel by `DocumentFilters` and previewed live:
+     *Original*, *Magic Color*, *Clear B&W*, *Grayscale*, *Lighten*.
+     Each applies **illumination normalisation** (shadows and torch hotspots are
+     divided out against a local paper-brightness model), **grey-world white
+     balance**, a **percentile contrast stretch** and an ink-deepening S-curve;
+     *Clear B&W* thresholds with **Otsu** over a narrow ramp so glyph edges stay
+     smooth instead of turning jagged.
    - 90° rotation, "Full Page" reset, and a brightness-based "Auto Detect".
    - Non-destructive: the pristine capture is never overwritten, so repeated edits
      don't accumulate JPEG loss.
@@ -105,7 +112,7 @@ storage**. `content://` URIs are imported first, never stored.
 | DI | Constructor parameters. No service locator, no singleton |
 | Persistence | `kotlinx.serialization` JSON snapshot |
 | Camera | CameraX 1.4.2 (`Preview` + `ImageCapture` + `PreviewView`) |
-| Image pipeline | `Matrix` / `Canvas` / `ColorMatrix`, sampled decode + `LruCache` |
+| Image pipeline | Per-pixel `DocumentFilters` (illumination model, white balance, percentile stretch, Otsu), `Matrix` warp, sampled decode + `LruCache` |
 | PDF | `android.graphics.pdf.PdfDocument` |
 | Build | Gradle 9.1.0, AGP 9.0.1, Kotlin 2.3.20 |
 | SDK | minSdk 26 (Android 8) · target/compile 36 (Android 16) |
