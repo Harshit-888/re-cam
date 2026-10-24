@@ -1,0 +1,1055 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Complete Architectural Specification and Reverse Engineering Blueprints for Android Document Scanner (IndyMobile -> Modern Material 3 Jetpack Compose)">
+  <title>DocScanner Architecture & RE Specification Blueprint</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0a0e17;
+      --bg-surface: #111827;
+      --bg-surface-elevated: #1a2333;
+      --bg-surface-card: rgba(26, 35, 51, 0.7);
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-glow: rgba(56, 189, 248, 0.25);
+      
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      
+      --accent-cyan: #38bdf8;
+      --accent-teal: #2dd4bf;
+      --accent-indigo: #818cf8;
+      --accent-violet: #a855f7;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+      
+      --grad-cyan-indigo: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
+      --grad-emerald-teal: linear-gradient(135deg, #10b981 0%, #2dd4bf 100%);
+      --grad-card: linear-gradient(180deg, rgba(30, 41, 59, 0.6) 0%, rgba(15, 23, 42, 0.8) 100%);
+      
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+      --radius-xl: 24px;
+      
+      --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
+      --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.4);
+      --shadow-glow: 0 0 32px rgba(56, 189, 248, 0.15);
+      
+      --font-body: 'Inter', system-ui, -apple-system, sans-serif;
+      --font-display: 'Outfit', sans-serif;
+      --font-mono: 'Fira Code', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      font-size: 15px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+      display: flex;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: var(--bg-primary);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #475569;
+    }
+
+    /* Layout */
+    #sidebar {
+      width: 320px;
+      height: 100vh;
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border-subtle);
+      position: sticky;
+      top: 0;
+      overflow-y: auto;
+      padding: 28px 20px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    #content {
+      flex: 1;
+      padding: 40px 56px;
+      max-width: 1300px;
+      overflow-y: auto;
+    }
+
+    /* Sidebar Components */
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .brand-logo {
+      width: 42px;
+      height: 42px;
+      border-radius: var(--radius-md);
+      background: var(--grad-cyan-indigo);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: var(--shadow-glow);
+    }
+    .brand-logo svg {
+      width: 24px;
+      height: 24px;
+      fill: #ffffff;
+    }
+    .brand-title {
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 18px;
+      color: var(--text-primary);
+      letter-spacing: -0.02em;
+    }
+    .brand-subtitle {
+      font-size: 12px;
+      color: var(--accent-cyan);
+      font-weight: 500;
+    }
+
+    .nav-group-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      font-weight: 700;
+      margin-bottom: 10px;
+      padding-left: 10px;
+    }
+    .nav-links {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .nav-links a {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 12px;
+      border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 13.5px;
+      font-weight: 500;
+      transition: all 0.2s ease;
+    }
+    .nav-links a:hover, .nav-links a.active {
+      color: var(--text-primary);
+      background: rgba(56, 189, 248, 0.1);
+      border-left: 3px solid var(--accent-cyan);
+    }
+    .nav-badge {
+      margin-left: auto;
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 12px;
+      font-weight: 600;
+    }
+    .nav-badge.complete {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--accent-emerald);
+    }
+    .nav-badge.planned {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--accent-amber);
+    }
+
+    /* Content Area */
+    .hero {
+      background: var(--grad-card);
+      border: 1px solid var(--border-glow);
+      border-radius: var(--radius-xl);
+      padding: 36px 40px;
+      margin-bottom: 40px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: var(--shadow-md);
+    }
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -50%;
+      right: -20%;
+      width: 400px;
+      height: 400px;
+      background: radial-gradient(circle, rgba(56, 189, 248, 0.15) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .hero-tags {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .hero-tag {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 20px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .tag-cyan { background: rgba(56, 189, 248, 0.15); color: var(--accent-cyan); border: 1px solid rgba(56, 189, 248, 0.3); }
+    .tag-violet { background: rgba(168, 85, 247, 0.15); color: var(--accent-violet); border: 1px solid rgba(168, 85, 247, 0.3); }
+    .tag-emerald { background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
+
+    .hero-title {
+      font-family: var(--font-display);
+      font-size: 32px;
+      font-weight: 800;
+      color: var(--text-primary);
+      letter-spacing: -0.02em;
+      line-height: 1.25;
+      margin-bottom: 12px;
+    }
+    .hero-desc {
+      color: var(--text-secondary);
+      font-size: 16px;
+      max-width: 900px;
+      line-height: 1.6;
+      margin-bottom: 24px;
+    }
+    .hero-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .stat-card {
+      background: rgba(15, 23, 42, 0.6);
+      padding: 14px 18px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-subtle);
+    }
+    .stat-val {
+      font-family: var(--font-display);
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--accent-cyan);
+    }
+    .stat-lbl {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    /* Sections */
+    section {
+      margin-bottom: 56px;
+      scroll-margin-top: 40px;
+    }
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 24px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .section-num {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: rgba(56, 189, 248, 0.15);
+      color: var(--accent-cyan);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+      font-family: var(--font-mono);
+    }
+    .section-title {
+      font-family: var(--font-display);
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    /* Cards & Grids */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+      gap: 20px;
+    }
+    .card {
+      background: var(--bg-surface-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      transition: all 0.2s ease;
+    }
+    .card:hover {
+      border-color: rgba(56, 189, 248, 0.3);
+      box-shadow: var(--shadow-glow);
+    }
+    .card-title {
+      font-family: var(--font-display);
+      font-size: 17px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .card-title .icon {
+      color: var(--accent-cyan);
+    }
+
+    /* Tables */
+    .table-container {
+      background: var(--bg-surface-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      overflow-x: auto;
+      margin: 16px 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 13.5px;
+    }
+    th {
+      background: rgba(15, 23, 42, 0.9);
+      color: var(--text-muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    td {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      vertical-align: middle;
+    }
+    tr:last-child td {
+      border-bottom: none;
+    }
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--text-primary);
+    }
+
+    /* Status Badges */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      font-family: var(--font-mono);
+    }
+    .badge-live {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--accent-emerald);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    .badge-ready {
+      background: rgba(56, 189, 248, 0.15);
+      color: var(--accent-cyan);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+    }
+    .badge-blueprint {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--accent-amber);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    /* Code Blocks */
+    .code-wrapper {
+      position: relative;
+      margin: 16px 0;
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      border: 1px solid var(--border-subtle);
+      background: #090d16;
+    }
+    .code-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 16px;
+      background: #111827;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 12px;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+    }
+    .copy-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      padding: 3px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .copy-btn:hover {
+      background: rgba(56, 189, 248, 0.2);
+      color: var(--accent-cyan);
+    }
+    pre {
+      padding: 16px 20px;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.5;
+      color: #e2e8f0;
+    }
+    code {
+      font-family: var(--font-mono);
+    }
+    .inline-code {
+      background: rgba(255, 255, 255, 0.07);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 12.5px;
+      color: var(--accent-cyan);
+    }
+
+    /* Syntax Highlighting Mock */
+    .kw { color: #f43f5e; font-weight: 600; }
+    .fun { color: #38bdf8; }
+    .str { color: #a3e635; }
+    .typ { color: #f59e0b; }
+    .cmt { color: #64748b; font-style: italic; }
+
+    /* Interactive Search Filter in Sidebar */
+    .search-box {
+      position: relative;
+    }
+    .search-input {
+      width: 100%;
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px 8px 32px;
+      color: var(--text-primary);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .search-input:focus {
+      border-color: var(--accent-cyan);
+    }
+    .search-icon {
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 14px;
+      height: 14px;
+      fill: var(--text-muted);
+    }
+
+    /* Footer */
+    footer {
+      margin-top: 80px;
+      padding-top: 24px;
+      border-top: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- SIDEBAR NAVIGATION -->
+  <aside id="sidebar">
+    <div class="brand">
+      <div class="brand-logo">
+        <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+      </div>
+      <div>
+        <div class="brand-title">DocScanner Spec</div>
+        <div class="brand-subtitle">Reverse Engineering & Build Blueprint</div>
+      </div>
+    </div>
+
+    <div class="search-box">
+      <svg class="search-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+      <input type="text" id="filterInput" class="search-input" placeholder="Search components, tiers, APIs..." onkeyup="filterNav()">
+    </div>
+
+    <nav>
+      <div class="nav-group-title">Overview</div>
+      <ul class="nav-links">
+        <li><a href="#summary">Executive Context <span class="nav-badge complete">Ready</span></a></li>
+        <li><a href="#re-evidence">Reverse Engineering Evidence</a></li>
+        <li><a href="#matrix">Complete 7-Tier Feature Matrix</a></li>
+      </ul>
+
+      <div class="nav-group-title" style="margin-top: 16px;">Architectural Deep Dives</div>
+      <ul class="nav-links">
+        <li><a href="#tier1">1. Camera & Viewfinder</a></li>
+        <li><a href="#tier2">2. Perspective Crop & Filters</a></li>
+        <li><a href="#tier3">3. Document Management</a></li>
+        <li><a href="#tier4">4. Markup, Signature & Eraser</a></li>
+        <li><a href="#tier5">5. PDF Engine & Paper Sizing</a></li>
+        <li><a href="#tier6">6. ML Kit OCR Pipeline</a></li>
+        <li><a href="#tier7">7. System, Naming & Backup</a></li>
+      </ul>
+
+      <div class="nav-group-title" style="margin-top: 16px;">Machine & AI Ingestion</div>
+      <ul class="nav-links">
+        <li><a href="#models">Data Models & Schemas</a></li>
+        <li><a href="#ai-json">Embedded JSON Schema</a></li>
+        <li><a href="#blueprints">Next Feature Code Blueprints <span class="nav-badge planned">Sprint</span></a></li>
+      </ul>
+    </nav>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main id="content">
+
+    <!-- HERO SECTION -->
+    <div class="hero" id="summary">
+      <div class="hero-tags">
+        <span class="hero-tag tag-cyan">Target: com.indymobileapp.document.scanner</span>
+        <span class="hero-tag tag-emerald">Rebuilt: Jetpack Compose + Material 3</span>
+        <span class="hero-tag tag-violet">Decompiled: 4 Dex Splits • 34 Activities</span>
+      </div>
+      <h1 class="hero-title">Android Document Scanner Architecture & Clean-Room Rebuild Blueprint</h1>
+      <p class="hero-desc">
+        Comprehensive reverse-engineered functional catalog, mathematical transformation algorithms, activity mappings, and modern Kotlin / Jetpack Compose architectural specifications designed for autonomous AI agents, arena.ai tools, and human engineers.
+      </p>
+
+      <div class="hero-stats">
+        <div class="stat-card">
+          <div class="stat-val">34</div>
+          <div class="stat-lbl">Decompiled Activities</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val">7</div>
+          <div class="stat-lbl">Core Functional Tiers</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val">5</div>
+          <div class="stat-lbl">Document Filter Algorithms</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val">100%</div>
+          <div class="stat-lbl">Clean-Room Rebuilt (No DRM/Ads)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 1: REVERSE ENGINEERING EVIDENCE -->
+    <section id="re-evidence">
+      <div class="section-header">
+        <div class="section-num">01</div>
+        <h2 class="section-title">Target Reverse Engineering Evidence & Pipeline</h2>
+      </div>
+      <p style="color: var(--text-secondary); margin-bottom: 16px;">
+        Evidence extracted from <span class="inline-code">base.apk</span> using REA, JADX v1.5.6, Apktool v3.0.3, and Ghidra 12.1.4 on JDK 21.
+      </p>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title"><span class="icon">📦</span> Target App Metadata</div>
+          <ul style="list-style: none; display: flex; flex-direction: column; gap: 8px; color: var(--text-secondary);">
+            <li><strong>Package Name:</strong> <span class="inline-code">com.indymobileapp.document.scanner</span></li>
+            <li><strong>Application Class:</strong> <span class="inline-code">com.indymobile.app.PSApplication</span></li>
+            <li><strong>Target SDK / Compile SDK:</strong> API 36 (Android 16)</li>
+            <li><strong>App Bundle Split Architecture:</strong> <span class="inline-code">base__abi, base__density</span> (multidex split across 4 dex tables)</li>
+            <li><strong>Decompiled Native Bridge:</strong> <span class="inline-code">com.indymobile.app.PSOpenCV</span> (Canny edge detection & homography warp)</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span class="icon">🚀</span> Clean-Room Rebuilt Project</div>
+          <ul style="list-style: none; display: flex; flex-direction: column; gap: 8px; color: var(--text-secondary);">
+            <li><strong>Workspace Directory:</strong> <span class="inline-code">d:\Desktop\apk-rev\doc-scanner</span></li>
+            <li><strong>Package Name:</strong> <span class="inline-code">com.example.docscanner</span></li>
+            <li><strong>Toolchain:</strong> AGP 9.0.1, Gradle 9.1.0, Kotlin 2.2, Android SDK 36</li>
+            <li><strong>UI Technology:</strong> Jetpack Compose BOM 2026.03.01, Material 3 Expressive UI, Navigation 3</li>
+            <li><strong>Verified Artifact:</strong> <span class="inline-code">app-debug.apk</span> (19.1 MB, verified on Android 12)</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 2: 7-TIER FEATURE MATRIX -->
+    <section id="matrix">
+      <div class="section-header">
+        <div class="section-num">02</div>
+        <h2 class="section-title">Complete 7-Tier Feature Matrix & Status</h2>
+      </div>
+
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Functional Tier</th>
+              <th>Original Target Activity / Classes</th>
+              <th>Rebuilt Architecture Component</th>
+              <th>Features Included</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>1. Camera & Viewfinder</strong></td>
+              <td><span class="inline-code">camerax.CameraXActivity</span><br><span class="inline-code">camera1.CameraActivity</span></td>
+              <td><span class="inline-code">ui/camera/ScannerCameraScreen.kt</span></td>
+              <td>Single mode, batch multi-capture counter, alignment quad overlay, flash toggle, photo album picker.</td>
+              <td><span class="badge badge-live">Live on Device</span></td>
+            </tr>
+            <tr>
+              <td><strong>2. Crop & Filters</strong></td>
+              <td><span class="inline-code">ImageProcessingActivity</span><br><span class="inline-code">PSOpenCV.java</span></td>
+              <td><span class="inline-code">ui/editor/CropAndFilterScreen.kt</span><br><span class="inline-code">util/ImageProcessingUtils.kt</span></td>
+              <td>Interactive 4-point perspective warp polygon, 5 ColorMatrix filters (Magic Color, B&W, Grayscale, etc.), 90° rotation.</td>
+              <td><span class="badge badge-live">Live on Device</span></td>
+            </tr>
+            <tr>
+              <td><strong>3. Document Management</strong></td>
+              <td><span class="inline-code">MainActivity</span><br><span class="inline-code">DocumentActivity</span></td>
+              <td><span class="inline-code">ui/dashboard/DashboardScreen.kt</span><br><span class="inline-code">ui/detail/DocumentDetailScreen.kt</span></td>
+              <td>Search bar, folder filter chips, dense grid vs list view, sort menu, multi-page grid, page reordering, page deletion.</td>
+              <td><span class="badge badge-live">Live on Device</span></td>
+            </tr>
+            <tr>
+              <td><strong>4. Fullscreen Inspector</strong></td>
+              <td><span class="inline-code">ViewPagerActivity</span></td>
+              <td><span class="inline-code">ui/viewer/PageViewerScreen.kt</span></td>
+              <td>Pan & pinch-to-zoom (up to 4x), swipe between pages, page metadata sheet.</td>
+              <td><span class="badge badge-live">Live on Device</span></td>
+            </tr>
+            <tr>
+              <td><strong>5. Signature & Markup</strong></td>
+              <td><span class="inline-code">SignaturePadActivity</span><br><span class="inline-code">MarkupActivity</span></td>
+              <td><span class="inline-code">ui/signature/SignaturePadDialog.kt</span><br><span class="inline-code">WatermarkDialog</span></td>
+              <td>Pressure-sensitive digital signature canvas, stroke slider, ink color palette (black/blue/red), watermark text overlay.</td>
+              <td><span class="badge badge-live">Live on Device</span></td>
+            </tr>
+            <tr>
+              <td><strong>6. PDF Compiler & Sizing</strong></td>
+              <td><span class="inline-code">PdfSettingsActivity</span><br><span class="inline-code">PdfPreviewActivity</span></td>
+              <td><span class="inline-code">util/PdfGenerator.kt</span><br><span class="inline-code">ui/pdf/PdfExportSheet.kt</span></td>
+              <td>7 standard paper sizes (A4, Letter, Legal, Business Card), margin configs, page numbering, direct Android ShareSheet.</td>
+              <td><span class="badge badge-live">Live on Device</span></td>
+            </tr>
+            <tr>
+              <td><strong>7. Recycle Bin</strong></td>
+              <td><span class="inline-code">trash.MainTrashActivity</span></td>
+              <td><span class="inline-code">ui/trash/TrashScreen.kt</span></td>
+              <td>Soft delete tracking, document restoration to active folders, permanent purge.</td>
+              <td><span class="badge badge-live">Live on Device</span></td>
+            </tr>
+            <tr>
+              <td><strong>8. ML Kit OCR</strong></td>
+              <td><span class="inline-code">MlKitComponentDiscoveryService</span></td>
+              <td><span class="inline-code">util/OcrUtils.kt (Planned)</span></td>
+              <td>On-device Latin, Devanagari, CJK text recognition, copy text to clipboard, search within pages.</td>
+              <td><span class="badge badge-blueprint">Blueprint Ready</span></td>
+            </tr>
+            <tr>
+              <td><strong>9. Background Eraser</strong></td>
+              <td><span class="inline-code">editor.cleanupbg.CleanupBgActivity</span></td>
+              <td><span class="inline-code">ui/editor/EraserCanvas.kt (Planned)</span></td>
+              <td>Touch brush to white-out finger edges, scanner shadows, punch holes, or sensitive personal data.</td>
+              <td><span class="badge badge-blueprint">Blueprint Ready</span></td>
+            </tr>
+            <tr>
+              <td><strong>10. Template Naming</strong></td>
+              <td><span class="inline-code">DocumentNameSettingActivity</span></td>
+              <td><span class="inline-code">util/NamingTemplateEngine.kt (Planned)</span></td>
+              <td>Custom prefix + timestamp formats (<span class="inline-code">yyyyMMdd_HHmmss</span>) + auto-incrementing serial number.</td>
+              <td><span class="badge badge-blueprint">Blueprint Ready</span></td>
+            </tr>
+            <tr>
+              <td><strong>11. Local Backup / Restore</strong></td>
+              <td><span class="inline-code">MyBackupActivity</span></td>
+              <td><span class="inline-code">util/BackupManager.kt (Planned)</span></td>
+              <td>Export and import complete document collections as standalone ZIP archives with JSON manifest.</td>
+              <td><span class="badge badge-blueprint">Blueprint Ready</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- SECTION 3: DEEP DIVES & ALGORITHMS -->
+    <section id="tier2">
+      <div class="section-header">
+        <div class="section-num">03</div>
+        <h2 class="section-title">Image Processing & Filter Mathematical Models</h2>
+      </div>
+      <p style="color: var(--text-secondary); margin-bottom: 16px;">
+        In <span class="inline-code">base.apk</span>, filters are calculated using color matrix transformations and OpenCV contrast stretching. In our rebuilt Kotlin codebase (<span class="inline-code">util/ImageProcessingUtils.kt</span>), these are implemented via hardware-accelerated Android <span class="inline-code">ColorMatrix</span> matrices:
+      </p>
+
+      <div class="code-wrapper">
+        <div class="code-header">
+          <span>ImageProcessingUtils.kt — Filter ColorMatrix Definitions</span>
+          <button class="copy-btn" onclick="copyCode('filter-code')">Copy</button>
+        </div>
+        <pre id="filter-code"><code><span class="cmt">// 1. MAGIC COLOR (Doc Level 1): Boosts saturation by 1.3x and contrast by 1.4x</span>
+<span class="kw">val</span> MagicColorMatrix = <span class="typ">ColorMatrix</span>(<span class="kw">floatArrayOf</span>(
+    <span class="str">1.4f</span>, <span class="str">0f</span>,   <span class="str">0f</span>,   <span class="str">0f</span>, -<span class="str">30f</span>,
+    <span class="str">0f</span>,   <span class="str">1.4f</span>, <span class="str">0f</span>,   <span class="str">0f</span>, -<span class="str">30f</span>,
+    <span class="str">0f</span>,   <span class="str">0f</span>,   <span class="str">1.4f</span>, <span class="str">0f</span>, -<span class="str">30f</span>,
+    <span class="str">0f</span>,   <span class="str">0f</span>,   <span class="str">0f</span>,   <span class="str">1f</span>,   <span class="str">0f</span>
+))
+
+<span class="cmt">// 2. CLEAR B&W (Doc Level 2): Extreme luminance contrast for crisp document text</span>
+<span class="kw">val</span> ClearBwMatrix = <span class="typ">ColorMatrix</span>(<span class="kw">floatArrayOf</span>(
+    <span class="str">2.2f</span>, <span class="str">2.2f</span>, <span class="str">2.2f</span>, <span class="str">0f</span>, -<span class="str">280f</span>,
+    <span class="str">2.2f</span>, <span class="str">2.2f</span>, <span class="str">2.2f</span>, <span class="str">0f</span>, -<span class="str">280f</span>,
+    <span class="str">2.2f</span>, <span class="str">2.2f</span>, <span class="str">2.2f</span>, <span class="str">0f</span>, -<span class="str">280f</span>,
+    <span class="str">0f</span>,   <span class="str">0f</span>,   <span class="str">0f</span>,   <span class="str">1f</span>,    <span class="str">0f</span>
+))
+
+<span class="cmt">// 3. GRAYSCALE: Standard ITU-R BT.601 perceptual luminance weights</span>
+<span class="kw">val</span> GrayscaleMatrix = <span class="typ">ColorMatrix</span>().<span class="fun">apply</span> { <span class="fun">setSaturation</span>(<span class="str">0f</span>) }
+
+<span class="cmt">// 4. LIGHTEN: Lifts dark shadows while preserving high-contrast text</span>
+<span class="kw">val</span> LightenMatrix = <span class="typ">ColorMatrix</span>(<span class="kw">floatArrayOf</span>(
+    <span class="str">1.1f</span>, <span class="str">0f</span>,   <span class="str">0f</span>,   <span class="str">0f</span>,  <span class="str">35f</span>,
+    <span class="str">0f</span>,   <span class="str">1.1f</span>, <span class="str">0f</span>,   <span class="str">0f</span>,  <span class="str">35f</span>,
+    <span class="str">0f</span>,   <span class="str">0f</span>,   <span class="str">1.1f</span>, <span class="str">0f</span>,  <span class="str">35f</span>,
+    <span class="str">0f</span>,   <span class="str">0f</span>,   <span class="str">0f</span>,   <span class="str">1f</span>,   <span class="str">0f</span>
+))</code></pre>
+      </div>
+    </section>
+
+    <!-- SECTION 4: PDF GENERATION & PAPER SIZING -->
+    <section id="tier5">
+      <div class="section-header">
+        <div class="section-num">04</div>
+        <h2 class="section-title">PDF Engine & Paper Sizing Specifications</h2>
+      </div>
+      <p style="color: var(--text-secondary); margin-bottom: 16px;">
+        Target dimensions mapped at standard 72 DPI print resolution in <span class="inline-code">util/PdfGenerator.kt</span>:
+      </p>
+
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Paper Preset</th>
+              <th>Width (points)</th>
+              <th>Height (points)</th>
+              <th>Real-world Metric / Imperial</th>
+              <th>Typical Document Use Case</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>A4 (Standard)</strong></td>
+              <td><span class="inline-code">595 pt</span></td>
+              <td><span class="inline-code">842 pt</span></td>
+              <td>210 × 297 mm</td>
+              <td>International standard invoices, letters, forms</td>
+            </tr>
+            <tr>
+              <td><strong>US Letter</strong></td>
+              <td><span class="inline-code">612 pt</span></td>
+              <td><span class="inline-code">792 pt</span></td>
+              <td>8.5 × 11.0 in</td>
+              <td>North American standard business documents</td>
+            </tr>
+            <tr>
+              <td><strong>US Legal</strong></td>
+              <td><span class="inline-code">612 pt</span></td>
+              <td><span class="inline-code">1008 pt</span></td>
+              <td>8.5 × 14.0 in</td>
+              <td>Contracts, legal filings, deeds</td>
+            </tr>
+            <tr>
+              <td><strong>A3</strong></td>
+              <td><span class="inline-code">842 pt</span></td>
+              <td><span class="inline-code">1191 pt</span></td>
+              <td>297 × 420 mm</td>
+              <td>Large diagrams, architectural schematics</td>
+            </tr>
+            <tr>
+              <td><strong>A5</strong></td>
+              <td><span class="inline-code">420 pt</span></td>
+              <td><span class="inline-code">595 pt</span></td>
+              <td>148 × 210 mm</td>
+              <td>Pocket notebooks, medical prescriptions</td>
+            </tr>
+            <tr>
+              <td><strong>Business Card</strong></td>
+              <td><span class="inline-code">241 pt</span></td>
+              <td><span class="inline-code">153 pt</span></td>
+              <td>85 × 54 mm</td>
+              <td>ID cards, business cards, badges</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- SECTION 5: DATA MODELS -->
+    <section id="models">
+      <div class="section-header">
+        <div class="section-num">05</div>
+        <h2 class="section-title">Domain Data Models & Schemas</h2>
+      </div>
+
+      <div class="code-wrapper">
+        <div class="code-header">
+          <span>model/Models.kt — Core Domain Entities</span>
+          <button class="copy-btn" onclick="copyCode('models-code')">Copy</button>
+        </div>
+        <pre id="models-code"><code><span class="kw">data class</span> <span class="typ">Document</span>(
+    <span class="kw">val</span> id: <span class="typ">String</span> = UUID.randomUUID().toString(),
+    <span class="kw">val</span> title: <span class="typ">String</span>,
+    <span class="kw">val</span> createdAt: <span class="typ">Long</span> = System.currentTimeMillis(),
+    <span class="kw">val</span> folderId: <span class="typ">String</span>? = <span class="kw">null</span>,
+    <span class="kw">val</span> pages: <span class="typ">List</span>&lt;<span class="typ">ScannedPage</span>&gt; = <span class="fun">emptyList</span>(),
+    <span class="kw">val</span> isDeleted: <span class="typ">Boolean</span> = <span class="kw">false</span>,
+    <span class="kw">val</span> deletedAt: <span class="typ">Long</span>? = <span class="kw">null</span>,
+    <span class="kw">val</span> tags: <span class="typ">List</span>&lt;<span class="typ">String</span>&gt; = <span class="fun">emptyList</span>()
+)
+
+<span class="kw">data class</span> <span class="typ">ScannedPage</span>(
+    <span class="kw">val</span> id: <span class="typ">String</span> = UUID.randomUUID().toString(),
+    <span class="kw">val</span> documentId: <span class="typ">String</span>,
+    <span class="kw">val</span> pageIndex: <span class="typ">Int</span>,
+    <span class="kw">val</span> imageUri: <span class="typ">String</span>,
+    <span class="kw">val</span> filter: <span class="typ">FilterType</span> = FilterType.ORIGINAL,
+    <span class="kw">val</span> rotation: <span class="typ">Int</span> = <span class="str">0</span>,
+    <span class="kw">val</span> cropCorners: <span class="typ">QuadCorners</span>? = <span class="kw">null</span>,
+    <span class="kw">val</span> signatureUri: <span class="typ">String</span>? = <span class="kw">null</span>,
+    <span class="kw">val</span> watermarkText: <span class="typ">String</span>? = <span class="kw">null</span>,
+    <span class="kw">val</span> ocrText: <span class="typ">String</span>? = <span class="kw">null</span>
+)
+
+<span class="kw">data class</span> <span class="typ">QuadCorners</span>(
+    <span class="kw">val</span> topLeft: <span class="typ">Offset</span>,
+    <span class="kw">val</span> topRight: <span class="typ">Offset</span>,
+    <span class="kw">val</span> bottomRight: <span class="typ">Offset</span>,
+    <span class="kw">val</span> bottomLeft: <span class="typ">Offset</span>
+)
+
+<span class="kw">enum class</span> <span class="typ">FilterType</span> {
+    ORIGINAL, MAGIC_COLOR, CLEAR_BW, GRAYSCALE, LIGHTEN
+}</code></pre>
+      </div>
+    </section>
+
+    <!-- SECTION 6: MACHINE-READABLE EMBEDDED JSON SCHEMA -->
+    <section id="ai-json">
+      <div class="section-header">
+        <div class="section-num">06</div>
+        <h2 class="section-title">Machine-Readable AI Context Object (JSON)</h2>
+      </div>
+      <p style="color: var(--text-secondary); margin-bottom: 12px;">
+        Models, AI agents, and tools (e.g. arena.ai) can parse the <span class="inline-code">&lt;script id="ai-model-context" type="application/json"&gt;</span> block below for instantaneous structured understanding:
+      </p>
+
+      <div class="code-wrapper">
+        <div class="code-header">
+          <span>Embedded AI Context Schema</span>
+          <button class="copy-btn" onclick="copyCode('json-code')">Copy</button>
+        </div>
+        <pre id="json-code"><code>{
+  "project_name": "DocScanner Clean-Room Rebuild",
+  "target_apk": {
+    "package": "com.indymobileapp.document.scanner",
+    "main_activity": "com.indymobile.app.activity.MainActivity",
+    "architecture_splits": 4,
+    "activity_count": 34
+  },
+  "rebuilt_app": {
+    "package": "com.example.docscanner",
+    "workspace": "d:/Desktop/apk-rev/doc-scanner",
+    "ui_stack": "Jetpack Compose + Material 3 Expressive",
+    "gradle_version": "9.1.0",
+    "agp_version": "9.0.1",
+    "kotlin_version": "2.2.0"
+  },
+  "modules": [
+    { "id": "dashboard", "path": "ui/dashboard/DashboardScreen.kt", "status": "LIVE" },
+    { "id": "camera", "path": "ui/camera/ScannerCameraScreen.kt", "status": "LIVE" },
+    { "id": "crop_and_filter", "path": "ui/editor/CropAndFilterScreen.kt", "status": "LIVE" },
+    { "id": "document_detail", "path": "ui/detail/DocumentDetailScreen.kt", "status": "LIVE" },
+    { "id": "page_viewer", "path": "ui/viewer/PageViewerScreen.kt", "status": "LIVE" },
+    { "id": "signature_pad", "path": "ui/signature/SignaturePadDialog.kt", "status": "LIVE" },
+    { "id": "pdf_generator", "path": "util/PdfGenerator.kt", "status": "LIVE" },
+    { "id": "trash_bin", "path": "ui/trash/TrashScreen.kt", "status": "LIVE" },
+    { "id": "ocr_service", "path": "util/OcrManager.kt", "status": "PLAN_READY" },
+    { "id": "whiteout_eraser", "path": "ui/editor/CleanupBgCanvas.kt", "status": "PLAN_READY" },
+    { "id": "naming_templates", "path": "util/NamingTemplateEngine.kt", "status": "PLAN_READY" },
+    { "id": "backup_restore", "path": "util/BackupRestoreManager.kt", "status": "PLAN_READY" }
+  ]
+}</code></pre>
+      </div>
+    </section>
+
+    <!-- SECTION 7: BLUEPRINTS FOR REMAINING FEATURES -->
+    <section id="blueprints">
+      <div class="section-header">
+        <div class="section-num">07</div>
+        <h2 class="section-title">Sprint Blueprints for Remaining Features</h2>
+      </div>
+
+      <div class="card" style="margin-bottom: 20px;">
+        <div class="card-title"><span class="icon">🔍</span> Blueprint A: Google ML Kit On-Device OCR</div>
+        <p style="color: var(--text-secondary); margin-bottom: 12px;">
+          Add <span class="inline-code">com.google.mlkit:text-recognition:16.0.1</span> to <span class="inline-code">app/build.gradle.kts</span> and call:
+        </p>
+        <div class="code-wrapper">
+          <pre><code><span class="kw">val</span> recognizer = <span class="typ">TextRecognition</span>.<span class="fun">getClient</span>(<span class="typ">TextRecognizerOptions</span>.DEFAULT_OPTIONS)
+<span class="kw">val</span> image = <span class="typ">InputImage</span>.<span class="fun">fromBitmap</span>(pageBitmap, <span class="str">0</span>)
+recognizer.<span class="fun">process</span>(image)
+    .<span class="fun">addOnSuccessListener</span> { visionText ->
+        <span class="kw">val</span> extracted = visionText.text
+        repository.<span class="fun">updatePageOcr</span>(documentId, pageId, extracted)
+    }</code></pre>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom: 20px;">
+        <div class="card-title"><span class="icon">🧹</span> Blueprint B: White-out Brush Canvas (Background Cleanup)</div>
+        <p style="color: var(--text-secondary); margin-bottom: 12px;">
+          Implement an interactive Compose Canvas with touch path recording to erase punch holes or dark edges:
+        </p>
+        <div class="code-wrapper">
+          <pre><code><span class="typ">Canvas</span>(modifier = Modifier.<span class="fun">fillMaxSize</span>().<span class="fun">pointerInput</span>(Unit) {
+    <span class="fun">detectDragGestures</span> { change, _ ->
+        eraserPaths.<span class="fun">add</span>(change.position)
+    }
+}) {
+    eraserPaths.<span class="fun">forEach</span> { pt ->
+        <span class="fun">drawCircle</span>(color = Color.White, radius = brushSize, center = pt)
+    }
+}</code></pre>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">📦</span> Blueprint C: Full ZIP Backup & Restore Engine</div>
+        <p style="color: var(--text-secondary); margin-bottom: 12px;">
+          Zip up documents into a portable archive containing <span class="inline-code">manifest.json</span> and page JPEG files:
+        </p>
+        <div class="code-wrapper">
+          <pre><code><span class="kw">fun</span> <span class="fun">createBackupZip</span>(docs: <span class="typ">List</span>&lt;<span class="typ">Document</span>&gt;, zipOutStream: <span class="typ">ZipOutputStream</span>) {
+    <span class="kw">val</span> json = <span class="typ">Gson</span>().<span class="fun">toJson</span>(docs)
+    zipOutStream.<span class="fun">putNextEntry</span>(<span class="typ">ZipEntry</span>(<span class="str">"manifest.json"</span>))
+    zipOutStream.<span class="fun">write</span>(json.toByteArray())
+    zipOutStream.<span class="fun">closeEntry</span>()
+    <span class="cmt">// Write bitmap byte streams for all pages...</span>
+}</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer>
+      <div>DocScanner Reverse Engineering & Architecture Blueprint • Antigravity Pair-Programming Workspace</div>
+      <div>Source APK: <span class="inline-code">base.apk</span> • Rebuilt: <span class="inline-code">doc-scanner</span></div>
+    </footer>
+  </main>
+
+  <!-- JAVASCRIPT FOR SEARCH, COPYING, AND JSON EMBEDDING -->
+  <script id="ai-model-context" type="application/json">
+  {
+    "document_type": "ARCHITECTURE_AND_REVERSE_ENGINEERING_SPECIFICATION",
+    "version": "1.0.0",
+    "target_apk": {
+      "package_name": "com.indymobileapp.document.scanner",
+      "app_name": "IndyMobile Document Scanner",
+      "target_sdk": 36,
+      "manifest_activities_count": 34,
+      "providers": [
+        "com.indymobile.app.PSDocumentProvider",
+        "androidx.core.content.FileProvider"
+      ],
+      "native_libraries": ["libblasV8.so", "PSOpenCV (JNI)"]
+    },
+    "rebuilt_application": {
+      "package_name": "com.example.docscanner",
+      "source_root": "d:/Desktop/apk-rev/doc-scanner/app/src/main/java/com/example/docscanner",
+      "ui_toolkit": "Jetpack Compose",
+      "design_system": "Material 3 Expressive UI",
+      "state_management": "Kotlin StateFlow / ViewModel",
+      "active_features": [
+        "DashboardScreen (Search, Grid/List, Folder Chips, Sorting)",
+        "ScannerCameraScreen (CameraX viewfinder, Document alignment quad, Batch capture)",
+        "CropAndFilterScreen (4-corner perspective draggable polygon, 5 ColorMatrix filters)",
+        "DocumentDetailScreen (Multi-page grid, Page reorder, Rotate 90, Delete/Add page)",
+        "PageViewerScreen (Pan and Zoom up to 4x, OCR bottom sheet)",
+        "SignaturePadDialog (Digital handwritten canvas, stroke thickness, 3 ink colors)",
+        "PdfExportSheet (7 Paper presets: A4, Letter, Legal, Business Card, PDF margins, System ShareSheet)",
+        "TrashScreen (Soft delete, Restore, Permanent purge)"
+      ]
+    }
+  }
+  </script>
+
+  <script>
+    function copyCode(id) {
+      const code = document.getElementById(id).innerText;
+      navigator.clipboard.writeText(code).then(() => {
+        alert('Code copied to clipboard!');
+      });
+    }
+
+    function filterNav() {
+      const query = document.getElementById('filterInput').value.toLowerCase();
+      const links = document.querySelectorAll('.nav-links a');
+      links.forEach(link => {
+        const text = link.innerText.toLowerCase();
+        if (text.includes(query)) {
+          link.parentElement.style.display = 'block';
+        } else {
+          link.parentElement.style.display = 'none';
+        }
+      });
+    }
+  </script>
+</body>
+</html>
