@@ -4,6 +4,70 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (l) — Arena.ai — Filters corrected against the native disassembly
+
+### What changed and why
+The filters now follow the **actual native code**, not the documented behaviour
+of it. `libimageproc.so` was disassembled (spec §6–§8, entry (k)) and three
+things I had reconstructed by reasoning turned out to be wrong:
+
+| I had | The disassembly says | Now |
+|---|---|---|
+| Skip *Lighten* when `blackPoint > whitePoint` | `range = wp - bp; if (range <= 0) range = 1.0;` then the `v <= bp` branch wins | verbatim port, no guard |
+| Dilation only for the paper map (block max) | `cv::dilate` **then** `cv::erode` — a closing that fills ink with paper | max-pool, then dilate → erode |
+| 3×3 majority vote on the **binarised** result | `cv::medianBlur` runs **before** the threshold | median on the normalised plane, then Otsu |
+
+### Transcribed exactly (do not "improve")
+- **`enhancePhoto`** (`0x0000f5d4`, 608 B) — ported line for line; see
+  `linearStretchLut`. The `range <= 0` fallback and the branch order together
+  mean an inverted pair thresholds hard at `blackPoint` instead of blackening the
+  page, which is what the original does. `DocumentFiltersTest` pins all three
+  branches.
+- **`enhanceDocument` step list** — background estimate, divide, tone curve,
+  `cv::medianBlur` before the threshold, `cv::Laplacian`/`cv::GaussianBlur`
+  sharpening of midtone contrast. Each step has a comment naming the import that
+  justifies it, so nobody re-adds a step that is not in the ELF.
+- **No static LUT tables in the binary** — the tone mapping is computed at
+  runtime, so the curve stays a parameterised gamma with pinned endpoints rather
+  than a copied table.
+
+### The one number that is still a model
+`enhanceDocument` calls `ColorizingRadius::computeRadius(w, h, dpi, level)`,
+which lives behind the stripped PLT; its body was not recovered. What is certain
+is that the radius depends on size — a fixed radius cannot close over a 60 px
+text line and a 6 px one at the same time.
+
+A fixed radius of 1 (my first port of that step) closes over nothing but
+single-pixel specks, and the divide then washes text out entirely: on a synthetic
+page with a 50 % illumination gradient, ink came out at 255. Measured on the same
+page, **~2 % of the long edge** is the smallest reach that bridges body text, and
+it is scale-free — `paperRadius()` derives it from the working grid
+(`PAPER_OPEN_DIVISOR = 48`). With it, across 200 px → 2000 px inputs:
+
+| Input | Cell | Radius | Paper luminance (min/avg) | Ink (avg) |
+|---|---|---|---|---|
+| 200 × 260 | 1 | 5 | 250 / 255 | 52 |
+| 600 × 800 | 3 | 5 | 252 / 255 | 51 |
+| 1200 × 1600 | 5 | 6 | 250 / 255 | 51 |
+| 2000 × 2600 | 9 | 6 | 250 / 255 | 48 |
+
+*Clear B&W* on the 600 × 800 page: **100 %** of paper lands on pure white and
+95.7 % of ink on pure black, the remainder being anti-aliased edges inside the
+ramp — the ramp is doing its job, not the threshold.
+
+That constant is the only unverified number left in the pipeline, and it is
+isolated so calibration touches one line.
+
+### Tests
+`linearStretch` branch semantics (endpoints, `range <= 0`, inverted pair),
+`median3x3` (speck removal, edge preservation), `gaussianBlur3` (flat-field
+invariance and the 1:2:1 × 1:2:1 weights), `paperRadius` (scale invariance), plus
+the earlier estimation, classification, curve and Otsu coverage. Removed the
+assertion for the deleted span guard.
+
+### Version
+**1.5 (code 6)** — unchanged from the previous entry in this PR.
+
 ## 2026-10-25 (k) — Antigravity — Native libimageproc.so disassembled & exact OpenCV filter algorithms extracted
 
 - Extracted ARM64 native library `libimageproc.so` (138,664 bytes) from connected device split APK `split_config.arm64_v8a.apk`.

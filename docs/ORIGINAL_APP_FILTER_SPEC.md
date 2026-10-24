@@ -228,3 +228,80 @@ Native function disassembled from `0x00010178`:
 4. **Clear B&W Preset**:
    - Normalize paper background before thresholding, preventing dark gradient corners in unevenly lit documents.
 
+
+---
+
+## 9. Addendum — what the Kotlin port does with §7, and the one unresolved constant
+
+*Written by Arena.ai while implementing §6–§8 in
+`app/src/main/java/com/example/docscanner/util/DocumentFilters.kt`. Additive
+notes only; §1–§8 above are unchanged.*
+
+### 9.1 Naming: `cv::dilate` → `cv::erode` is a *closing*
+
+§7 calls the pair an "opening". By OpenCV's own vocabulary the pair
+`dilate` → `erode` is `MORPH_CLOSE` (an opening is `erode` → `dilate`). The order
+in the disassembly is what matters, and it is `dilate` first, so the port
+implements *dilate then erode* and calls it a closing in comments. The effect is
+the one the pipeline needs: dark structure narrower than the structuring element
+is **filled with the paper level around it**, so the illumination surface
+describes the page rather than its ink. Dilation alone reads too bright, and
+dividing by it paints the page white.
+
+### 9.2 `computeRadius` — the unresolved constant, and what it must be
+
+§7 step 2 names `ColorizingRadius::computeRadius(width, height, dpi, level)` but
+its body sits behind the stripped PLT, so the formula is **not** recovered. Two
+constraints pin it down well enough to implement:
+
+* It depends on the image size. A constant cannot close over both a 60 px text
+  line on a 3000 px page and a 6 px one on a 200 px thumbnail.
+* It is a *closing* radius, i.e. the reach must exceed the stroke thickness of
+  body text, otherwise ink survives into the surface and the divide erases it.
+
+Measured on synthetic pages with a 50 % illumination gradient and body text at
+`longEdge/250` stroke thickness, a reach of **~2 % of the long edge** is the
+smallest that keeps ink dark. The port therefore builds a working grid of ≤ 320
+cells and sets
+
+```
+radius = max(1, max(gridW, gridH) / 48)
+```
+
+which is scale-free by construction. Results with that setting (mask = the paper
+map → divide → ink curve):
+
+| Input px | Cell px | Radius | Paper lum (min / avg) | Ink lum (avg) |
+|---|---|---|---|---|
+| 200 × 260 | 1 | 5 | 250 / 255 | 52 |
+| 600 × 800 | 3 | 5 | 252 / 255 | 51 |
+| 1200 × 1600 | 5 | 6 | 250 / 255 | 51 |
+| 2000 × 2600 | 9 | 6 | 250 / 255 | 48 |
+
+With the previous constant radius of 1 the same page produced paper 255 / **ink
+255** — text completely erased. If a side-by-side against the real APK ever shows
+too much or too little background suppression, `PAPER_OPEN_DIVISOR` is the one
+number to change; nothing else in the pipeline depends on it.
+
+### 9.3 Clear B&W ordering
+
+§7 step 6 says "Otsu/adaptive binarization on normalized luminance". The ELF also
+imports `cv::medianBlur`, and the only place it belongs is *before* the
+threshold: denoising after binarisation cannot stop noise from moving the Otsu
+threshold, and it rounds corners. The port does `median3x3` → Otsu → soft ramp
+(`max(6, 6 % of threshold)` wide, to keep glyph edges anti-aliased). On the
+600 × 800 synthetic page that yields 100 % of paper at pure white and 95.7 % of
+ink at pure black, the rest being edge pixels inside the ramp.
+
+### 9.4 Where the numbers came from
+
+`linearStretchLut` is a **verbatim** port of §7's `enhancePhoto`, branch order
+and `range <= 0` fallback included — including the consequence that an inverted
+pair (`whitePoint < blackPoint`, which happens when ink covers under 2 % of the
+page) hard-thresholds at `blackPoint` rather than blackening the page. That is
+what the native code does; an earlier Kotlin revision "fixed" it with a skip
+guard, and that guard is gone.
+
+No static LUT tables exist in the binary, which confirms §8's instruction not to
+hardcode the document tone mapping: it is computed at runtime from the estimated
+background.

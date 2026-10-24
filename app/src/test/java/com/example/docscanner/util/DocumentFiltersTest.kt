@@ -1,115 +1,238 @@
 package com.example.docscanner.util
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Covers the pure, Android-free maths inside [DocumentFilters] — the tone curve,
- * the histogram percentile lookup and Otsu's threshold.
+ * Pins [DocumentFilters] to the behaviour recovered from the original APK.
  *
- * The full filters need a `Bitmap` and therefore an instrumented test; these
- * helpers are where an off-by-one quietly ruins output (e.g. a stretch that maps
- * paper to 254 instead of 255, or an Otsu threshold that lands on a histogram
- * peak and turns the page solid black).
+ * Everything here is pure JVM maths — no `Bitmap` — so it runs in
+ * `testDebugUnitTest`. The point is to catch the kinds of off-by-one that make a
+ * filter "almost" match: a black point that lands one bin early, a stretch that
+ * maps paper to 254, an Otsu threshold that lands on the paper peak and blackens
+ * the page.
+ *
+ * The expected numbers come from `fa1.H` in
+ * `docs/original_apk_pipeline_artifacts.zip` and from the native `enhancePhoto`
+ * disassembly in `docs/ORIGINAL_APP_FILTER_SPEC.md` §7 — not from eyeballing
+ * output.
  */
 class DocumentFiltersTest {
 
+    // ---------------------------------------------------------------- estimation
+
     @Test
-    fun curveLut_zeroStrength_isIdentity() {
-        val lut = DocumentFilters.curveLut(0f)
-        for (v in 0..255) {
-            assertEquals("identity mismatch at $v", v, lut[v])
+    fun estimation_usesTheTwoPercentCutoffsFromTheOriginal() {
+        // 10 000 samples: 200 ink at 40 (exactly 2 %), 9 800 paper at 245.
+        val pixels = IntArray(10_000) { index ->
+            if (index < 200) rgb(40, 40, 40) else rgb(245, 245, 245)
         }
+
+        val estimation = DocumentFilters.estimationFromPixels(pixels)
+
+        // `fa1.H` increments the index in the same iteration that reaches 2 %, so
+        // the black point is one bin ABOVE the crossing bin.
+        assertEquals("black point must mirror fa1.H's post-increment", 41, estimation.blackPoint)
+        // ...and decrements before exiting the white loop, so it is one bin BELOW.
+        assertEquals("white point must mirror fa1.H's pre-decrement", 244, estimation.whitePoint)
     }
 
     @Test
-    fun curveLut_pinsBothEnds() {
-        val lut = DocumentFilters.curveLut(0.55f)
-        assertEquals("black must stay black", 0, lut[0])
-        assertEquals("paper must stay pure white", 255, lut[255])
+    fun estimation_classifiesAWhitePageAsADocument() {
+        val pixels = IntArray(10_000) { rgb(250, 250, 248) }
+
+        val estimation = DocumentFilters.estimationFromPixels(pixels)
+
+        assertTrue(estimation.documentImage)
+        assertEquals(100f, estimation.documentRatio, 0.001f)
     }
 
     @Test
-    fun curveLut_isMonotonic() {
-        val lut = DocumentFilters.curveLut(0.55f)
+    fun estimation_classifiesASkyGradientAsAPhoto() {
+        // R <= G <= B with R >= 60, G >= 100, B >= 120 is the photo test in fa1.H.
+        val pixels = IntArray(10_000) { rgb(60, 100, 120) }
+
+        val estimation = DocumentFilters.estimationFromPixels(pixels)
+
+        assertTrue(estimation.documentImage)
+        assertEquals(100f, estimation.photoRatio, 0.001f)
+    }
+
+    @Test
+    fun estimation_doesNotTreatADarkFrameAsADocument() {
+        // Below every threshold in wv3: neither ratio reaches 60 %.
+        val pixels = IntArray(10_000) { rgb(12, 14, 18) }
+
+        val estimation = DocumentFilters.estimationFromPixels(pixels)
+
+        assertFalse(estimation.documentImage)
+    }
+
+    @Test
+    fun estimation_survivesAnEmptyPixelArray() {
+        val estimation = DocumentFilters.estimationFromPixels(IntArray(0))
+
+        assertEquals(0, estimation.blackPoint)
+        assertEquals(255, estimation.whitePoint)
+        assertFalse(estimation.documentImage)
+    }
+
+    // ------------------------------------------------------------------- lighten
+
+    @Test
+    fun linearStretch_mapsTheEndpointsExactly() {
+        val lut = DocumentFilters.linearStretchLut(blackPoint = 40, whitePoint = 200)
+
+        assertEquals("black point must map to 0", 0, lut[40])
+        assertEquals("white point must map to 255", 255, lut[200])
+        assertEquals("below black clips to 0", 0, lut[0])
+        assertEquals("above white clips to 255", 255, lut[255])
+        // Midpoint of 40..200 is 120 -> (80 / 160) * 255 = 127.5 -> 128.
+        assertEquals(128, lut[120])
+    }
+
+    @Test
+    fun linearStretch_followsTheNativeBranchOrder() {
+        // Native: if (v <= black) 0; else if (v >= white) 255; else round(...).
+        // The first branch must win when the two thresholds collide.
+        val lut = DocumentFilters.linearStretchLut(blackPoint = 128, whitePoint = 128)
+
+        assertEquals("v == black must take the first branch", 0, lut[128])
+        assertEquals(255, lut[129])
         for (v in 1..255) {
-            assertTrue("curve went backwards at $v", lut[v] >= lut[v - 1])
+            assertTrue("LUT went backwards at $v", lut[v] >= lut[v - 1])
         }
     }
 
     @Test
-    fun curveLut_darkensMidtones() {
-        // Smoothstep around the midpoint pulls shadow detail down, which is what
-        // makes print look black rather than grey. (At t < 0.5, e.g. v=96, smooth < t).
-        val lut = DocumentFilters.curveLut(0.55f)
-        assertTrue("shadows / ink should darken", lut[96] < 96)
-        assertTrue("near-white should stay light", lut[235] >= 230)
+    fun linearStretch_invertedPointsBecomeAHardThresholdNotABlackPage() {
+        // This is the case the old implementation "fixed" by skipping the filter:
+        // under 2 % ink both cutoffs land on the paper spike, so whitePoint < blackPoint.
+        // The native code sets range = 1.0 and lets the first branch win, which
+        // thresholds at blackPoint instead of inverting into a black page.
+        val lut = DocumentFilters.linearStretchLut(blackPoint = 232, whitePoint = 200)
+
+        assertEquals("everything at or below black goes to 0", 0, lut[100])
+        assertEquals(0, lut[232])
+        assertEquals("above black becomes paper", 255, lut[240])
+        assertTrue("the page must not be painted black", lut.count { it == 255 } > 0)
+    }
+
+    // -------------------------------------------------------------- ink curve
+
+    @Test
+    fun documentCurve_pinsBothEnds() {
+        val curve = DocumentFilters.documentCurveLut()
+
+        assertEquals("shadows must reach pure black", 0, curve[0])
+        assertEquals("paper must reach pure white", 255, curve[255])
+        assertEquals("highlight noise must snap to white", 255, curve[240])
     }
 
     @Test
-    fun stretchPoints_normalPageFindsInkAndPaper() {
-        val hist = IntArray(256)
-        for (v in 30..70) hist[v] = 5      // ink
-        for (v in 235..250) hist[v] = 60   // paper
-
-        val (low, high) = DocumentFilters.stretchPoints(hist)
-
-        assertTrue("black point $low should sit in the ink", low in 25..75)
-        assertTrue("white point $high should sit at paper", high >= 230)
+    fun documentCurve_isMonotonic() {
+        val curve = DocumentFilters.documentCurveLut()
+        for (v in 1..255) {
+            assertTrue("curve went backwards at $v", curve[v] >= curve[v - 1])
+        }
     }
 
     @Test
-    fun stretchPoints_clampsBlackPointOnABarelyPrintedPage() {
-        // 99.7 % paper with a handful of ink pixels: an unclamped 2 % percentile
-        // lands inside the paper mass and the gain explodes. This is the
-        // "washed out" regression.
-        val hist = IntArray(256)
-        hist[60] = 2
-        for (v in 240..250) hist[v] = 200
+    fun documentCurve_deepensMidtonesWithoutCrushingThem() {
+        val curve = DocumentFilters.documentCurveLut()
 
-        val (low, _) = DocumentFilters.stretchPoints(hist)
+        // Print at mid-grey must get darker so it reads as ink, but not so dark
+        // that anti-aliased glyph edges disappear.
+        assertTrue("mid-tone should darken", curve[128] < 128)
+        assertTrue("mid-tone should survive", curve[128] > 60)
+        assertTrue("near-white must stay light", curve[230] >= 240)
+    }
 
-        assertTrue("black point $low must be clamped", low <= 110)
+    // ------------------------------------------------------------------ grayscale
+
+    @Test
+    fun rec601_matchesOpenCvCvtColor() {
+        // The exact definition Imgproc.cvtColor(BGR2GRAY) uses.
+        assertEquals(255, DocumentFilters.rec601(255, 255, 255))
+        assertEquals(0, DocumentFilters.rec601(0, 0, 0))
+        assertEquals(76, DocumentFilters.rec601(255, 0, 0))
+        assertEquals(150, DocumentFilters.rec601(0, 255, 0))
+        assertEquals(29, DocumentFilters.rec601(0, 0, 255))
+    }
+
+    // ------------------------------------------------- native kernels (spec §6/§7)
+
+    @Test
+    fun median3x3_removesASingleHotPixelAndKeepsEdges() {
+        // cv::medianBlur(…, 3) runs on the normalised plane before Otsu, so it has
+        // to kill speckle without rounding off glyph edges.
+        val w = 5
+        val h = 5
+        val plane = FloatArray(w * h) { 200f }
+        plane[2 * w + 2] = 0f            // a lone dust speck on the paper
+
+        val out = DocumentFilters.median3x3(plane, w, h)
+
+        assertEquals("a 1 px speck must vanish", 200f, out[2 * w + 2], 0.01f)
+
+        // A straight vertical edge at x = 2 must not move.
+        val edge = FloatArray(w * h) { i -> if (i % w < 2) 0f else 255f }
+        val edgeOut = DocumentFilters.median3x3(edge, w, h)
+        assertEquals(0f, edgeOut[1 * w + 1], 0.01f)
+        assertEquals(255f, edgeOut[1 * w + 3], 0.01f)
     }
 
     @Test
-    fun stretchPoints_keepsAMinimumRange() {
-        val hist = IntArray(256)
-        for (v in 120..124) hist[v] = 100 // low-contrast page
+    fun gaussianBlur3_isANormalisedBinomialKernel() {
+        val w = 7
+        val h = 7
 
-        val (low, high) = DocumentFilters.stretchPoints(hist)
+        // Flat field in, flat field out: the [1 2 1]/4 rows and columns sum to 1.
+        val flat = DocumentFilters.gaussianBlur3(FloatArray(w * h) { 123f }, w, h)
+        for (value in flat) assertEquals(123f, value, 0.01f)
 
-        assertTrue("range ${high - low} must not be degenerate", high - low >= 12)
+        // A single hot pixel spreads to its 3x3 neighbourhood with weights
+        // 1,2,1 / 2,4,2 / 1,2,1 over 16 — the classic binomial-3 response.
+        val spike = FloatArray(w * h) { 0f }
+        spike[3 * w + 3] = 1600f
+        val out = DocumentFilters.gaussianBlur3(spike, w, h)
+        assertEquals("4/16", 400f, out[3 * w + 3], 0.01f)
+        assertEquals("2/16 orthogonal", 200f, out[3 * w + 2], 0.01f)
+        assertEquals("1/16 diagonal", 100f, out[2 * w + 2], 0.01f)
+        assertEquals("outside the 3x3", 0f, out[1 * w + 1], 0.01f)
     }
 
     @Test
-    fun stretchPoints_doesNotOverBrightenADarkPhoto() {
-        val hist = IntArray(256)
-        for (v in 40..170) hist[v] = 4
+    fun paperRadius_scalesWithThePageSoTheReachIsScaleFree() {
+        // computeRadius(w, h, dpi, level) is the one unrecovered constant. Whatever
+        // its formula, the reach must be a fraction of the page: a fixed radius
+        // cannot close over a 60 px text line and a 6 px one at the same time.
+        val small = DocumentFilters.paperRadius(200, 260)   // ~200 px thumbnail
+        val medium = DocumentFilters.paperRadius(240, 320)  // 1200 px page
+        val large = DocumentFilters.paperRadius(223, 289)   // 2000 px page
 
-        val (_, high) = DocumentFilters.stretchPoints(hist)
+        assertTrue("radius must never be 0", small >= 1)
+        assertTrue("small pages still need a window", small >= 2)
+        assertTrue("large pages must close over body text", large >= 4)
 
-        assertTrue("white point $high must be floored", high >= 205)
+        // Expressed as a fraction of the page, the three cases must agree, which
+        // is precisely what the old fixed radius of 1 did not do.
+        val smallFraction = small / 260f
+        val mediumFraction = medium / 320f
+        val largeFraction = large / 289f
+
+        for (fraction in listOf(smallFraction, mediumFraction, largeFraction)) {
+            assertTrue("reach $fraction is outside ~1-3 % of the page", fraction in 0.012f..0.030f)
+        }
+        assertTrue(
+            "reach was not scale-free: ${largeFraction / smallFraction}",
+            largeFraction / smallFraction < 1.5f
+        )
     }
 
-    @Test
-    fun percentile_returnsExpectedValues() {
-        val hist = IntArray(256)
-        // 10 samples at 10, 80 at 100, 10 at 250.
-        hist[10] = 10
-        hist[100] = 80
-        hist[250] = 10
-
-        assertEquals(10, DocumentFilters.percentile(hist, 0.0f))
-        assertEquals(100, DocumentFilters.percentile(hist, 0.5f))
-        assertEquals(250, DocumentFilters.percentile(hist, 0.999f))
-    }
-
-    @Test
-    fun percentile_handlesEmptyHistogram() {
-        assertEquals(0, DocumentFilters.percentile(IntArray(256), 0.5f))
-    }
+    // ---------------------------------------------------------------------- otsu
 
     @Test
     fun otsu_splitsABimodalHistogram() {
@@ -138,4 +261,7 @@ class DocumentFiltersTest {
         val threshold = DocumentFilters.otsuThreshold(hist)
         assertTrue("threshold $threshold must be below paper level", threshold < 210)
     }
+
+    private fun rgb(r: Int, g: Int, b: Int): Int =
+        (0xFF shl 24) or (r shl 16) or (g shl 8) or b
 }

@@ -44,12 +44,17 @@ in app-private storage, and renders them back.
      pixels now.
    - 5 enhancements computed per-pixel by `DocumentFilters` and previewed live:
      *Original*, *Magic Color*, *Clear B&W*, *Grayscale*, *Lighten*.
-     Each applies **illumination normalisation** (shadows and torch hotspots are
-     divided out against a local paper-brightness model), **grey-world white
-     balance**, one **clamped luminance contrast stretch** (so whites never drift
-     pink/green and lightly-printed pages don't blow out) and an ink-deepening
-     S-curve; *Clear B&W* thresholds with **Otsu** over an asymmetric ramp plus a
-     3×3 despeckle, so paper stays clean and glyph edges stay smooth.
+     The maths is **ported from the original APK**, not tuned by eye
+     (`docs/ORIGINAL_APP_FILTER_SPEC.md`): the estimator is `fa1.H` verbatim —
+     100×100 bilinear downsample, `(R+G+B)/3` luminance, black/white points found
+     at the 2 % cumulative cutoffs of each end, and the `wv3` document/photo
+     classifier. *Lighten* is then the native `enhancePhoto` LUT, ported line
+     for line; *Magic Color* and *Clear B&W* build a per-channel paper surface
+     (pool → `dilate`/`erode` exactly as the shipped `libimageproc.so` does, at a
+     size-scaled radius), divide by it so shadows and colour casts cancel in one
+     step, then apply a pinned ink curve with midtone sharpening / a median
+     pre-filter followed by Otsu on a soft anti-aliased ramp; *Grayscale* is
+     plain Rec.601 desaturation, as in the original.
    - 90° rotation, "Full Page" reset, and a brightness-based "Auto Detect".
    - Non-destructive: the pristine capture is never overwritten, so repeated edits
      don't accumulate JPEG loss.
