@@ -24,7 +24,7 @@
 
 | | Arena.ai | Antigravity |
 | :--- | :--- | :--- |
-| Writes to | `arena/a1adc686-re-cam` branch, pushed to `origin` | local working tree |
+| Writes to | `arena/bdeaf5fa-re-cam` branch, pushed to `origin` | local working tree |
 | Verifies by | code review only — **no JDK / Android SDK in the Arena sandbox** | `./gradlew assembleDebug` + device install |
 | Must do before pulling | — | `git stash` or commit local work first |
 
@@ -78,6 +78,7 @@ Keep this table short. Delete your row when the change lands.
 | :--- | :--- | :--- | :--- |
 | Antigravity | ✅ committed | `docs/ORIGINAL_APP_FILTER_SPEC.md`, `docs/AGENTS_CHANGELOG.md` | Reverse-engineered native filter spec & decompiled algorithms |
 | Arena.ai | ✅ committed | `util/DocumentNaming.kt`, `ui/editor/CropAndFilterScreen.kt`, `Navigation.kt`, `NavigationKeys.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/PerspectiveWarp.kt`, `app/build.gradle.kts`, tests + docs | Done-button crash fix, post-capture review flow, folder move, note editing |
+| Arena.ai | 🔄 in PR #5, needs a build | `util/DocumentFilters.kt`, `util/ImageProcessingUtils.kt`, `DocumentFiltersTest.kt`, docs | Filters rewritten against (k)'s native spec. **Please build it** — it is doc-verified and simulated here, not compiled. |
 
 ## 5. File ownership map
 

@@ -4,6 +4,70 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (l) — Arena.ai — Filters corrected against the native disassembly
+
+### What changed and why
+The filters now follow the **actual native code**, not the documented behaviour
+of it. `libimageproc.so` was disassembled (spec §6–§8, entry (k)) and three
+things I had reconstructed by reasoning turned out to be wrong:
+
+| I had | The disassembly says | Now |
+|---|---|---|
+| Skip *Lighten* when `blackPoint > whitePoint` | `range = wp - bp; if (range <= 0) range = 1.0;` then the `v <= bp` branch wins | verbatim port, no guard |
+| Dilation only for the paper map (block max) | `cv::dilate` **then** `cv::erode` — a closing that fills ink with paper | max-pool, then dilate → erode |
+| 3×3 majority vote on the **binarised** result | `cv::medianBlur` runs **before** the threshold | median on the normalised plane, then Otsu |
+
+### Transcribed exactly (do not "improve")
+- **`enhancePhoto`** (`0x0000f5d4`, 608 B) — ported line for line; see
+  `linearStretchLut`. The `range <= 0` fallback and the branch order together
+  mean an inverted pair thresholds hard at `blackPoint` instead of blackening the
+  page, which is what the original does. `DocumentFiltersTest` pins all three
+  branches.
+- **`enhanceDocument` step list** — background estimate, divide, tone curve,
+  `cv::medianBlur` before the threshold, `cv::Laplacian`/`cv::GaussianBlur`
+  sharpening of midtone contrast. Each step has a comment naming the import that
+  justifies it, so nobody re-adds a step that is not in the ELF.
+- **No static LUT tables in the binary** — the tone mapping is computed at
+  runtime, so the curve stays a parameterised gamma with pinned endpoints rather
+  than a copied table.
+
+### The one number that is still a model
+`enhanceDocument` calls `ColorizingRadius::computeRadius(w, h, dpi, level)`,
+which lives behind the stripped PLT; its body was not recovered. What is certain
+is that the radius depends on size — a fixed radius cannot close over a 60 px
+text line and a 6 px one at the same time.
+
+A fixed radius of 1 (my first port of that step) closes over nothing but
+single-pixel specks, and the divide then washes text out entirely: on a synthetic
+page with a 50 % illumination gradient, ink came out at 255. Measured on the same
+page, **~2 % of the long edge** is the smallest reach that bridges body text, and
+it is scale-free — `paperRadius()` derives it from the working grid
+(`PAPER_OPEN_DIVISOR = 48`). With it, across 200 px → 2000 px inputs:
+
+| Input | Cell | Radius | Paper luminance (min/avg) | Ink (avg) |
+|---|---|---|---|---|
+| 200 × 260 | 1 | 5 | 250 / 255 | 52 |
+| 600 × 800 | 3 | 5 | 252 / 255 | 51 |
+| 1200 × 1600 | 5 | 6 | 250 / 255 | 51 |
+| 2000 × 2600 | 9 | 6 | 250 / 255 | 48 |
+
+*Clear B&W* on the 600 × 800 page: **100 %** of paper lands on pure white and
+95.7 % of ink on pure black, the remainder being anti-aliased edges inside the
+ramp — the ramp is doing its job, not the threshold.
+
+That constant is the only unverified number left in the pipeline, and it is
+isolated so calibration touches one line.
+
+### Tests
+`linearStretch` branch semantics (endpoints, `range <= 0`, inverted pair),
+`median3x3` (speck removal, edge preservation), `gaussianBlur3` (flat-field
+invariance and the 1:2:1 × 1:2:1 weights), `paperRadius` (scale invariance), plus
+the earlier estimation, classification, curve and Otsu coverage. Removed the
+assertion for the deleted span guard.
+
+### Version
+**1.5 (code 6)** — unchanged from the previous entry in this PR.
+
 ## 2026-10-25 (k) — Antigravity — Native libimageproc.so disassembled & exact OpenCV filter algorithms extracted
 
 - Extracted ARM64 native library `libimageproc.so` (138,664 bytes) from connected device split APK `split_config.arm64_v8a.apk`.
@@ -22,72 +86,6 @@ Newest entry at the top.
 - Fixed compiler error in `DocumentDetector.kt`: `quadFromBoundaries` returned `Pair<QuadCorners, Boolean>?` while caller accessed `.corners` and `.confident`. Changed `quadFromBoundaries` to return `Detection?` directly (`Detection(it, scan.fittedSides >= 3)`).
 - Verified build and unit test suite: `./gradlew assembleDebug testDebugUnitTest` passed cleanly in 35s.
 - Built `app-debug.apk` (versionCode 5, versionName 1.4).
-
-## 2026-10-25 (k) — Arena.ai — Filters rebuilt against the decompiled original
-
-### What changed and why
-The previous filters were tuned by eye. They are now derived from `base.apk`
-(`com.indymobileapp.document.scanner`), using
-`docs/ORIGINAL_APP_FILTER_SPEC.md` **and the bytecode itself** in
-`docs/original_apk_pipeline_artifacts.zip` (`fa1.smali`, `wv3.smali`,
-`tw3.smali`, `lu3.smali`, `qx3.smali`).
-
-Three things in the old pipeline were simply never in the original:
-
-| Old behaviour | Reality in the APK | Now |
-|---|---|---|
-| Every filter did a percentile stretch | only *Lighten* uses the estimated points; `enhanceDocument` is not even passed them | stretch is *Lighten*-only |
-| Points clamped to `[110, 205]` | `fa1.H` walks the histogram with **no clamp**, 2 % from each end | no clamp (one guarded edge case, below) |
-| *Grayscale* was enhanced | `qx3` gray branch is literally `cvtColor(BGR2GRAY)` | pure Rec.601 desaturation |
-| Luma = Rec.601 (0.299/0.587/0.114) | `(R + G + B) / 3`, integer division | estimator uses the mean |
-
-### Transcribed exactly (do not "improve")
-- **Estimation** (`fa1.H`): bilinear downscale to **100 × 100**, four 256-bin
-  histograms, luminance `(R+G+B)/3`, then walk up/down until **200 samples**
-  (2 % of 10 000) accumulate. The off-by-one is preserved on purpose: the black
-  point ends up **one bin above** the crossing bin (post-increment) and the white
-  point **one bin below** (pre-decrement). `DocumentFiltersTest` pins both.
-- **Classification** (`wv3` static initialiser, read as raw hex):
-  doc pixel = `R≥80 && G≥80 && B≥70 && (R−B)≤110 && B−20 ≤ G ≤ R+20`;
-  photo pixel = `R≥60 && G≥100 && B≥120 && R≤G≤B`;
-  `documentImage = docRatio > 60 % || photoRatio > 60 %`.
-- **Lighten** (`tw3` → `enhancePhoto`): `clamp((I − black) / (white − black) × 255)`
-  applied equally to R, G, B. No curve, no illumination model.
-
-### Reconstruction (native `libimageproc.so` was not in the artifacts)
-`enhanceDocument(level, colorMode)` is native and no `.so` was supplied, so its
-tone curve cannot be transcribed. It is rebuilt from the documented behaviour,
-with every knob in one block at the top of `DocumentFilters`:
-
-1. **Paper map** — per-channel block *maximum* (paper is the brightest thing in a
-   patch that also contains print, so a max rejects ink instead of averaging it),
-   block = short edge / 20, then two 3×3 blurs so the grid cannot show through.
-2. **Divide** — `I / paper · 255` per channel. Because the map is per channel this
-   removes the light's colour cast as well as shadows, which is the "white balance
-   against the estimated paper background" the native code returns as `bgColor`.
-   Gain is capped at 4.5× (paper floored at 57) so a finger over the lens cannot
-   become white paper.
-3. **Ink curve** — endpoints pinned: bottom 6 % → black, top 7 % → white, gamma
-   1.28 in between, so print reads black and paper noise snaps to white.
-4. **Saturation** 1.18 about luminance for *Magic Color* only.
-5. **Clear B&W** — the same normalisation, then Otsu, then a soft ramp
-   (`max(6, 6 % of threshold)`) and a 3×3 majority vote per the spec's
-   "morphological smoothing".
-
-### One deliberate deviation
-`fa1.H` has no guard for `blackPoint > whitePoint`, which happens whenever ink
-covers under 2 % of the page — both cutoffs then land on the paper spike and a
-naive stretch paints the page black. `Lighten` now leaves such a page untouched
-below a span of 8. Documented at the constant, covered by a unit test.
-
-### Tests
-`DocumentFiltersTest` rewritten: the 41/244 off-by-one, photo vs document
-classification, the lighten LUT endpoints, curve monotonicity + midtone
-darkening, Rec.601 values, Otsu behaviour. Removed tests for
-`stretchPoints`/`curveLut`/`percentile`, which no longer exist.
-
-### Version
-**1.5 (code 6)**.
 
 ## 2026-10-25 (h) — Arena.ai — Working Settings screen
 

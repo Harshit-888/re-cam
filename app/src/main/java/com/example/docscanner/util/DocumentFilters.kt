@@ -20,8 +20,8 @@ import kotlin.math.roundToInt
  * | Original | `qx3` colour branch | passthrough |
  * | Grayscale | `qx3` gray branch → `Imgproc.cvtColor(BGR2GRAY)` | Rec.601 luminance, **no** enhancement |
  * | Lighten | `tw3` → `enhancePhoto(blackPoint, whitePoint, colorMode)` | linear stretch between the estimated points |
- * | Magic Color | `lu3` → `enhanceDocument(level = 1)` | illumination normalisation → paper white balance → ink curve → saturation |
- * | Clear B&W | `lu3` → `enhanceDocument(level = 2)` | illumination normalisation → Otsu → soft edge ramp |
+ * | Magic Color | `lu3` → `enhanceDocument(level = 1)` | paper surface → divide → ink curve → saturation → midtone sharpen |
+ * | Clear B&W | `lu3` → `enhanceDocument(level = 2)` | paper surface → median → Otsu → soft edge ramp |
  *
  * Three things in the previous revision were simply **not in the original** and
  * are gone:
@@ -33,10 +33,15 @@ import kotlin.math.roundToInt
  *    with no clamp at all (2 % of pixels from each end).
  * 3. *Grayscale* was being enhanced. The original only desaturates.
  *
- * The two document filters delegate to native C++ (`libimageproc.so`), which was
- * not part of the recovered artifacts, so their tone curve is a reconstruction of
- * the documented behaviour rather than a transcription. Those knobs are isolated
- * in the "reconstruction" block below so calibration only touches one place.
+ * The two document filters delegate to native C++ (`libimageproc.so`). Its JNI
+ * table and imports were recovered from the shipped ARM64 ELF (spec §6) and the
+ * short routines were decompiled (§7), so the **step list** below is a
+ * transcription: `cv::dilate` → `cv::erode` on the background estimate, a divide
+ * by it, `cv::medianBlur` before `cv::LUT`-driven thresholding, `cv::Laplacian`
+ * sharpening. What is *not* recovered is `ColorizingRadius::computeRadius`, the
+ * one size-dependent radius behind the stripped PLT, so the reach is a model —
+ * isolated in the "reconstruction" block below so calibration touches one place
+ * and nothing else moves.
  *
  * Blocking CPU work — call from `Dispatchers.Default`/`IO`, never composition.
  */
@@ -79,17 +84,48 @@ object DocumentFilters {
     internal const val CLASSIFICATION_RATIO = 60f
 
     // ==================================================================================
-    // Reconstruction of the native `enhanceDocument` (libimageproc.so was not recovered).
-    // Calibrate here if a comparison against the original ever disagrees.
+    // Reconstruction of `enhanceDocument`'s size-dependent radius (computeRadius was
+    // behind the stripped PLT). Calibrate here if the original disagrees; the rest of
+    // the pipeline below is transcribed from the disassembly.
     // ==================================================================================
 
     /**
-     * Paper map block size on the short edge. Large enough that a block containing
-     * print still finds paper (the map is a *maximum*, so text never pulls it
-     * down), small enough to follow a torch hotspot across a page.
+     * Long edge of the working grid the background surface is estimated on.
+     *
+     * The surface is low-frequency by construction, so estimating it at ~1/8 of
+     * the page and sampling it bilinearly is indistinguishable from full
+     * resolution while costing a fraction of the time.
      */
-    private const val PAPER_BLOCK_DIVISOR = 20
-    private const val PAPER_BLOCK_MIN = 8
+    private const val PAPER_WORK_DIM = 320
+
+    /**
+     * Denominator that turns the working grid into the morphology radius.
+     *
+     * The disassembly shows `cv::dilate` immediately followed by `cv::erode` on
+     * the background estimate. In OpenCV's own vocabulary that pair is a
+     * **closing** (`MORPH_CLOSE`), and its job is exactly what the pipeline
+     * needs: fill dark structure -- glyph strokes, rules, staples, a shadowed
+     * fold -- with the paper level around it, so the surface describes the page
+     * and not its ink. A dilation alone reads too bright and dividing by it
+     * paints the page white.
+     *
+     * The radius is **not** a constant in the original: `enhanceDocument` calls
+     * `ColorizingRadius::computeRadius(w, h, dpi, level)`, whose body is behind
+     * the stripped PLT and was not recovered (spec §7). What is certain is that
+     * it depends on the image size, because a fixed radius cannot close over a
+     * 60 px text line and a 6 px one at the same time. Measured against the
+     * behaviour we can see, ~2 % of the image's long edge is the smallest reach
+     * that reliably bridges body text, and it is scale-free: at any resolution
+     * it removes ink and keeps folds. On a 320-cell grid that is a radius of 6,
+     * hence the divisor below.
+     *
+     * This is the one number in the paper map that is a model rather than a
+     * transcription -- logged as such in `docs/ORIGINAL_APP_FILTER_SPEC.md`.
+     */
+    private const val PAPER_OPEN_DIVISOR = 48
+
+    /** Morphology radius is never below this; radius 0 would skip the step. */
+    private const val PAPER_OPEN_MIN_RADIUS = 1
 
     /**
      * Ceiling on the illumination gain. A patch must never be amplified more than
@@ -109,23 +145,21 @@ object DocumentFilters {
     /** Chroma boost for stamps, logos and signatures in *Magic Color*. */
     private const val MAGIC_COLOR_SATURATION = 1.18f
 
+    /**
+     * Unsharp strength for *Magic Color*'s "sharpens midtone contrast" step.
+     *
+     * The library imports `cv::Laplacian` and `cv::GaussianBlur`, so the original
+     * sharpens rather than only stretching tones. Applied to luminance and
+     * rescaled into the colour channels, so hue (stamps, logos, highlighters)
+     * survives.
+     */
+    private const val SHARPEN_AMOUNT = 0.55f
+
     /** Anti-aliasing band around the B&W threshold, as a fraction of it. */
     private const val BW_RAMP_FRACTION = 0.06f
 
     /** Never make the B&W ramp narrower than this, or edges turn to jaggies. */
     private const val BW_MIN_RAMP = 6f
-
-    /**
-     * Below this black→white span, *Lighten* leaves the page alone.
-     *
-     * This is the one deliberate deviation from the original. `fa1.H` has no
-     * guard against `blackPoint > whitePoint`, and that happens whenever ink
-     * covers less than 2 % of the page: both cutoffs then land on the paper spike,
-     * the range inverts, and a naive stretch turns a nearly blank page solid
-     * black. A page with that little ink has nothing to lighten, so identity is
-     * both safer and closer to the intent.
-     */
-    private const val MIN_LIGHTEN_SPAN = 8
 
     // ==================================================================================
     // Estimation — the exact algorithm behind fa1.H
@@ -302,7 +336,6 @@ object DocumentFilters {
      * "document".
      */
     private fun applyLinearStretch(pixels: IntArray, estimation: Estimation) {
-        if (estimation.whitePoint - estimation.blackPoint < MIN_LIGHTEN_SPAN) return
         val lut = linearStretchLut(estimation.blackPoint, estimation.whitePoint)
         for (i in pixels.indices) {
             val p = pixels[i]
@@ -335,20 +368,24 @@ object DocumentFilters {
     /**
      * *Magic Color* — `lu3` → `enhanceDocument(level = 1, colorMode = 1)`.
      *
-     * Reconstruction of the native routine, in the order the spec describes:
+     * Reconstruction of the native routine (`0x00010178`), following its step list:
      *
-     * 1. **Paper map.** A per-channel block *maximum* — paper is the brightest
-     *    thing in any patch that also contains print, so a max rejects ink instead
-     *    of averaging it in. Blurred twice so the block grid cannot show through.
-     * 2. **Divide by it.** `I / paper · 255` removes shadows *and* the light's
-     *    colour cast in one step, because the map is per channel — this is the
-     *    "white balance against the estimated paper background" the native code
-     *    reports back as `bgColor`.
+     * 1. **Illumination surface.** `cv::dilate` → `cv::erode` (a closing) per
+     *    channel, exactly as the disassembly states — see [buildPaperMap].
+     * 2. **Divide by it.** `I / paper · 255` removes shadows, page curvature *and*
+     *    the light's colour cast in one step, because the surface is per channel.
+     *    This is the "white balance against the estimated paper background" the
+     *    native code hands back as `ColorizingRadius::getBackgroundColor()`.
      * 3. **Ink curve.** A gamma with pinned endpoints: the top 7 % of tones (paper
      *    noise, JPEG ripple) snap to pure white and the bottom 6 % snap to black,
      *    so print reads black instead of grey.
      * 4. **Saturation.** Modest, about luminance, so stamps and signatures keep
      *    their colour while the paper stays neutral.
+     * 5. **Midtone sharpening.** The library imports `cv::Laplacian` and
+     *    `cv::GaussianBlur`, and the spec calls level 1 out as "sharpens midtone
+     *    contrast, preserving stamp/logo chromaticity" — so an unsharp mask on
+     *    luminance, with the result folded back into all three channels as a scale
+     *    factor. Sharpening the channels independently would fringe coloured ink.
      */
     private fun applyDocumentColor(pixels: IntArray, w: Int, h: Int) {
         val paper = buildPaperMap(pixels, w, h)
@@ -383,15 +420,57 @@ object DocumentFilters {
                 index++
             }
         }
+
+        sharpenLuminance(pixels, w, h)
+    }
+
+    /**
+     * Unsharp mask on luminance, folded back as a per-pixel scale.
+     *
+     * `out = luma + amount · (luma − blur(luma))`, then every channel is scaled by
+     * `out / luma`. Because it is one scale for all three channels, hue is
+     * untouched — a red stamp stays the same red, just crisper at the edges.
+     */
+    private fun sharpenLuminance(pixels: IntArray, w: Int, h: Int) {
+        val luma = FloatArray(w * h)
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            luma[i] = 0.299f * ((p ushr 16) and 0xFF) +
+                0.587f * ((p ushr 8) and 0xFF) +
+                0.114f * (p and 0xFF)
+        }
+        val blurred = gaussianBlur3(luma, w, h)
+
+        for (i in pixels.indices) {
+            val base = luma[i]
+            val detail = base - blurred[i]
+            if (detail > -1f && detail < 1f) continue
+
+            val target = (base + SHARPEN_AMOUNT * detail).coerceIn(0f, 255f)
+            val scale = target / max(1f, base)
+            val p = pixels[i]
+            val r = (((p ushr 16) and 0xFF) * scale).roundToInt().coerceIn(0, 255)
+            val g = (((p ushr 8) and 0xFF) * scale).roundToInt().coerceIn(0, 255)
+            val b = ((p and 0xFF) * scale).roundToInt().coerceIn(0, 255)
+            pixels[i] = (p and ALPHA_MASK) or (r shl 16) or (g shl 8) or b
+        }
     }
 
     /**
      * *Clear B&W* — `lu3` → `enhanceDocument(level = 2, colorMode = 2)`.
      *
-     * Illumination normalisation first (same paper map), then Otsu over the
-     * normalised luminance, then a soft ramp so glyph edges stay anti-aliased
-     * instead of turning into 1-bit jaggies. A 3×3 majority vote removes isolated
-     * dust specks and fills pinholes, which the spec calls morphological smoothing.
+     * Illumination normalisation first (same illumination surface), then a 3×3
+     * **median** on the normalised luminance, then Otsu, then a soft ramp so glyph
+     * edges stay anti-aliased instead of turning into 1-bit jaggies.
+     *
+     * The median is not an embellishment: the native library imports
+     * `cv::medianBlur`, and denoising *before* the threshold is the ordering that
+     * keeps dust specks and JPEG mosquito noise out of the binarisation without
+     * eroding the glyphs themselves.
+     *
+     * An earlier revision voted 3×3 on the already-binarised result instead. That
+     * is a weaker operation at the wrong point in the pipeline: it cannot stop
+     * noise from dragging the Otsu threshold, and it rounds corners.
      */
     private fun applyDocumentBw(pixels: IntArray, w: Int, h: Int) {
         val paper = buildPaperMap(pixels, w, h)
@@ -399,17 +478,21 @@ object DocumentFilters {
         val normalised = IntArray(3)
 
         var index = 0
-        val histogram = IntArray(256)
         for (y in 0 until h) {
             for (x in 0 until w) {
                 normalise(pixels[index], paper, x, y, normalised)
-                val value = 0.299f * normalised[0] +
+                lum[index] = 0.299f * normalised[0] +
                     0.587f * normalised[1] +
                     0.114f * normalised[2]
-                lum[index] = value
-                histogram[value.roundToInt().coerceIn(0, 255)]++
                 index++
             }
+        }
+
+        // cv::medianBlur before thresholding, not after.
+        val denoised = median3x3(lum, w, h)
+        val histogram = IntArray(256)
+        for (value in denoised) {
+            histogram[value.roundToInt().coerceIn(0, 255)]++
         }
 
         val threshold = otsuThreshold(histogram).toFloat()
@@ -422,36 +505,14 @@ object DocumentFilters {
         }
         val span = (highCut - lowCut).coerceAtLeast(1f)
 
-        for (y in 0 until h) {
-            val rowUp = if (y > 0) (y - 1) * w else 0
-            val row = y * w
-            val rowDown = if (y < h - 1) (y + 1) * w else (h - 1) * w
-            for (x in 0 until w) {
-                val i = row + x
-                val xm = if (x > 0) x - 1 else 0
-                val xp = if (x < w - 1) x + 1 else w - 1
-
-                var paperNeighbours = 0
-                if (lum[rowUp + xm] >= threshold) paperNeighbours++
-                if (lum[rowUp + x] >= threshold) paperNeighbours++
-                if (lum[rowUp + xp] >= threshold) paperNeighbours++
-                if (lum[row + xm] >= threshold) paperNeighbours++
-                if (lum[row + x] >= threshold) paperNeighbours++
-                if (lum[row + xp] >= threshold) paperNeighbours++
-                if (lum[rowDown + xm] >= threshold) paperNeighbours++
-                if (lum[rowDown + x] >= threshold) paperNeighbours++
-                if (lum[rowDown + xp] >= threshold) paperNeighbours++
-
-                val value = lum[i]
-                val out = when {
-                    paperNeighbours >= 6 -> 255   // clear paper majority: kill ink specks
-                    paperNeighbours <= 3 -> 0     // clear ink majority: fill pinholes
-                    value >= highCut -> 255
-                    value <= lowCut -> 0
-                    else -> (((value - lowCut) / span) * 255f).roundToInt().coerceIn(0, 255)
-                }
-                pixels[i] = (pixels[i] and ALPHA_MASK) or (out shl 16) or (out shl 8) or out
+        for (i in pixels.indices) {
+            val value = denoised[i]
+            val out = when {
+                value >= highCut -> 255
+                value <= lowCut -> 0
+                else -> (((value - lowCut) / span) * 255f).roundToInt().coerceIn(0, 255)
             }
+            pixels[i] = (pixels[i] and ALPHA_MASK) or (out shl 16) or (out shl 8) or out
         }
     }
 
@@ -469,54 +530,207 @@ object DocumentFilters {
         val block: Float
     )
 
+    /**
+     * The illumination surface, built the way the native library builds it:
+     * pool, then **dilate → erode** (a closing, i.e. ink filled with paper),
+     * then smooth.
+     *
+     * Why a max-pool first: the working grid is ~1/8 scale, and averaging down
+     * would drag text into the paper estimate, producing grey haloes around every
+     * glyph once divided out. Pooling with a max is the dilation half of the
+     * opening at full resolution — text can never win against the paper beside it.
+     *
+     * Then the dilate→erode pair runs on the grid at a radius that scales with
+     * the page, which is what carries the paper level across a whole text line
+     * instead of stopping at the stroke edge.
+     */
     private fun buildPaperMap(pixels: IntArray, w: Int, h: Int): PaperMap {
-        val block = max(PAPER_BLOCK_MIN, min(w, h) / PAPER_BLOCK_DIVISOR).toFloat()
-        val gw = max(1, ceil(w / block).toInt())
-        val gh = max(1, ceil(h / block).toInt())
+        val cell = max(1, ceil(max(w, h).toFloat() / PAPER_WORK_DIM).toInt())
+        val gw = max(1, (w + cell - 1) / cell)
+        val gh = max(1, (h + cell - 1) / cell)
 
-        val gridR = FloatArray(gw * gh)
-        val gridG = FloatArray(gw * gh)
-        val gridB = FloatArray(gw * gh)
+        var gridR = maxPool(pixels, w, h, cell, gw, gh, 16)
+        var gridG = maxPool(pixels, w, h, cell, gw, gh, 8)
+        var gridB = maxPool(pixels, w, h, cell, gw, gh, 0)
 
+        // cv::dilate then cv::erode — the closing named in the disassembly.
+        gridR = closeDarkStructure(gridR, gw, gh)
+        gridG = closeDarkStructure(gridG, gw, gh)
+        gridB = closeDarkStructure(gridB, gw, gh)
+
+        // Two 3×3 passes so the cell grid cannot show through the division.
+        repeat(2) {
+            gridR = boxBlur3(gridR, gw, gh)
+            gridG = boxBlur3(gridG, gw, gh)
+            gridB = boxBlur3(gridB, gw, gh)
+        }
+
+        return PaperMap(gridR, gridG, gridB, gw, gh, cell.toFloat())
+    }
+
+    /**
+     * Radius of the dilate→erode pair, in working-grid cells.
+     *
+     * Scales with the grid, so the reach is the same fraction of the page at
+     * every input size. See [PAPER_OPEN_DIVISOR].
+     */
+    internal fun paperRadius(gw: Int, gh: Int): Int =
+        max(PAPER_OPEN_MIN_RADIUS, max(gw, gh) / PAPER_OPEN_DIVISOR)
+
+    /**
+     * `cv::dilate` then `cv::erode` on a channel plane -- a closing: dark
+     * structure narrower than the window is filled with its surroundings.
+     */
+    private fun closeDarkStructure(grid: FloatArray, gw: Int, gh: Int): FloatArray {
+        val radius = paperRadius(gw, gh)
+        val dilated = windowOp(grid, gw, gh, radius, dilate = true)
+        return windowOp(dilated, gw, gh, radius, dilate = false)
+    }
+
+    /** Block maximum of one channel, i.e. the dilation half of the opening. */
+    private fun maxPool(
+        pixels: IntArray,
+        w: Int,
+        h: Int,
+        cell: Int,
+        gw: Int,
+        gh: Int,
+        shift: Int
+    ): FloatArray {
+        val out = FloatArray(gw * gh)
         for (gy in 0 until gh) {
-            val y0 = (gy * block).toInt().coerceIn(0, h - 1)
-            val y1 = min(h, ((gy + 1) * block).toInt().coerceAtLeast(y0 + 1))
+            val y0 = min(h - 1, gy * cell)
+            val y1 = min(h, y0 + cell)
             for (gx in 0 until gw) {
-                val x0 = (gx * block).toInt().coerceIn(0, w - 1)
-                val x1 = min(w, ((gx + 1) * block).toInt().coerceAtLeast(x0 + 1))
-                var peakR = 0
-                var peakG = 0
-                var peakB = 0
+                val x0 = min(w - 1, gx * cell)
+                val x1 = min(w, x0 + cell)
+                var peak = 0
                 for (y in y0 until y1) {
                     val row = y * w
                     for (x in x0 until x1) {
-                        val p = pixels[row + x]
-                        val r = (p ushr 16) and 0xFF
-                        val g = (p ushr 8) and 0xFF
-                        val b = p and 0xFF
-                        if (r > peakR) peakR = r
-                        if (g > peakG) peakG = g
-                        if (b > peakB) peakB = b
+                        val value = (pixels[row + x] ushr shift) and 0xFF
+                        if (value > peak) peak = value
                     }
                 }
-                val cell = gy * gw + gx
-                gridR[cell] = peakR.toFloat()
-                gridG[cell] = peakG.toFloat()
-                gridB[cell] = peakB.toFloat()
+                out[gy * gw + gx] = peak.toFloat()
             }
         }
+        return out
+    }
 
-        // Two passes of a 3×3 box blur: smooth the block grid, keep the local level.
-        var smoothedR = gridR
-        var smoothedG = gridG
-        var smoothedB = gridB
-        repeat(2) {
-            smoothedR = boxBlur3(smoothedR, gw, gh)
-            smoothedG = boxBlur3(smoothedG, gw, gh)
-            smoothedB = boxBlur3(smoothedB, gw, gh)
+    /**
+     * Separable 1-D erosion/dilation of a grid. [dilate] picks max, otherwise min.
+     *
+     * Naive window rather than a monotonic queue: the grid is at most
+     * 320 × 320 cells and the radius is one cell, so 9 samples per cell beats the
+     * bookkeeping of a deque.
+     */
+    private fun windowOp(
+        src: FloatArray,
+        w: Int,
+        h: Int,
+        radius: Int,
+        dilate: Boolean
+    ): FloatArray {
+        if (radius <= 0) return src
+        val horizontal = FloatArray(src.size)
+        for (y in 0 until h) {
+            val row = y * w
+            for (x in 0 until w) {
+                var value = if (dilate) 0f else 255f
+                for (dx in -radius..radius) {
+                    val sample = src[row + (x + dx).coerceIn(0, w - 1)]
+                    value = if (dilate) max(value, sample) else min(value, sample)
+                }
+                horizontal[row + x] = value
+            }
         }
+        val out = FloatArray(src.size)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                var value = if (dilate) 0f else 255f
+                for (dy in -radius..radius) {
+                    val sample = horizontal[(y + dy).coerceIn(0, h - 1) * w + x]
+                    value = if (dilate) max(value, sample) else min(value, sample)
+                }
+                out[y * w + x] = value
+            }
+        }
+        return out
+    }
 
-        return PaperMap(smoothedR, smoothedG, smoothedB, gw, gh, block)
+
+    /**
+     * Separable 3×3 Gaussian `[1 2 1] / 4` on a full-resolution plane.
+     *
+     * Stands in for `cv::GaussianBlur(…, Size(3,3), 0)`, which the library imports
+     * and which the unsharp mask needs as its low-pass term.
+     */
+    internal fun gaussianBlur3(src: FloatArray, w: Int, h: Int): FloatArray {
+        val horizontal = FloatArray(src.size)
+        for (y in 0 until h) {
+            val row = y * w
+            for (x in 0 until w) {
+                val centre = src[row + x]
+                val left = if (x > 0) src[row + x - 1] else centre
+                val right = if (x < w - 1) src[row + x + 1] else centre
+                horizontal[row + x] = (left + 2f * centre + right) * 0.25f
+            }
+        }
+        val out = FloatArray(src.size)
+        for (y in 0 until h) {
+            val centreRow = y * w
+            val upRow = (if (y > 0) y - 1 else y) * w
+            val downRow = (if (y < h - 1) y + 1 else y) * w
+            for (x in 0 until w) {
+                out[centreRow + x] =
+                    (horizontal[upRow + x] +
+                        2f * horizontal[centreRow + x] +
+                        horizontal[downRow + x]) * 0.25f
+            }
+        }
+        return out
+    }
+
+    /**
+     * 3×3 median of a plane — `cv::medianBlur(…, 3)`.
+     *
+     * Nine samples are sorted with a fixed-size insertion sort; no allocation per
+     * pixel, which matters on a 2000 px page.
+     */
+    internal fun median3x3(src: FloatArray, w: Int, h: Int): FloatArray {
+        val out = FloatArray(src.size)
+        val window = FloatArray(9)
+        for (y in 0 until h) {
+            val rowUp = (if (y > 0) y - 1 else y) * w
+            val row = y * w
+            val rowDown = (if (y < h - 1) y + 1 else y) * w
+            for (x in 0 until w) {
+                val xm = if (x > 0) x - 1 else x
+                val xp = if (x < w - 1) x + 1 else x
+                window[0] = src[rowUp + xm]
+                window[1] = src[rowUp + x]
+                window[2] = src[rowUp + xp]
+                window[3] = src[row + xm]
+                window[4] = src[row + x]
+                window[5] = src[row + xp]
+                window[6] = src[rowDown + xm]
+                window[7] = src[rowDown + x]
+                window[8] = src[rowDown + xp]
+
+                for (i in 1 until 9) {
+                    val value = window[i]
+                    var j = i - 1
+                    while (j >= 0 && window[j] > value) {
+                        window[j + 1] = window[j]
+                        j--
+                    }
+                    window[j + 1] = value
+                }
+                out[row + x] = window[4]
+            }
+        }
+        return out
     }
 
     private fun boxBlur3(src: FloatArray, w: Int, h: Int): FloatArray {
@@ -587,15 +801,40 @@ object DocumentFilters {
     // ==================================================================================
 
     /**
-     * The lookup table for *Lighten*: `clamp((I − black) / (white − black) × 255)`.
+     * The lookup table for *Lighten* — a **verbatim port** of the native loop at
+     * `0x0000f5d4` (`docs/ORIGINAL_APP_FILTER_SPEC.md` §7):
      *
-     * Exactly the transfer function the spec attributes to `enhancePhoto`, with no
-     * curve layered on top.
+     * ```c
+     * double range = (double)(whitePoint - blackPoint);
+     * if (range <= 0.0) range = 1.0;
+     * if (v <= blackPoint)      p[v] = 0;
+     * else if (v >= whitePoint) p[v] = 255;
+     * else p[v] = (uint8_t)clamp((int)(((v - blackPoint) / range) * 255.0 + 0.5), 0, 255);
+     * ```
+     *
+     * The branch order is load-bearing. When the estimated points invert — which
+     * happens on a page with under 2 % ink, where both cutoffs land on the paper
+     * spike — the native code does **not** produce a black page: `range` falls
+     * back to 1.0 and the first branch wins, so the page collapses to a clean hard
+     * threshold at `blackPoint`. An earlier revision here substituted a "skip the
+     * filter" guard for that case; this reproduces what the original actually
+     * does instead.
+     *
+     * `+ 0.5` on a positive value is round-half-up, matching Kotlin's
+     * [kotlin.math.roundToInt] — but the explicit floor keeps the port auditable
+     * against the assembly.
      */
     internal fun linearStretchLut(blackPoint: Int, whitePoint: Int): IntArray {
-        val span = max(1, whitePoint - blackPoint)
+        val range = if (whitePoint - blackPoint <= 0) 1.0 else (whitePoint - blackPoint).toDouble()
         return IntArray(256) { value ->
-            (((value - blackPoint).toFloat() / span) * 255f).roundToInt().coerceIn(0, 255)
+            when {
+                value <= blackPoint -> 0
+                value >= whitePoint -> 255
+                else -> {
+                    val scaled = (value - blackPoint) / range * 255.0 + 0.5
+                    scaled.toInt().coerceIn(0, 255)
+                }
+            }
         }
     }
 

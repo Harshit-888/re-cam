@@ -14,8 +14,10 @@ import org.junit.Test
  * maps paper to 254, an Otsu threshold that lands on the paper peak and blackens
  * the page.
  *
- * The expected numbers were derived from `fa1.H` in
- * `docs/original_apk_pipeline_artifacts.zip`, not chosen by eye.
+ * The expected numbers come from `fa1.H` in
+ * `docs/original_apk_pipeline_artifacts.zip` and from the native `enhancePhoto`
+ * disassembly in `docs/ORIGINAL_APP_FILTER_SPEC.md` §7 — not from eyeballing
+ * output.
  */
 class DocumentFiltersTest {
 
@@ -92,13 +94,30 @@ class DocumentFiltersTest {
     }
 
     @Test
-    fun linearStretch_neverDividesByZero() {
+    fun linearStretch_followsTheNativeBranchOrder() {
+        // Native: if (v <= black) 0; else if (v >= white) 255; else round(...).
+        // The first branch must win when the two thresholds collide.
         val lut = DocumentFilters.linearStretchLut(blackPoint = 128, whitePoint = 128)
 
-        // Degenerate range: the LUT must still be total and monotonic.
+        assertEquals("v == black must take the first branch", 0, lut[128])
+        assertEquals(255, lut[129])
         for (v in 1..255) {
             assertTrue("LUT went backwards at $v", lut[v] >= lut[v - 1])
         }
+    }
+
+    @Test
+    fun linearStretch_invertedPointsBecomeAHardThresholdNotABlackPage() {
+        // This is the case the old implementation "fixed" by skipping the filter:
+        // under 2 % ink both cutoffs land on the paper spike, so whitePoint < blackPoint.
+        // The native code sets range = 1.0 and lets the first branch win, which
+        // thresholds at blackPoint instead of inverting into a black page.
+        val lut = DocumentFilters.linearStretchLut(blackPoint = 232, whitePoint = 200)
+
+        assertEquals("everything at or below black goes to 0", 0, lut[100])
+        assertEquals(0, lut[232])
+        assertEquals("above black becomes paper", 255, lut[240])
+        assertTrue("the page must not be painted black", lut.count { it == 255 } > 0)
     }
 
     // -------------------------------------------------------------- ink curve
@@ -141,6 +160,76 @@ class DocumentFiltersTest {
         assertEquals(76, DocumentFilters.rec601(255, 0, 0))
         assertEquals(150, DocumentFilters.rec601(0, 255, 0))
         assertEquals(29, DocumentFilters.rec601(0, 0, 255))
+    }
+
+    // ------------------------------------------------- native kernels (spec §6/§7)
+
+    @Test
+    fun median3x3_removesASingleHotPixelAndKeepsEdges() {
+        // cv::medianBlur(…, 3) runs on the normalised plane before Otsu, so it has
+        // to kill speckle without rounding off glyph edges.
+        val w = 5
+        val h = 5
+        val plane = FloatArray(w * h) { 200f }
+        plane[2 * w + 2] = 0f            // a lone dust speck on the paper
+
+        val out = DocumentFilters.median3x3(plane, w, h)
+
+        assertEquals("a 1 px speck must vanish", 200f, out[2 * w + 2], 0.01f)
+
+        // A straight vertical edge at x = 2 must not move.
+        val edge = FloatArray(w * h) { i -> if (i % w < 2) 0f else 255f }
+        val edgeOut = DocumentFilters.median3x3(edge, w, h)
+        assertEquals(0f, edgeOut[1 * w + 1], 0.01f)
+        assertEquals(255f, edgeOut[1 * w + 3], 0.01f)
+    }
+
+    @Test
+    fun gaussianBlur3_isANormalisedBinomialKernel() {
+        val w = 7
+        val h = 7
+
+        // Flat field in, flat field out: the [1 2 1]/4 rows and columns sum to 1.
+        val flat = DocumentFilters.gaussianBlur3(FloatArray(w * h) { 123f }, w, h)
+        for (value in flat) assertEquals(123f, value, 0.01f)
+
+        // A single hot pixel spreads to its 3x3 neighbourhood with weights
+        // 1,2,1 / 2,4,2 / 1,2,1 over 16 — the classic binomial-3 response.
+        val spike = FloatArray(w * h) { 0f }
+        spike[3 * w + 3] = 1600f
+        val out = DocumentFilters.gaussianBlur3(spike, w, h)
+        assertEquals("4/16", 400f, out[3 * w + 3], 0.01f)
+        assertEquals("2/16 orthogonal", 200f, out[3 * w + 2], 0.01f)
+        assertEquals("1/16 diagonal", 100f, out[2 * w + 2], 0.01f)
+        assertEquals("outside the 3x3", 0f, out[1 * w + 1], 0.01f)
+    }
+
+    @Test
+    fun paperRadius_scalesWithThePageSoTheReachIsScaleFree() {
+        // computeRadius(w, h, dpi, level) is the one unrecovered constant. Whatever
+        // its formula, the reach must be a fraction of the page: a fixed radius
+        // cannot close over a 60 px text line and a 6 px one at the same time.
+        val small = DocumentFilters.paperRadius(200, 260)   // ~200 px thumbnail
+        val medium = DocumentFilters.paperRadius(240, 320)  // 1200 px page
+        val large = DocumentFilters.paperRadius(223, 289)   // 2000 px page
+
+        assertTrue("radius must never be 0", small >= 1)
+        assertTrue("small pages still need a window", small >= 2)
+        assertTrue("large pages must close over body text", large >= 4)
+
+        // Expressed as a fraction of the page, the three cases must agree, which
+        // is precisely what the old fixed radius of 1 did not do.
+        val smallFraction = small / 260f
+        val mediumFraction = medium / 320f
+        val largeFraction = large / 289f
+
+        for (fraction in listOf(smallFraction, mediumFraction, largeFraction)) {
+            assertTrue("reach $fraction is outside ~1-3 % of the page", fraction in 0.012f..0.030f)
+        }
+        assertTrue(
+            "reach was not scale-free: ${largeFraction / smallFraction}",
+            largeFraction / smallFraction < 1.5f
+        )
     }
 
     // ---------------------------------------------------------------------- otsu
