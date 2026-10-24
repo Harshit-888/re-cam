@@ -6,6 +6,87 @@ Newest entry at the top.
 
 ---
 
+## 2026-10-25 (d) — Arena.ai — Punchy filters, working detection, clean viewfinder
+
+Follow-up to user testing: *"the magic color and black and white still seems a bit
+off… the border detection is not working and also remove the static border on the
+camera when capturing photos."*
+
+### 🐞 Why detection *looked* like it never ran
+`CropAndFilterScreen` only drew the quad when `isCropMode` was true, and
+`isCropMode` started `false` in **review mode** — the post-capture screen the user
+was judging. Detection could succeed and the borders would still be invisible
+until "Borders" was tapped. The screen now opens in Borders mode in review mode.
+
+### Detector: boundary scan replaces extreme points
+`DocumentDetector` rewritten **again** (see the file header for the three
+generations). The previous Sobel→extreme-point version failed on the most common
+capture: the page fills the frame, so (a) Sobel skipped the 1-px frame border
+where the page edge lived, and (b) interior text edges outnumbered the page edge,
+so the extreme points landed on text → invalid quad → silent `FULL_FRAME`.
+
+Now:
+1. Sobel with **clamped indices**, so an edge on the frame border still produces a
+   gradient.
+2. Lower, percentile-based threshold (`max(18, p75×0.85, p97×0.18)`).
+3. **Boundary scan** — per row, first strong edge from the left and last from the
+   right; per column, first from the top and last from the bottom. Scanning inward
+   from the frame edge hits the paper boundary before any text.
+4. **RANSAC line fit per side** (220 deterministic iterations, 1.2 % tolerance,
+   ≥14 inliers) then least-squares refit on inliers — survives curled corners and
+   stray shadows.
+5. Intersect the four lines. **A side with no visible boundary falls back to the
+   frame edge** (the page runs past the frame), which is geometrically correct
+   rather than a failure.
+6. Validate slopes (|a| ≤ 1.1), convexity, bounds, side lengths, area.
+7. Extreme-point quad retained as a fallback for small/rotated documents.
+
+New `DocumentDetector.detect()` returns `Detection(corners, confident)`, where
+`confident` is true only when ≥3 sides were fitted from real edges. The editor
+shows *"Borders not detected — drag the corners"* when it is false.
+
+### Filters: colour cast + blow-out fixed, tuned punchier
+- **One stretch for all channels.** Magic Color previously stretched R, G and B
+  independently with different percentiles — three different gains on the same
+  paper pixel = pink/green whites. Contrast now comes from a single **luminance**
+  histogram; only white balance is per-channel.
+- **Clamped stretch points** (`stretchPoints`, new and unit-tested): 2 % black
+  point capped at 110, 90 % white point floored at 205. An unbounded black point
+  was the "washed out on a lightly printed page" bug — with little ink the
+  percentile landed inside the paper mass and the gain blew mid-tones to white.
+- Punchier: `MAGIC_COLOR_CURVE 0.55 → 0.62`, saturation `1.18 → 1.15` (more
+  contrast, less chroma push), `GRAYSCALE_CURVE 0.35 → 0.42`.
+- **B&W despeckle.** The symmetric ramp left paper noise just above the threshold
+  pure black → speckle. Now `INK_CUT_FACTOR 0.95` / `PAPER_CUT_FACTOR 1.05`
+  (asymmetric, paper whites out early) plus a **3×3 majority vote** read straight
+  from the luminance buffer (no extra full-frame allocation): ≥6 paper neighbours
+  → white, ≤3 → black, otherwise keep the ramped value so glyph edges stay
+  anti-aliased.
+
+### Camera: guide frame removed
+Both decorative overlays are gone from `ScannerCameraScreen` — the dark scrim with
+the cut-out window and the pulsing dashed frame — along with 12 now-unused imports.
+They were never part of the captured JPEG, and they were actively harmful: they
+taught users to fill the frame right past the paper edge, leaving no boundary for
+the detector to find.
+
+### Signature changes
+| Symbol | Before | After |
+| :--- | :--- | :--- |
+| `DocumentDetector.detect` | — | **new** `(Bitmap) -> Detection` |
+| `DocumentDetector.Detection` | — | **new** `data class(corners, confident)` |
+| `DocumentDetector.detectQuad` | `(Bitmap) -> QuadCorners` | unchanged signature, now delegates to `detect().corners` |
+| `DocumentFilters.stretchPoints` | — | **new** internal, unit-tested |
+| `CropAndFilterScreen` `isCropMode` | started `false` | **starts `reviewMode`** |
+
+### Tests
+`DocumentFiltersTest` gains four cases for `stretchPoints`: normal page, the
+barely-printed clamp, the minimum-range guard, and the dark-photo floor.
+
+`versionCode 4`, `versionName 1.3`.
+
+---
+
 ## 2026-10-25 (d) — Antigravity — Filters test fix & build verified
 
 - Fixed `DocumentFiltersTest.curveLut_darkensMidtones`: updated assertion to verify shadow/ink darkening (`lut[96] < 96`) rather than the midpoint index 128 (since standard smoothstep $3t^2 - 2t^3$ has inflection at $t=0.5$, meaning $t = 128/255 > 0.5$ preserves midpoint while pulling down values $t < 0.5$).

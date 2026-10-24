@@ -27,7 +27,9 @@ in app-private storage, and renders them back.
    - Cover thumbnails are the **real first page**, not an icon.
 
 2. **Camera capture** (`ui/camera/`)
-   - Live **CameraX** preview, runtime permission flow, back-camera still capture.
+   - Full-bleed live **CameraX** preview (no decorative frame — it used to push
+     users to shoot past the paper edge, which broke auto-detection),
+     runtime permission flow, back-camera still capture.
    - Flash modes Auto / On / Off, wired to both `ImageCapture` flash and the torch.
    - Batch mode with a live page counter, or single mode that auto-commits.
    - Gallery import through the system photo picker (no storage permission needed).
@@ -35,17 +37,19 @@ in app-private storage, and renders them back.
 
 3. **Perspective correction & filters** (`ui/editor/`)
    - Four draggable corner handles over the **real photograph**, positioned by
-     automatic edge-based detection (`DocumentDetector`: Sobel → extreme-point
-     quad → robust line fit → validated corners).
+     automatic edge detection (`DocumentDetector`: boundary scan → RANSAC line per
+     side → validated corners). If a page edge can't be found the screen says so
+     rather than silently showing nothing.
    - Genuine projective warp (`Matrix.setPolyToPoly`) — the crop actually moves
      pixels now.
    - 5 enhancements computed per-pixel by `DocumentFilters` and previewed live:
      *Original*, *Magic Color*, *Clear B&W*, *Grayscale*, *Lighten*.
      Each applies **illumination normalisation** (shadows and torch hotspots are
      divided out against a local paper-brightness model), **grey-world white
-     balance**, a **percentile contrast stretch** and an ink-deepening S-curve;
-     *Clear B&W* thresholds with **Otsu** over a narrow ramp so glyph edges stay
-     smooth instead of turning jagged.
+     balance**, one **clamped luminance contrast stretch** (so whites never drift
+     pink/green and lightly-printed pages don't blow out) and an ink-deepening
+     S-curve; *Clear B&W* thresholds with **Otsu** over an asymmetric ramp plus a
+     3×3 despeckle, so paper stays clean and glyph edges stay smooth.
    - 90° rotation, "Full Page" reset, and a brightness-based "Auto Detect".
    - Non-destructive: the pristine capture is never overwritten, so repeated edits
      don't accumulate JPEG loss.

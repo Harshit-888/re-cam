@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.RotateLeft
 import androidx.compose.material.icons.filled.RotateRight
@@ -72,7 +73,7 @@ import com.example.docscanner.util.DocumentFilters
 import com.example.docscanner.util.ImageProcessingUtils
 import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.PageRenderer
-import com.example.docscanner.util.PerspectiveWarp
+import com.example.docscanner.util.DocumentDetector
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -127,9 +128,11 @@ fun CropAndFilterScreen(
     var selectedFilter by remember { mutableStateOf(FilterType.MAGIC_COLOR) }
     var rotation by remember { mutableFloatStateOf(0f) }
     var corners by remember { mutableStateOf(QuadCorners.FULL_FRAME) }
-    var isCropMode by remember { mutableStateOf(false) }
+    // In review mode the borders are the point of the screen, so open on them.
+    var isCropMode by remember { mutableStateOf(reviewMode) }
     var isSaving by remember { mutableStateOf(false) }
     var isAutoDetecting by remember { mutableStateOf(false) }
+    var detectionFailed by remember { mutableStateOf(false) }
     var loadedPageId by remember { mutableStateOf<String?>(null) }
 
     // Unfiltered, downscaled source used for both detection and previewing.
@@ -167,15 +170,21 @@ fun CropAndFilterScreen(
         // override saved corners.
         if (current.corners.isFullFrame) {
             isAutoDetecting = true
-            val detected = withContext(Dispatchers.Default) { PerspectiveWarp.detectQuad(decoded) }
+            val detection = withContext(Dispatchers.Default) { DocumentDetector.detect(decoded) }
             isAutoDetecting = false
-            if (!detected.isFullFrame) corners = detected
+            corners = detection.corners
+            // Tell the user when the quad is a frame-edge default rather than a
+            // real edge fit, instead of silently showing nothing.
+            detectionFailed = !detection.confident
+        } else {
+            detectionFailed = false
         }
 
         loadedPageId = activePageId
 
-        // A single-page edit should lead with the photo, not the crop handles.
-        if (!reviewMode) isCropMode = false
+        // Review mode leads with the borders; a single-page edit leads with the
+        // photo so re-filtering does not require dismissing the handles.
+        isCropMode = reviewMode
     }
 
     // Render the selected filter for real, at preview resolution. Using the same
@@ -362,9 +371,11 @@ fun CropAndFilterScreen(
                                     val source = previewSource ?: return@TextButton
                                     scope.launch {
                                         isAutoDetecting = true
-                                        corners = withContext(Dispatchers.Default) {
-                                            PerspectiveWarp.detectQuad(source)
+                                        val detection = withContext(Dispatchers.Default) {
+                                            DocumentDetector.detect(source)
                                         }
+                                        corners = detection.corners
+                                        detectionFailed = !detection.confident
                                         isAutoDetecting = false
                                     }
                                 },
@@ -403,6 +414,40 @@ fun CropAndFilterScreen(
                         .fillMaxWidth()
                         .height(2.dp)
                 )
+            }
+            // Tell the user when auto-detection could not find a real page edge, so
+            // a full-frame quad never looks like a silent failure.
+            if (isCropMode && detectionFailed && image != null) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 10.dp, start = 16.dp, end = 16.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp)
+                    ) {
+                        Text(
+                            "Borders not detected — drag the corners",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        IconButton(
+                            onClick = { detectionFailed = false },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Dismiss",
+                                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
             }
             if (image == null) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {

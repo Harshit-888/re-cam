@@ -13,15 +13,8 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.EaseInOutQuad
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -71,12 +64,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
@@ -309,57 +297,13 @@ fun ScannerCameraScreen(
             )
         }
 
-        // Scrim with a transparent document window.
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val padX = size.width * 0.08f
-            val padY = size.height * 0.16f
-            val windowWidth = size.width - padX * 2
-            val windowHeight = size.height - padY * 2
-            val scrim = Color.Black.copy(alpha = 0.55f)
-
-            // Four rectangles rather than a scrim + BlendMode.Clear: clearing on
-            // the window surface is unreliable and can punch through the preview.
-            drawRect(scrim, topLeft = Offset.Zero, size = Size(size.width, padY))
-            drawRect(
-                scrim,
-                topLeft = Offset(0f, padY + windowHeight),
-                size = Size(size.width, size.height - padY - windowHeight)
-            )
-            drawRect(scrim, topLeft = Offset(0f, padY), size = Size(padX, windowHeight))
-            drawRect(
-                scrim,
-                topLeft = Offset(padX + windowWidth, padY),
-                size = Size(padX, windowHeight)
-            )
-        }
-
-        // Pulsing alignment frame.
-        val transition = rememberInfiniteTransition(label = "viewfinder")
-        val pulse by transition.animateFloat(
-            initialValue = 0.55f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(1200, easing = EaseInOutQuad),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "pulse"
-        )
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val padX = size.width * 0.08f
-            val padY = size.height * 0.16f
-            val windowWidth = size.width - padX * 2
-            val windowHeight = size.height - padY * 2
-            drawRoundRect(
-                color = Color(0xFF4FD8EB).copy(alpha = pulse),
-                topLeft = Offset(padX, padY),
-                size = Size(windowWidth, windowHeight),
-                cornerRadius = CornerRadius(24f, 24f),
-                style = Stroke(
-                    width = 3.dp.toPx(),
-                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(40f, 20f), 0f)
-                )
-            )
-        }
+        // No scrim / guide frame: the preview is full-bleed.
+        //
+        // The old overlay drew a dark window with a pulsing dashed border. It was
+        // decorative only (never part of the captured JPEG), and it actively hurt
+        // document detection: it taught users to fill the frame right past the
+        // paper edge, so there was no page boundary left in the photo for
+        // DocumentDetector to find.
 
         // Top bar.
         Row(

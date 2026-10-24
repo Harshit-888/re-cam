@@ -61,6 +61,30 @@ object DocumentFilters {
     /** Never stretch a channel over a narrower range than this (avoids noise blow-up). */
     private const val MIN_STRETCH_RANGE = 12
 
+    /** Where the black point is sampled from the luminance histogram. */
+    private const val BLACK_PERCENTILE = 0.02f
+
+    /** Where the white point is sampled from the luminance histogram. */
+    private const val PAPER_PERCENTILE = 0.90f
+
+    /**
+     * Upper bound on the black point. Without it, a page with very little ink
+     * pushes the "black" point into the paper mass and the stretch blows out.
+     */
+    private const val MAX_BLACK_POINT = 110
+
+    /** Lower bound on the white point, so a dark photo is not brightened to white. */
+    private const val MIN_WHITE_POINT = 205
+
+    /** Ink is cut here (fraction of the Otsu threshold) — hard, for deep blacks. */
+    private const val INK_CUT_FACTOR = 0.95f
+
+    /** Paper reaches pure white here — earlier than the mirror of the ink cut. */
+    private const val PAPER_CUT_FACTOR = 1.05f
+
+    /** Narrowest anti-aliasing band kept around the B&W threshold. */
+    private const val MIN_BW_SPAN = 8f
+
     /**
      * Enhances [src] with the algorithms above.
      *
@@ -235,13 +259,25 @@ object DocumentFilters {
     // ---------------------------------------------------------------- filters
 
     /**
-     * *Magic Color*: shadow-free colour with balanced whites and punchy ink.
-     * This is the filter that should look like the legacy app's default.
+     * *Magic Color*: shadow-free colour with a punchy, hue-stable tonal range —
+     * the filter that should look like the legacy app's default.
+     *
+     * Two things here are deliberate corrections over the first version:
+     *
+     * 1. **One stretch for all channels.** The first version stretched R, G and B
+     *    independently with a different low/high percentile each. Three different
+     *    gain factors on the same paper pixel produce a colour cast (whites going
+     *    pink or green). Contrast belongs on luminance; only white balance is
+     *    per-channel.
+     * 2. **Both stretch points are clamped** by [stretchPoints]. An unbounded low
+     *    percentile is unstable when ink covers less than that percentile: the
+     *    "black" point lands inside the paper mass, the gain explodes, and the page
+     *    blows out to white.
      */
     private fun magicColor(pixels: IntArray, background: Background, w: Int, h: Int) {
         val stride = if (pixels.size > 400_000) 3 else 1
 
-        // Pass 1 — grey-world white balance from shadow-normalised channel means.
+        // ---- pass 1: grey-world white balance ------------------------------
         var sumR = 0.0
         var sumG = 0.0
         var sumB = 0.0
@@ -266,16 +302,14 @@ object DocumentFilters {
         val meanG = max(1f, (sumG / count).toFloat())
         val meanB = max(1f, (sumB / count).toFloat())
         val meanAll = (meanR + meanG + meanB) / 3f
-        // Clamped: a page that is legitimately blue-tinted (a form, a photo) must
-        // not be neutralised into grey.
-        val wbR = (meanAll / meanR).coerceIn(0.84f, 1.20f)
-        val wbG = (meanAll / meanG).coerceIn(0.84f, 1.20f)
-        val wbB = (meanAll / meanB).coerceIn(0.84f, 1.20f)
+        // Clamped: a page that is legitimately tinted (a form, a photographed
+        // object) must not be neutralised into grey.
+        val wbR = (meanAll / meanR).coerceIn(0.86f, 1.18f)
+        val wbG = (meanAll / meanG).coerceIn(0.86f, 1.18f)
+        val wbB = (meanAll / meanB).coerceIn(0.86f, 1.18f)
 
-        // Pass 2 — histograms after white balance, for the percentile stretch.
-        val histR = IntArray(256)
-        val histG = IntArray(256)
-        val histB = IntArray(256)
+        // ---- pass 2: ONE luminance histogram --------------------------------
+        val lumHist = IntArray(256)
         y = 0
         while (y < h) {
             var x = 0
@@ -285,29 +319,19 @@ object DocumentFilters {
                 val r = ((p ushr 16) and 0xFF) * gain * wbR
                 val g = ((p ushr 8) and 0xFF) * gain * wbG
                 val b = (p and 0xFF) * gain * wbB
-                histR[r.toInt().coerceIn(0, 255)]++
-                histG[g.toInt().coerceIn(0, 255)]++
-                histB[b.toInt().coerceIn(0, 255)]++
+                val l = (0.299f * r + 0.587f * g + 0.114f * b).toInt().coerceIn(0, 255)
+                lumHist[l]++
                 x += stride
             }
             y += stride
         }
 
-        val lowR = percentile(histR, 0.004f)
-        val highR = percentile(histR, 0.996f)
-        val lowG = percentile(histG, 0.004f)
-        val highG = percentile(histG, 0.996f)
-        val lowB = percentile(histB, 0.004f)
-        val highB = percentile(histB, 0.996f)
-
-        val scaleR = 255f / max(MIN_STRETCH_RANGE, highR - lowR).toFloat()
-        val scaleG = 255f / max(MIN_STRETCH_RANGE, highG - lowG).toFloat()
-        val scaleB = 255f / max(MIN_STRETCH_RANGE, highB - lowB).toFloat()
-
+        val (low, high) = stretchPoints(lumHist)
+        val scale = 255f / max(MIN_STRETCH_RANGE, high - low).toFloat()
         val curve = curveLut(MAGIC_COLOR_CURVE)
         val saturation = MAGIC_COLOR_SATURATION
 
-        // Pass 3 — apply everything in one sweep.
+        // ---- pass 3: apply --------------------------------------------------
         y = 0
         while (y < h) {
             var x = 0
@@ -317,19 +341,15 @@ object DocumentFilters {
                 val alpha = p ushr 24
                 val gain = gainFor(background.at(x, y))
 
-                var ri = ((((p ushr 16) and 0xFF) * gain * wbR - lowR) * scaleR)
-                    .toInt().coerceIn(0, 255)
-                var gi = ((((p ushr 8) and 0xFF) * gain * wbG - lowG) * scaleG)
-                    .toInt().coerceIn(0, 255)
-                var bi = (((p and 0xFF) * gain * wbB - lowB) * scaleB)
-                    .toInt().coerceIn(0, 255)
+                var ri = curve[((((p ushr 16) and 0xFF) * gain * wbR - low) * scale)
+                    .toInt().coerceIn(0, 255)]
+                var gi = curve[((((p ushr 8) and 0xFF) * gain * wbG - low) * scale)
+                    .toInt().coerceIn(0, 255)]
+                var bi = curve[(((p and 0xFF) * gain * wbB - low) * scale)
+                    .toInt().coerceIn(0, 255)]
 
-                ri = curve[ri]
-                gi = curve[gi]
-                bi = curve[bi]
-
-                // Saturation boost around Rec.601 luminance, so colour elements
-                // (stamps, signatures, highlighter) regain their chroma.
+                // Saturation around Rec.601 luminance: stamps, signatures and
+                // highlighter regain chroma without shifting the paper white.
                 val luma = 0.299f * ri + 0.587f * gi + 0.114f * bi
                 ri = (luma + (ri - luma) * saturation).toInt().coerceIn(0, 255)
                 gi = (luma + (gi - luma) * saturation).toInt().coerceIn(0, 255)
@@ -371,7 +391,7 @@ object DocumentFilters {
         }
     }
 
-    /** *Grayscale*: shadow-free luminance with a full-range stretch. */
+    /** *Grayscale*: shadow-free luminance with a clamped full-range stretch. */
     private fun grayscale(pixels: IntArray, lum: FloatArray, background: Background, w: Int, h: Int) {
         var y = 0
         while (y < h) {
@@ -386,8 +406,8 @@ object DocumentFilters {
 
         val hist = IntArray(256)
         for (v in lum) hist[v.toInt().coerceIn(0, 255)]++
-        val low = percentile(hist, 0.005f)
-        val high = percentile(hist, 0.995f)
+
+        val (low, high) = stretchPoints(hist)
         val scale = 255f / max(MIN_STRETCH_RANGE, high - low).toFloat()
         val curve = curveLut(GRAYSCALE_CURVE)
 
@@ -399,8 +419,17 @@ object DocumentFilters {
     }
 
     /**
-     * *Clear B&W*: Otsu threshold over the shadow-normalised luminance, with a
-     * narrow linear ramp instead of a hard cut so text keeps anti-aliased edges.
+     * *Clear B&W*: Otsu threshold over the shadow-normalised luminance.
+     *
+     * Two corrections over the first version:
+     *
+     * 1. **Asymmetric ramp.** The old ramp was symmetric around the threshold, so
+     *    paper noise *just* above the threshold stayed pure black — visible
+     *    speckle all over the page. Ink is now cut hard and paper whites out
+     *    earlier, which is what a scanner should do.
+     * 2. **Majority despeckle.** A 3×3 vote removes isolated dots (dust, JPEG
+     *    mosquito noise) and small pinholes in the paper, while pixels inside the
+     *    anti-aliasing band keep their ramped value so glyph edges stay smooth.
      */
     private fun clearBlackWhite(
         pixels: IntArray,
@@ -423,28 +452,85 @@ object DocumentFilters {
         val hist = IntArray(256)
         for (v in lum) hist[v.toInt().coerceIn(0, 255)]++
 
-        val threshold = otsuThreshold(hist)
-        var lowT = threshold * 0.94f
-        var highT = threshold * 1.08f
-        if (highT - lowT < 6f) {
-            lowT = threshold - 4f
-            highT = threshold + 4f
+        val threshold = otsuThreshold(hist).toFloat()
+        var lowT = threshold * INK_CUT_FACTOR
+        var highT = threshold * PAPER_CUT_FACTOR
+        if (highT - lowT < MIN_BW_SPAN) {
+            lowT = (threshold - MIN_BW_SPAN / 2f).coerceAtLeast(0f)
+            highT = (threshold + MIN_BW_SPAN / 2f).coerceAtMost(255f)
         }
         val span = (highT - lowT).coerceAtLeast(1f)
 
-        for (i in pixels.indices) {
-            val v = lum[i]
-            val out = when {
-                v >= highT -> 255
-                v <= lowT -> 0
-                else -> (((v - lowT) / span) * 255f).toInt().coerceIn(0, 255)
+        // Despeckle straight from `lum` so no extra full-frame buffer is needed.
+        for (y in 0 until h) {
+            val rowUp = if (y > 0) (y - 1) * w else 0
+            val row = y * w
+            val rowDown = if (y < h - 1) (y + 1) * w else (h - 1) * w
+            for (x in 0 until w) {
+                val i = row + x
+                val xm = if (x > 0) x - 1 else 0
+                val xp = if (x < w - 1) x + 1 else w - 1
+
+                // How many of the 3x3 neighbourhood are paper?
+                var white = 0
+                if (lum[rowUp + xm] >= threshold) white++
+                if (lum[rowUp + x] >= threshold) white++
+                if (lum[rowUp + xp] >= threshold) white++
+                if (lum[row + xm] >= threshold) white++
+                if (lum[row + x] >= threshold) white++
+                if (lum[row + xp] >= threshold) white++
+                if (lum[rowDown + xm] >= threshold) white++
+                if (lum[rowDown + x] >= threshold) white++
+                if (lum[rowDown + xp] >= threshold) white++
+
+                val v = lum[i]
+                val out = when {
+                    // A clear majority of paper wins: kills isolated ink dots.
+                    white >= 6 -> 255
+                    // A clear majority of ink wins: fills pinholes in glyphs.
+                    white <= 3 -> 0
+                    // Ambiguous — keep the ramped value so glyph edges stay smooth.
+                    v >= highT -> 255
+                    v <= lowT -> 0
+                    else -> (((v - lowT) / span) * 255f).toInt().coerceIn(0, 255)
+                }
+                pixels[i] = (pixels[i] and ALPHA_MASK) or (out shl 16) or (out shl 8) or out
             }
-            pixels[i] = (pixels[i] and ALPHA_MASK) or (out shl 16) or (out shl 8) or out
         }
     }
 
     // ------------------------------------------------------------- pure helpers
     // `internal` so DocumentFiltersTest can cover them on the JVM without Android.
+
+    /**
+     * Black and white points for a tonal stretch, derived from a luminance
+     * histogram.
+     *
+     * Both points are clamped, which is the fix for the "washed out on a lightly
+     * printed page" problem: if ink covers less than [blackPercentile] of the
+     * pixels, an unclamped low percentile lands inside the paper mass, the
+     * resulting gain is enormous, and mid-tones blow out to white. [blackCap]
+     * prevents that; [whiteFloor] prevents over-brightening a genuinely dark photo.
+     *
+     * `internal` so it can be unit-tested on the JVM without Android.
+     */
+    internal fun stretchPoints(
+        histogram: IntArray,
+        blackPercentile: Float = BLACK_PERCENTILE,
+        paperPercentile: Float = PAPER_PERCENTILE,
+        blackCap: Int = MAX_BLACK_POINT,
+        whiteFloor: Int = MIN_WHITE_POINT
+    ): Pair<Int, Int> {
+        var low = percentile(histogram, blackPercentile).coerceAtMost(blackCap)
+        var high = percentile(histogram, paperPercentile).coerceAtLeast(whiteFloor)
+        if (high - low < MIN_STRETCH_RANGE) {
+            low = (high - MIN_STRETCH_RANGE).coerceAtLeast(0)
+            if (high - low < MIN_STRETCH_RANGE) {
+                high = (low + MIN_STRETCH_RANGE).coerceAtMost(255)
+            }
+        }
+        return low to high
+    }
 
     /**
      * 256-entry tone curve. `strength = 0` is the identity; higher values apply a
@@ -515,9 +601,9 @@ object DocumentFilters {
     private const val ALPHA_MASK = -0x1000000
 
     // Tuning. Exposed as constants so they are easy to A/B on real captures.
-    private const val MAGIC_COLOR_CURVE = 0.55f
-    private const val MAGIC_COLOR_SATURATION = 1.18f
+    private const val MAGIC_COLOR_CURVE = 0.62f
+    private const val MAGIC_COLOR_SATURATION = 1.15f
     private const val LIGHTEN_CURVE = 0.15f
     private const val LIGHTEN_STRENGTH = 0.72f
-    private const val GRAYSCALE_CURVE = 0.35f
+    private const val GRAYSCALE_CURVE = 0.42f
 }
