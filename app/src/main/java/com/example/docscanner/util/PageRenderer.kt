@@ -2,6 +2,7 @@ package com.example.docscanner.util
 
 import android.content.Context
 import android.graphics.Bitmap
+import com.example.docscanner.model.ImageQuality
 import com.example.docscanner.model.ScannedPage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -32,7 +33,8 @@ object PageRenderer {
     fun bakeBlocking(
         context: Context,
         page: ScannedPage,
-        jpegQuality: Int = ImageStore.JPEG_QUALITY
+        jpegQuality: Int = ImageStore.JPEG_QUALITY,
+        maxDimension: Int = DocumentFilters.MAX_PROCESS_DIMENSION
     ): ScannedPage? {
         val pristinePath = page.originalImageUri ?: page.imageUri
         val source = ImageStore.loadBitmap(context, pristinePath, ImageStore.MAX_CAPTURE_DIMENSION)
@@ -44,7 +46,8 @@ object PageRenderer {
                 src = source,
                 filterType = page.filterType,
                 rotationDegrees = page.rotationDegrees,
-                corners = page.corners
+                corners = page.corners,
+                maxDimension = maxDimension
             )
 
             val signaturePath = page.signatureOverlayUri
@@ -70,8 +73,23 @@ object PageRenderer {
     suspend fun bake(
         context: Context,
         page: ScannedPage,
-        jpegQuality: Int = ImageStore.JPEG_QUALITY
-    ): ScannedPage? = withContext(Dispatchers.IO) { bakeBlocking(context, page, jpegQuality) }
+        jpegQuality: Int = ImageStore.JPEG_QUALITY,
+        maxDimension: Int = DocumentFilters.MAX_PROCESS_DIMENSION
+    ): ScannedPage? =
+        withContext(Dispatchers.IO) { bakeBlocking(context, page, jpegQuality, maxDimension) }
+
+    /**
+     * The longest edge a baked page will have for [quality] — the one number the
+     * bake and the editor preview must agree on, or the preview stops predicting
+     * the save.
+     *
+     * Capped at [DocumentFilters.MAX_PROCESS_DIMENSION]: that is the working
+     * resolution the filters are tuned and budgeted for, so a "High (2600)"
+     * capture is filtered at 2000 rather than silently costing a third more
+     * memory per plane. Medium (1900) is honoured as-is.
+     */
+    fun bakeDimension(quality: ImageQuality): Int =
+        minOf(quality.maxDimension, DocumentFilters.MAX_PROCESS_DIMENSION)
 
     /**
      * Bitmap to embed in a PDF. Uses the already-baked `imageUri`; if that file

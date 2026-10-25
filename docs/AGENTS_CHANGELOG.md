@@ -4,6 +4,98 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (p) — Arena.ai — Sharp Clear B&W, and a preview that is the saved page
+
+### The report
+Three things, after using 1.7 on a real document: *Clear B&W* text is still not
+sharp; adjusting the borders and then opening **Filters** shows the old photo, not
+the cropped one; and the filter preview does not look like what gets saved, so it
+is impossible to tell which filter is best.
+
+The first was tuning. The second and third were **bugs introduced in 1.7** — a
+recycled bitmap and a preview rendered at a different size from the bake.
+
+### 1. "Soft text" was a wide threshold ramp, not a weak threshold
+The 1.7 B&W threshold had a 6 %-of-threshold transition band — ~10 grey levels
+either side of the cut. Every glyph edge landed inside it and came out
+anti-aliased, which reads as blur no matter how correct the threshold is.
+
+The band is now **3 % with a 3-level floor**, and the *decision* plane is sharpened
+before it is cut: an unsharp mask with a soft dead-zone below 3 levels (so grain
+is not amplified) and a strength that fades 4 → 9 as the page's own noise estimate
+rises (so a grainy frame gets less, not more). Thresholding a sharpened plane
+straightens the transition instead of leaving it wandering over three pixels.
+
+Measured through the whole pipeline (normalise → median → Sauvola) against a
+ground-truth glyph mask, with the anti-aliased ("grey") pixel share:
+
+| page | 1.7 IoU | now IoU | grey 1.7 → now |
+|---|---|---|---|
+| clean | 0.820 | **0.866** | 0.70 % → **0.22 %** |
+| shadowed to 35 %, soft focus | 0.762 | **0.785** | 1.49 % → **0.63 %** |
+| dark 20 %, noisy | 0.758 | 0.758 | 1.46 % → **0.65 %** |
+
+A sweep of the strength (0.6 / 0.8 / 1.0), the pass count (2 / 3) and the floor
+(2 / 3 / 4) moved mean IoU by less than 0.004 in total, so the shipped values are
+the ones that never lose accuracy on the noisy page rather than the ones that win
+a thousandth on a clean one. **Do not** raise the amount to recover the last
+0.003 on clean pages — it costs 0.013 on noisy ones.
+
+### 2. The blank preview was a recycled bitmap
+`CropAndFilterScreen` warped the source and then recycled it in a `finally`, but
+`DocumentFilters.apply` returns its **input unchanged** for `ORIGINAL` and on any
+failure — so for those paths the recycled bitmap was the one handed to the UI.
+That is the "filter preview disappears" report.
+
+- Intermediates are now recycled only when they are neither the source nor the
+  result. `apply`'s "returns its input" contract is documented on both sides.
+- A failed render no longer falls back silently. It used to show the **unwarped**
+  frame, which looked like the filter had done nothing; it now shows an error
+  banner ("Preview could not be rendered at full size") over the honest source
+  frame.
+
+### 3. The preview is now the saved image, at the saved size
+Previously: the editor decoded at **1400 px**, filtered at **900 px**
+(`PREVIEW_DIMENSION`), and saved at **2000 px** (`MAX_PROCESS_DIMENSION`) from a
+capture of up to 2600 px. So the preview was a 2.2× smaller render, upscaled into
+its frame — softer, with a different noise response, than the PDF.
+
+Now the editor decodes at the bake dimension, renders the filter at that same
+dimension, on the **warped** bitmap, in the same order `PageRenderer` uses. One
+`LaunchedEffect` keyed on `(source, filter, corners, mode, dimension)` renders
+after a 140 ms settle so that swiping the chips does not queue a full-size render
+per frame.
+
+The render is also round-tripped through `Bitmap.compress(JPEG, quality)` before
+display, so the preview shows the *encoded* pixels the save will contain — at
+Medium (88) the difference in small text is visible, and a preview that hides it
+would make Medium look better than it saves.
+
+That also fixes **"Filters shows the uncropped photo"**: `previewAspect` is taken
+from the bitmap actually displayed, so the frame is sized to the *warped* page,
+and switching from the border tab to the filter tab re-renders through the same
+effect.
+
+### Signature changes for other agents
+- `PageRenderer.bake(...)` / `bakeBlocking(...)` gained
+  `maxDimension: Int = DocumentFilters.MAX_PROCESS_DIMENSION`.
+- `ImageProcessingUtils.applyEnhancements(...)` gained the same parameter.
+- **New** `PageRenderer.bakeDimension(quality: ImageQuality): Int` — the single
+  source of truth for "how big is the saved page". `min(quality.maxDimension,
+  MAX_PROCESS_DIMENSION)`, i.e. HIGH (2600) is filtered at 2000 rather than
+  silently costing a third more memory per plane; MEDIUM (1900) is honoured.
+  Anything that renders a page for display must use this, or the preview drifts
+  from the save again.
+- New `internal` helpers on `DocumentFilters`: `gatedUnsharp`,
+  `noiseEstimate`, `adaptiveSharpenAmount`. No public signature changed.
+
+### Tests
+`DocumentFiltersTest` +6: the gate is an exact identity on a flat plane and on
+sub-floor ripple, steepens a real step, `noiseEstimate` returns 0 on a flat field
+and ~the amplitude on checkerboard noise, and the adaptive amount is full at 4,
+half at 6.5, zero at 9 and beyond, monotonic in between. Values checked against a
+numpy transcription of `boxBlur3`/`gatedUnsharp` before being written down.
+
 ## 2026-10-25 (o) — Arena.ai — Magic Color: one continuous curve, no lifted/not-lifted split
 
 ### The report

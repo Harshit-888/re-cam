@@ -1,6 +1,7 @@
 package com.example.docscanner.ui.editor
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -56,6 +57,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -87,7 +89,9 @@ import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.PageRenderer
 import com.example.docscanner.util.PerspectiveWarp
 import com.example.docscanner.util.DocumentDetector
+import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.PI
@@ -95,6 +99,15 @@ import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.math.sin
+
+/**
+ * How long the filter strip must rest before a full-resolution preview render.
+ *
+ * Swiping across the chips changes the selection every frame; each render is a
+ * 2000 px pass and the previous bitmap stays on screen meanwhile, so the delay
+ * only prevents wasted work.
+ */
+private const val PREVIEW_SETTLE_MS = 140L
 
 /** Smallest allowed gap between opposing edges, in normalised units. */
 private const val MIN_GAP = 0.02f
@@ -168,6 +181,10 @@ fun CropAndFilterScreen(
     var previewBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
     var previewAspect by remember { mutableFloatStateOf(0.707f) }
     var isFiltering by remember { mutableStateOf(false) }
+    var previewFailed by remember { mutableStateOf(false) }
+    // Longest edge the bake will produce; the preview is rendered at this size so
+    // that what the user judges is what gets saved.
+    var bakeDimension by remember { mutableIntStateOf(DocumentFilters.MAX_PROCESS_DIMENSION) }
 
     // Load (and, for a fresh capture, auto-detect) the active page.
     LaunchedEffect(activePageId) {
@@ -180,11 +197,16 @@ fun CropAndFilterScreen(
         zoom = 1f
         pan = Offset.Zero
 
+        // Decode at the resolution the page will actually be *saved* at, not at a
+        // thumbnail size: a 1400 px source filtered for the preview can never show
+        // what a 2000 px bake looks like, which is exactly why the preview read as
+        // soft next to the PDF.
+        val bakeEdge = PageRenderer.bakeDimension(repository.currentSettings().imageQuality)
         val decoded = withContext(Dispatchers.IO) {
             ImageStore.loadBitmap(
                 context,
                 current.originalImageUri ?: current.imageUri,
-                1400
+                bakeEdge
             )
         }
         if (decoded == null) {
@@ -192,6 +214,7 @@ fun CropAndFilterScreen(
             return@LaunchedEffect
         }
 
+        bakeDimension = bakeEdge
         previewSource = decoded
         previewAspect = decoded.width.toFloat() / decoded.height.toFloat()
 
@@ -216,12 +239,11 @@ fun CropAndFilterScreen(
         isCropMode = reviewMode
     }
 
-    // Render the selected filter for real, at preview resolution, on the page as
-    // it will be *saved* — i.e. after the perspective correction. Using the same
-    // warp-then-filter order as PageRenderer means what you see is what gets
-    // saved; filtering the uncropped frame made the preview disagree with the
-    // bake wherever the quad was not the full frame.
-    LaunchedEffect(previewSource, selectedFilter, corners, isCropMode) {
+    // Render the selected filter for real, at the *bake* resolution, on the page
+    // as it will be saved — i.e. after the perspective correction. Same
+    // warp-then-filter order as PageRenderer, at the same size, so the preview and
+    // the saved PDF are the same image.
+    LaunchedEffect(previewSource, selectedFilter, corners, isCropMode, bakeDimension) {
         val source = previewSource
         if (source == null) {
             previewBitmap = null
@@ -233,22 +255,60 @@ fun CropAndFilterScreen(
         if (isCropMode) {
             previewBitmap = source.asImageBitmap()
             previewAspect = source.width.toFloat() / source.height.toFloat()
+            previewFailed = false
             return@LaunchedEffect
         }
         isFiltering = true
+        previewFailed = false
+
+        // Settle before paying for a full-size render: swiping along the filter
+        // strip changes `selectedFilter` every frame and each render is ~2000 px.
+        delay(PREVIEW_SETTLE_MS)
+
         // runCatching: an OutOfMemoryError mid-filter must not strand the UI in a
-        // permanent "filtering…" state; fall back to the unfiltered page.
-        val filtered = withContext(Dispatchers.Default) {
+        // permanent "filtering…" state.
+        val jpegQuality = repository.currentSettings().imageQuality.jpegQuality
+        val rendered = withContext(Dispatchers.Default) {
             runCatching {
                 val warped = PerspectiveWarp.warp(source, corners)
-                try {
-                    DocumentFilters.applyPreview(warped, selectedFilter)
-                } finally {
-                    if (warped !== source) warped.recycle()
+                var filtered = DocumentFilters.apply(warped, selectedFilter, bakeDimension)
+                // DocumentFilters returns its input unchanged for ORIGINAL and on
+                // any failure, so only recycle intermediates that are neither the
+                // source nor the result. Recycling `warped` unconditionally was a
+                // real bug: it handed the UI a recycled bitmap and blanked the
+                // preview.
+                if (warped !== source && warped !== filtered) warped.recycle()
+
+                // The save writes a JPEG at this quality, and a JPEG is lossy —
+                // at Medium (88) the difference is visible in small text. Showing
+                // the pre-encode pixels would let a softer setting look better
+                // than it saves, which is exactly the judgement the preview exists
+                // for. Round-trip through the same encoder so the screen and the
+                // file are the same image, and recycle the unencoded copy.
+                val encoded = runCatching {
+                    ByteArrayOutputStream().use { stream ->
+                        if (filtered.compress(Bitmap.CompressFormat.JPEG, jpegQuality, stream)) {
+                            stream.toByteArray()
+                        } else {
+                            null
+                        }
+                    }
+                }.getOrNull()
+                val decoded = encoded?.let {
+                    runCatching { BitmapFactory.decodeByteArray(it, 0, it.size) }.getOrNull()
                 }
+                if (decoded != null) {
+                    if (filtered !== source) filtered.recycle()
+                    filtered = decoded
+                }
+                filtered
             }.getOrNull()
         }
-        val shown = filtered ?: source
+
+        val shown = rendered ?: source
+        // A silent fall back to the uncropped source is what made "no filter
+        // preview" so confusing; say so instead.
+        previewFailed = rendered == null
         // The warp changes the aspect ratio, and the frame below is sized from
         // this value — so it has to track what is actually on screen or the page
         // is drawn stretched.
@@ -288,6 +348,7 @@ fun CropAndFilterScreen(
         }
         isSaving = true
         scope.launch {
+            val quality = repository.currentSettings().imageQuality
             val baked = PageRenderer.bake(
                 context = context,
                 page = current.copy(
@@ -295,7 +356,8 @@ fun CropAndFilterScreen(
                     rotationDegrees = rotation,
                     corners = corners
                 ),
-                jpegQuality = repository.currentSettings().imageQuality.jpegQuality
+                jpegQuality = quality.jpegQuality,
+                maxDimension = PageRenderer.bakeDimension(quality)
             )
             if (baked != null) {
                 repository.updatePage(docId, activePageId) { baked }
@@ -483,6 +545,42 @@ fun CropAndFilterScreen(
                         .height(2.dp)
                 )
             }
+            // If a full-resolution filter render fails (memory pressure on a big
+            // page), say so rather than quietly showing the unfiltered frame and
+            // letting the user think the filter did nothing.
+            if (!isCropMode && previewFailed && image != null && !isFiltering) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 10.dp, start = 16.dp, end = 16.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp)
+                    ) {
+                        Text(
+                            "Preview could not be rendered at full size — showing the unfiltered page",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        IconButton(
+                            onClick = { previewFailed = false },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Dismiss",
+                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
             // Tell the user when auto-detection could not find a real page edge, so
             // a full-frame quad never looks like a silent failure.
             if (isCropMode && detectionFailed && image != null) {

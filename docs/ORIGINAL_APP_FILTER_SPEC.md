@@ -417,3 +417,92 @@ Two guards keep it from doing harm, both measured rather than assumed:
 
 Statistics come from summed-area tables, so the window size — `max(W,H)/16`,
 forced odd and ≥ 15 — costs nothing.
+
+## 11. B&W stroke sharpening, and why the editor preview must match the bake
+
+*Implementation notes, added while acting on "Clear B&W text is still not sharp"
+and "the preview must look exactly like the saved photo". Numbering continues
+from §10.*
+
+### 11.1 "Soft text" is a ramp width problem first
+
+The threshold band in §10 was 6 % of the threshold — on a typical 160-level
+threshold that is a ~10-level transition, i.e. two to three pixels of grey on
+every stroke at 300 dpi. A correct threshold that leaves a wide anti-aliased band
+still reads as soft: the eye judges text sharpness at the edge, not at the plateau.
+
+Narrowing the band to 3 % (floor 3 levels) is therefore the primary fix, and it is
+measurably the large one: the grey-pixel share falls 0.70 % → 0.22 % on a clean
+page. Real edges still need *some* band or 1-pixel transitions turn into jaggies,
+so 3 % is a floor, not a target of zero.
+
+### 11.2 Sharpening the decision plane, not the output
+
+The output is binary, so it cannot be sharpened after the fact. The thing that can
+be steepened is the luminance the decision is made *on*: an unsharp mask before
+thresholding pulls the transition to one pixel, straightening stems and stopping
+thin strokes from breaking up. Two guards make it safe, both measured:
+
+1. **Soft dead-zone.** `weight = clamp((|detail| - 3) / 3, 0, 1)` — below 3 levels
+   the plane passes through untouched. Without it, the edge boost and the grain
+   boost are literally the same operation.
+2. **Noise-adaptive strength.** The page's noise is estimated as the median
+   absolute high-frequency residual (2 × 3 × 3 box), and the amount fades to zero
+   between 4 and 9. Measured: clean 1.0, shadowed soft-focus 4.0, dark noisy 6.0.
+
+Sharpening the *median-denoised* plane instead was checked and is worse: it
+re-introduces the smoothing it is trying to undo.
+
+Measured through the whole pipeline against a ground-truth glyph mask:
+
+| variant | clean | shadow 35 %, soft | dark 20 %, noisy |
+|---|---|---|---|
+| §10 unchanged | 0.820 / 0.70 % | 0.762 / 1.49 % | 0.758 / 1.46 % |
+| **shipped: 0.6 ×, 2 passes, floor 3, fade 4→9** | **0.866 / 0.22 %** | **0.785 / 0.63 %** | 0.758 / 0.65 % |
+| 1.0 ×, 3 passes, fixed | 0.869 / 0.19 % | 0.781 / 0.55 % | 0.745 / 0.60 % |
+
+(IoU / grey share. Larger amount wins a thousandth on a clean page and loses
+thirteen on a noisy one — hence 0.6 rather than "as much as possible".)
+
+### 11.3 Preview fidelity is a size and ordering question
+
+A preview can only predict the save if it is the same pixels. Three things have to
+agree, and in 1.7 none of them did:
+
+| | 1.7 preview | 1.7 save | now (both) |
+|---|---|---|---|
+| decoded at | 1400 px | 2600 px | `bakeDimension(quality)` |
+| filtered at | 900 px (`PREVIEW_DIMENSION`) | 2000 px | same |
+| order | warp → filter | warp → filter | warp → filter |
+| encoded as | not at all | JPEG at 88/95 | JPEG, same quality |
+| aspect for the frame | source | — | the **warped** bitmap |
+
+The 2.2× smaller render was then upscaled into its frame, so it was softer than
+the PDF and responded differently to noise.
+
+The last row matters more than it looks. A JPEG is lossy and the setting is not
+cosmetic: at *Medium* (88) small text is visibly softer than at *High* (95). A
+preview that shows the pre-encode pixels makes Medium look better than it saves,
+which defeats the point of previewing. The editor therefore round-trips its render
+through `Bitmap.compress(JPEG, quality)` and displays the **decoded** result, i.e.
+the same pixels that will be in the file and in the PDF (which embeds the encoded
+page, not a re-encode). `PageRenderer.bakeDimension()` is now
+the single answer to "how big is the saved page", and both the bake and the editor
+call it. The preview is rendered on a `Dispatchers.Default` pass after a 140 ms
+settle, so dragging the filter strip does not queue a 2000 px render per frame.
+
+Two failure modes found in the same code path:
+
+- `DocumentFilters.apply` returns its **input** for `ORIGINAL` and on failure, so
+  recycling the warped bitmap unconditionally handed the UI a recycled bitmap —
+  the blank preview. Recycle only intermediates that are neither the source nor
+  the result; `apply`'s contract is documented on both sides.
+- A failed render fell back to the **unwarped** source, which looks like "the
+  filter did nothing". It now shows an error banner and keeps the honest frame.
+
+### 11.4 `PREVIEW_DIMENSION` is now unused for document previews
+
+`DocumentFilters.PREVIEW_DIMENSION` (900) remains for `applyPreview`, which is
+still the right call for a *thumbnail* — a grid cell does not need 2000 px. The
+editor must not use it: for "does this look like the save", only
+`bakeDimension()` is correct.

@@ -464,6 +464,103 @@ class DocumentFiltersTest {
         assertTrue("threshold $threshold must be below paper level", threshold < 210)
     }
 
+    // ------------------------------------------------------- B&W stroke sharpening
+
+    /**
+     * A flat field has no high-frequency content, so the gate must pass it through
+     * untouched — this is the property that stops sharpening from amplifying grain.
+     */
+    @Test
+    fun gatedUnsharp_leavesAFlatPlaneAlone() {
+        val plane = FloatArray(40 * 40) { 173f }
+
+        val out = DocumentFilters.gatedUnsharp(plane, 40, 40, amount = 0.6f, passes = 2, floor = 3f)
+
+        for (i in plane.indices) {
+            assertEquals("flat plane must be bit-identical, index $i", 173f, out[i], 1e-4f)
+        }
+    }
+
+    /**
+     * A strong edge must actually be steepened. A step from 90 to 180 is an 45-level
+     * detail term, far above the 3-level floor, so the boost applies at full
+     * strength on the pixels either side of the step.
+     */
+    @Test
+    fun gatedUnsharp_steepensAStepEdge() {
+        val w = 32
+        val h = 8
+        val plane = FloatArray(w * h) { i -> if ((i % w) < w / 2) 90f else 180f }
+
+        val out = DocumentFilters.gatedUnsharp(plane, w, h, amount = 0.6f, passes = 2, floor = 3f)
+
+        val left = 4 * w + (w / 2 - 1)          // last dark pixel
+        val right = 4 * w + (w / 2)             // first bright pixel
+        assertTrue("dark side of the edge must darken: ${out[left]}", out[left] < plane[left] - 2f)
+        assertTrue("bright side must brighten: ${out[right]}", out[right] > plane[right] + 2f)
+        // ...and the flat interiors must not move.
+        assertEquals(90f, out[4 * w + 1], 1e-3f)
+        assertEquals(180f, out[4 * w + w - 2], 1e-3f)
+    }
+
+    /** Detail just under the floor is ignored; detail well over it is boosted. */
+    @Test
+    fun gatedUnsharp_ignoresDetailBelowTheFloor() {
+        val w = 16
+        val h = 16
+        // A 2-level ripple: below SHARPEN_NOISE_FLOOR, i.e. exactly the grain case.
+        val plane = FloatArray(w * h) { i -> 150f + if ((i % 2) == 0) 1f else -1f }
+
+        val out = DocumentFilters.gatedUnsharp(plane, w, h, amount = 0.6f, passes = 2, floor = 3f)
+
+        for (i in plane.indices) {
+            assertEquals("sub-floor ripple must not be amplified, index $i", plane[i], out[i], 0.5f)
+        }
+    }
+
+    @Test
+    fun noiseEstimate_isZeroOnAFlatField() {
+        val plane = FloatArray(30 * 30) { 200f }
+
+        assertEquals(0f, DocumentFilters.noiseEstimate(plane, 30, 30, passes = 2), 0.001f)
+    }
+
+    /**
+     * Checkerboard noise has a residual equal to its amplitude, so the median
+     * absolute residual should come out at that amplitude — not at the mean, and
+     * not scaled by the blur.
+     */
+    @Test
+    fun noiseEstimate_readsTheAmplitudeOfCheckerboardNoise() {
+        val w = 24
+        val h = 24
+        val amplitude = 12f
+        val plane = FloatArray(w * h) { i ->
+            val x = i % w
+            val y = i / w
+            160f + if ((x + y) % 2 == 0) amplitude else -amplitude
+        }
+
+        val noise = DocumentFilters.noiseEstimate(plane, w, h, passes = 2)
+
+        assertTrue("expected roughly $amplitude, got $noise", noise in (amplitude * 0.5f)..(amplitude * 1.5f))
+    }
+
+    @Test
+    fun adaptiveSharpenAmount_isFullAtLowNoiseAndZeroAtHighNoise() {
+        val base = 0.6f
+
+        assertEquals("clean page must get full strength", base, DocumentFilters.adaptiveSharpenAmount(base, 1f), 1e-4f)
+        assertEquals("shipping threshold must get full strength", base, DocumentFilters.adaptiveSharpenAmount(base, 4f), 1e-4f)
+        assertEquals("grainy page must get nothing", 0f, DocumentFilters.adaptiveSharpenAmount(base, 9f), 1e-4f)
+        assertEquals("beyond the fade must stay at nothing", 0f, DocumentFilters.adaptiveSharpenAmount(base, 14f), 1e-4f)
+        // Monotonic in between: more noise, less sharpening.
+        val samples = (0..20).map { DocumentFilters.adaptiveSharpenAmount(base, it * 0.5f) }
+        assertEquals(samples, samples.sortedDescending())
+        // Halfway through the fade is half strength.
+        assertEquals(base / 2f, DocumentFilters.adaptiveSharpenAmount(base, 6.5f), 1e-4f)
+    }
+
     private fun rgb(r: Int, g: Int, b: Int): Int =
         (0xFF shl 24) or (r shl 16) or (g shl 8) or b
 }

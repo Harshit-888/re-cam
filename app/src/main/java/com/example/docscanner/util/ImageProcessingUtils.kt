@@ -29,7 +29,8 @@ object ImageProcessingUtils {
         src: Bitmap,
         filterType: FilterType,
         rotationDegrees: Float,
-        corners: QuadCorners? = null
+        corners: QuadCorners? = null,
+        maxDimension: Int = DocumentFilters.MAX_PROCESS_DIMENSION
     ): Bitmap {
         var current = if (corners != null) PerspectiveWarp.warp(src, corners) else src
 
@@ -57,7 +58,7 @@ object ImageProcessingUtils {
         if (filterType == FilterType.ORIGINAL) return current
 
         val filtered = try {
-            DocumentFilters.apply(current, filterType)
+            DocumentFilters.apply(current, filterType, maxDimension)
         } catch (_: Throwable) {
             null
         }
