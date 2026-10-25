@@ -3,6 +3,7 @@ package com.example.docscanner.util
 import android.graphics.Bitmap
 import com.example.docscanner.model.FilterType
 import kotlin.math.ceil
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -21,8 +22,8 @@ import kotlin.math.sqrt
  * | Original | `qx3` colour branch | passthrough |
  * | Grayscale | `qx3` gray branch → `Imgproc.cvtColor(BGR2GRAY)` | Rec.601 luminance, **no** enhancement |
  * | Lighten | `tw3` → `enhancePhoto(blackPoint, whitePoint, colorMode)` | linear stretch between the estimated points |
- * | Magic Color | `lu3` → `enhanceDocument(level = 1)` | paper surface → divide → ink curve → saturation → midtone sharpen |
- * | Clear B&W | `lu3` → `enhanceDocument(level = 2)` | paper surface → median → Otsu → soft edge ramp |
+ * | Magic Color | `lu3` → `enhanceDocument(level = 1)` | paper surface → saturated divide → ink curve → saturation → midtone sharpen |
+ * | Clear B&W | `lu3` → `enhanceDocument(level = 2)` | paper surface → median → Otsu, refined locally (Sauvola) → soft edge ramp |
  *
  * Three things in the previous revision were simply **not in the original** and
  * are gone:
@@ -100,62 +101,49 @@ object DocumentFilters {
     private const val PAPER_WORK_DIM = 320
 
     /**
-     * Denominator that turns the working grid into the morphology radius.
+     * Radius of the dilate→erode pair, as a divisor of the working grid's long edge.
      *
-     * The disassembly shows `cv::dilate` immediately followed by `cv::erode` on
-     * the background estimate. In OpenCV's own vocabulary that pair is a
-     * **closing** (`MORPH_CLOSE`), and its job is exactly what the pipeline
-     * needs: fill dark structure -- glyph strokes, rules, staples, a shadowed
-     * fold -- with the paper level around it, so the surface describes the page
-     * and not its ink. A dilation alone reads too bright and dividing by it
-     * paints the page white.
+     * `~2.5 %` of the page. The disassembly shows `cv::dilate` immediately
+     * followed by `cv::erode` on the background estimate — in OpenCV's vocabulary
+     * a **closing** (`MORPH_CLOSE`) — whose job is to fill dark structure (glyph
+     * strokes, rules, staples, a fold's shadow) with the paper level around it,
+     * so the surface describes the page and not its ink.
      *
      * The radius is **not** a constant in the original: `enhanceDocument` calls
-     * `ColorizingRadius::computeRadius(w, h, dpi, level)`, whose body is behind
-     * the stripped PLT and was not recovered (spec §7). What is certain is that
-     * it depends on the image size, because a fixed radius cannot close over a
-     * 60 px text line and a 6 px one at the same time. Measured against the
-     * behaviour we can see, ~2 % of the image's long edge is the smallest reach
-     * that reliably bridges body text, and it is scale-free: at any resolution
-     * it removes ink and keeps folds. On a 320-cell grid that is a radius of 6,
-     * hence the divisor below.
-     *
-     * This is the one number in the paper map that is a model rather than a
-     * transcription -- logged as such in `docs/ORIGINAL_APP_FILTER_SPEC.md`.
+     * `ColorizingRadius::computeRadius(w, h, dpi, level)`, whose body sits behind
+     * the stripped PLT (spec §7). What is certain is that it depends on the image
+     * size. The shadow-removal literature agrees and is specific about why: the
+     * window must be wider than about twice the stroke width, or ink survives
+     * into the estimate and dividing by it hollows out the text. Measured here,
+     * `~2.5 %` of the long edge clears body text at every resolution from 200 px
+     * to 4000 px. See `docs/ORIGINAL_APP_FILTER_SPEC.md` §10.1.
      */
-    private const val PAPER_OPEN_DIVISOR = 48
+    private const val PAPER_CLOSE_DIVISOR = 40
 
     /** Morphology radius is never below this; radius 0 would skip the step. */
     private const val PAPER_OPEN_MIN_RADIUS = 1
 
-    /**
-     * How much of the frame's own paper level the illumination surface may be
-     * pulled *below*, when the frame reads as a document.
-     *
-     * The divide is `I / paper · 255`, so wherever the surface dips, everything
-     * above it is pushed to white. On a page that is the whole point: a 30 %
-     * shadow has to become paper. 0.25 leaves the absolute gain ceiling below to
-     * do the work, i.e. a real page keeps essentially the shadow removal it had.
-     */
-    private const val PAPER_RELATIVE_FLOOR_DOCUMENT = 0.25f
+    /** Lowest value the surface may take. Only stops a divide by ~zero. */
+    private const val PAPER_EPSILON = 4f
 
     /**
-     * The same bound for a frame that is **not** a document — see
-     * [classifiesAsDocument].
+     * Where the illumination gain stops being applied exactly, and how far it may
+     * go. Below the knee the divide is exact; above it the gain saturates.
      *
-     * Without it, a photo taken in a dark room is divided by its own darkness:
-     * the laptop screen in the middle of such a frame measures 230 while the
-     * room around it measures 15, so the surface follows the room down and every
-     * shadow becomes white paper. Measured on exactly such a frame (4000 × 3000,
-     * mean luminance 51): the unbounded divide turned 13.2 % of the picture pure
-     * white; at this bound it is 2.5 %, against 1.0 % in the original capture,
-     * and the blacks stay black (49 % → 52 % of pixels under 30).
+     * A *hard* clamp here — `max(floor, surface)`, what 1.6 shipped — split the
+     * frame into "lifted" and "not lifted" around one global number, which is
+     * exactly the "it brightens some areas and leaves others alone" artefact. A
+     * knee is monotonic, so there is no contour to see, and its slope is 1 at the
+     * knee, so there is no seam either.
      *
-     * 0.62 is the highest bound that leaves a dark scene alone. Anything above
-     * ~0.7 starts flattening real photographs; anything below ~0.5 leaves the
-     * glow around the screen.
+     * Documents need a high knee: a hand shadow across a page is a factor of 7–8
+     * in luminance and dividing it out is the entire point. A scene needs a low
+     * one, or a dark room gets repainted white.
      */
-    private const val PAPER_RELATIVE_FLOOR_SCENE = 0.62f
+    private const val GAIN_KNEE_DOCUMENT = 8f
+    private const val GAIN_CAP_DOCUMENT = 24f
+    private const val GAIN_KNEE_SCENE = 1.2f
+    private const val GAIN_CAP_SCENE = 2.0f
 
     /**
      * Luminance the frame is normalised to before it is classified.
@@ -171,12 +159,6 @@ object DocumentFilters {
     /** Ceiling on that brightening, so a near-black frame cannot be blown up. */
     private const val CLASSIFY_MAX_GAIN = 8f
 
-    /**
-     * Ceiling on the illumination gain. A patch must never be amplified more than
-     * this, or a dark corner (or a finger over the lens) turns into white paper.
-     */
-    private const val MAX_ILLUMINATION_GAIN = 4.5f
-
     /** Tones at or below this fraction of white are already ink. */
     private const val CURVE_BLACK_FLOOR = 0.06f
 
@@ -184,7 +166,7 @@ object DocumentFilters {
     private const val CURVE_WHITE_CEIL = 0.93f
 
     /** >1 deepens mid-tones (ink); the endpoints are pinned, so paper stays white. */
-    private const val CURVE_GAMMA = 1.28f
+    private const val CURVE_GAMMA = 1.35f
 
     /** Chroma boost for stamps, logos and signatures in *Magic Color*. */
     private const val MAGIC_COLOR_SATURATION = 1.18f
@@ -198,6 +180,37 @@ object DocumentFilters {
      * survives.
      */
     private const val SHARPEN_AMOUNT = 0.55f
+
+    /**
+     * Sauvola's local-threshold parameters.
+     *
+     * `T = m·(1 + k·(σ/R − 1))` — the threshold tracks the local mean, pulled
+     * down where local contrast is low. `k = 0.34` and `R = 128` are the values
+     * Badekas et al. report as best after testing the range, and the same pair is
+     * the common default. Included because a *local* threshold is what keeps
+     * faded or broken strokes on a shadowed page from vanishing, which a global
+     * cut cannot do.
+     */
+    private const val SAUVOLA_K = 0.34f
+    private const val SAUVOLA_R = 128f
+
+    /**
+     * Under this local standard deviation the window holds no text/paper decision
+     * at all, so the global threshold is used instead. Without the gate, Sauvola
+     * on a blank margin lowers the threshold below the mean and speckles the page.
+     */
+    private const val SAUVOLA_MIN_STD = 6f
+
+    /**
+     * How far the local threshold may sit *below* Otsu's, as a multiple.
+     *
+     * A bounded refinement, not a replacement. Measured on pages whose
+     * illumination is already normalised: unclamped Sauvola left 5 % of the paper
+     * grey that plain Otsu got white, and letting it rise *above* Otsu turned ink
+     * into grey. Lowering only is the asymmetry that makes it safe — it can
+     * recover a faint stroke, and it cannot lose one.
+     */
+    private const val BW_LOCAL_CLAMP_LOW = 0.85f
 
     /** Anti-aliasing band around the B&W threshold, as a fraction of it. */
     private const val BW_RAMP_FRACTION = 0.06f
@@ -519,12 +532,13 @@ object DocumentFilters {
         val paper = buildPaperMap(pixels, w, h)
         val curve = documentCurveLut()
         val normalised = IntArray(3)
+        val (knee, cap) = gainLimits(pixels)
 
         var index = 0
         for (y in 0 until h) {
             for (x in 0 until w) {
                 val p = pixels[index]
-                normalise(p, paper, x, y, normalised)
+                normalise(p, paper, x, y, knee, cap, normalised)
                 var r = curve[normalised[0]]
                 var g = curve[normalised[1]]
                 var b = curve[normalised[2]]
@@ -602,13 +616,14 @@ object DocumentFilters {
      */
     private fun applyDocumentBw(pixels: IntArray, w: Int, h: Int) {
         val paper = buildPaperMap(pixels, w, h)
+        val (knee, cap) = gainLimits(pixels)
         val lum = FloatArray(w * h)
         val normalised = IntArray(3)
 
         var index = 0
         for (y in 0 until h) {
             for (x in 0 until w) {
-                normalise(pixels[index], paper, x, y, normalised)
+                normalise(pixels[index], paper, x, y, knee, cap, normalised)
                 lum[index] = 0.299f * normalised[0] +
                     0.587f * normalised[1] +
                     0.114f * normalised[2]
@@ -616,25 +631,43 @@ object DocumentFilters {
             }
         }
 
-        // cv::medianBlur before thresholding, not after.
+        // cv::medianBlur before thresholding, not after: denoising the *input* is
+        // what stops sensor and JPEG noise from dragging the threshold around.
         val denoised = median3x3(lum, w, h)
         val histogram = IntArray(256)
         for (value in denoised) {
             histogram[value.roundToInt().coerceIn(0, 255)]++
         }
+        val global = otsuThreshold(histogram).toFloat()
 
-        val threshold = otsuThreshold(histogram).toFloat()
-        val ramp = max(BW_MIN_RAMP, threshold * BW_RAMP_FRACTION)
-        var lowCut = (threshold - ramp / 2f).coerceIn(0f, 255f)
-        var highCut = (threshold + ramp / 2f).coerceIn(0f, 255f)
-        if (highCut - lowCut < 1f) {
-            lowCut = (threshold - 0.5f).coerceAtLeast(0f)
-            highCut = (threshold + 0.5f).coerceAtMost(255f)
-        }
-        val span = (highCut - lowCut).coerceAtLeast(1f)
+        // Sauvola, clamped to a band around Otsu's answer.
+        //
+        // A global cut is right for a page whose illumination has already been
+        // flattened, which is the case here — the normalisation above has done
+        // that. What it cannot do is recover a stroke that is *locally* faint: a
+        // pencil line, a thinned glyph, a fold. That is exactly what a local
+        // standard-deviation threshold fixes, because it drops the threshold in
+        // low-contrast neighbourhoods instead of holding one number for the page.
+        //
+        // It is kept on a short leash (±15 % of Otsu) for two reasons. Measured
+        // unclamped on normalised pages it left grey where Otsu produced white,
+        // and it needs a window wider than the text is tall, which is a guess
+        // about resolution. Clamped, the failure mode is "within 15 % of Otsu"
+        // rather than "speckled".
+        val window = sauvolaWindow(w, h)
+        val thresholds = if (window > 1) localThresholds(denoised, w, h, window, global) else null
 
         for (i in pixels.indices) {
             val value = denoised[i]
+            val threshold = thresholds?.get(i) ?: global
+            val ramp = max(BW_MIN_RAMP, threshold * BW_RAMP_FRACTION)
+            var lowCut = (threshold - ramp / 2f).coerceIn(0f, 255f)
+            var highCut = (threshold + ramp / 2f).coerceIn(0f, 255f)
+            if (highCut - lowCut < 1f) {
+                lowCut = (threshold - 0.5f).coerceAtLeast(0f)
+                highCut = (threshold + 0.5f).coerceAtMost(255f)
+            }
+            val span = (highCut - lowCut).coerceAtLeast(1f)
             val out = when {
                 value >= highCut -> 255
                 value <= lowCut -> 0
@@ -644,26 +677,117 @@ object DocumentFilters {
         }
     }
 
+    /**
+     * Sauvola window edge, in pixels, or 1 to skip the local pass.
+     *
+     * A local threshold needs a window wider than the tallest glyph stroke, and
+     * that is a property of the page, not of the pixel grid — so it scales. At a
+     * 2000 px long edge this is 125 px, about right for body text.
+     */
+    internal fun sauvolaWindow(w: Int, h: Int): Int {
+        val raw = max(w, h) / 16
+        if (raw < 15) return 1
+        return if (raw % 2 == 0) raw + 1 else raw
+    }
+
+    /**
+     * Per-pixel threshold: Sauvola inside the band around [global], clamped.
+     *
+     * Returns `null` only if the box statistics cannot be computed, in which case
+     * the caller falls back to the global threshold.
+     */
+    private fun localThresholds(
+        lum: FloatArray,
+        w: Int,
+        h: Int,
+        window: Int,
+        global: Float
+    ): FloatArray? {
+        val boxes = boxMeanAndStd(lum, w, h, window) ?: return null
+        val mean = boxes.first
+        val std = boxes.second
+        val low = (global * BW_LOCAL_CLAMP_LOW).coerceAtLeast(1f)
+        val out = FloatArray(lum.size)
+        for (i in out.indices) {
+            val sigma = std[i]
+            val threshold = if (sigma < SAUVOLA_MIN_STD) {
+                // Flat neighbourhood: there is no text/paper decision to be made
+                // here, and Sauvola on a blank margin drops the threshold below
+                // the mean and speckles the page.
+                global
+            } else {
+                mean[i] * (1f + SAUVOLA_K * (sigma / SAUVOLA_R - 1f))
+            }
+            // Never above Otsu's answer: see BW_LOCAL_CLAMP_LOW.
+            out[i] = threshold.coerceIn(low, global)
+        }
+        return out
+    }
+
+    /**
+     * Mean and standard deviation over a [window] × [window] box, via summed-area
+     * tables so the cost is independent of the window size.
+     */
+    internal fun boxMeanAndStd(
+        plane: FloatArray,
+        w: Int,
+        h: Int,
+        window: Int
+    ): Pair<FloatArray, FloatArray>? {
+        if (window < 3 || w < 1 || h < 1) return null
+        val stride = w + 1
+        val sum = DoubleArray(stride * (h + 1))
+        val sumSq = DoubleArray(stride * (h + 1))
+        for (y in 0 until h) {
+            var rowSum = 0.0
+            var rowSumSq = 0.0
+            for (x in 0 until w) {
+                val v = plane[y * w + x].toDouble()
+                rowSum += v
+                rowSumSq += v * v
+                val i = (y + 1) * stride + (x + 1)
+                sum[i] = sum[(y) * stride + (x + 1)] + rowSum
+                sumSq[i] = sumSq[(y) * stride + (x + 1)] + rowSumSq
+            }
+        }
+
+        fun rect(table: DoubleArray, x0: Int, y0: Int, x1: Int, y1: Int): Double =
+            table[y1 * stride + x1] - table[y0 * stride + x1] -
+                table[y1 * stride + x0] + table[y0 * stride + x0]
+
+        val half = window / 2
+        val mean = FloatArray(w * h)
+        val std = FloatArray(w * h)
+        for (y in 0 until h) {
+            val y0 = (y - half).coerceAtLeast(0)
+            val y1 = (y + half + 1).coerceAtMost(h)
+            for (x in 0 until w) {
+                val x0 = (x - half).coerceAtLeast(0)
+                val x1 = (x + half + 1).coerceAtMost(w)
+                val count = (x1 - x0) * (y1 - y0)
+                if (count <= 0) continue
+                val meanValue = rect(sum, x0, y0, x1, y1) / count
+                val variance = (rect(sumSq, x0, y0, x1, y1) / count) - meanValue * meanValue
+                val i = y * w + x
+                mean[i] = meanValue.toFloat()
+                std[i] = sqrt(max(0.0, variance)).toFloat()
+            }
+        }
+        return mean to std
+    }
+
     // ==================================================================================
     // Paper map / normalisation
     // ==================================================================================
 
-    /**
-     * A coarse per-channel paper-white map, sampled bilinearly at any pixel.
-     *
-     * [floorR]/[floorG]/[floorB] are the lowest value the surface may be treated
-     * as, per channel; they carry the gain ceiling that keeps a dark scene dark.
-     */
+    /** A coarse per-channel paper-white map, sampled bilinearly at any pixel. */
     private class PaperMap(
         val r: FloatArray,
         val g: FloatArray,
         val b: FloatArray,
         val gw: Int,
         val gh: Int,
-        val block: Float,
-        val floorR: Float,
-        val floorG: Float,
-        val floorB: Float
+        val block: Float
     )
 
     /**
@@ -685,119 +809,108 @@ object DocumentFilters {
         val gw = max(1, (w + cell - 1) / cell)
         val gh = max(1, (h + cell - 1) / cell)
 
-        var gridR = maxPool(pixels, w, h, cell, gw, gh, 16)
-        var gridG = maxPool(pixels, w, h, cell, gw, gh, 8)
-        var gridB = maxPool(pixels, w, h, cell, gw, gh, 0)
+        val pooled = meanPool(pixels, w, h, cell, gw, gh)
+        val gridR = closeDarkStructure(pooled, 0, gw, gh)
+        val gridG = closeDarkStructure(pooled, 1, gw, gh)
+        val gridB = closeDarkStructure(pooled, 2, gw, gh)
 
-        // cv::dilate then cv::erode — the closing named in the disassembly.
-        gridR = closeDarkStructure(gridR, gw, gh)
-        gridG = closeDarkStructure(gridG, gw, gh)
-        gridB = closeDarkStructure(gridB, gw, gh)
-
-        // Two 3×3 passes so the cell grid cannot show through the division.
-        repeat(2) {
-            gridR = boxBlur3(gridR, gw, gh)
-            gridG = boxBlur3(gridG, gw, gh)
-            gridB = boxBlur3(gridB, gw, gh)
-        }
-
-        // The frame's own paper level, per channel: the level the surface is
-        // allowed to climb to, but not arbitrarily far below. See
-        // PAPER_RELATIVE_FLOOR_SCENE for the measurement behind this.
-        val relative = if (classifiesAsDocument(pixels)) {
-            PAPER_RELATIVE_FLOOR_DOCUMENT
-        } else {
-            PAPER_RELATIVE_FLOOR_SCENE
-        }
-        return PaperMap(
-            r = gridR,
-            g = gridG,
-            b = gridB,
-            gw = gw,
-            gh = gh,
-            block = cell.toFloat(),
-            floorR = max(PAPER_FLOOR, relative * litLevel(gridR)),
-            floorG = max(PAPER_FLOOR, relative * litLevel(gridG)),
-            floorB = max(PAPER_FLOOR, relative * litLevel(gridB))
-        )
-    }
-
-    /**
-     * The level of the lit paper in a channel plane — the 95th percentile of the
-     * smoothed surface.
-     *
-     * Not the maximum: a single specular highlight (a lamp, a window) is not the
-     * paper, and using it would set the floor far too high. Not the mean either,
-     * which on a page with a large dark photo block is dragged down into the
-     * middle of the tonal range.
-     */
-    private fun litLevel(grid: FloatArray): Float {
-        val histogram = IntArray(256)
-        for (value in grid) histogram[value.roundToInt().coerceIn(0, 255)]++
-        var seen = 0
-        val target = (grid.size * 0.95f).toInt()
-        for (bin in 0 until 256) {
-            seen += histogram[bin]
-            if (seen > target) return bin.toFloat()
-        }
-        return 255f
+        return PaperMap(gridR, gridG, gridB, gw, gh, cell.toFloat())
     }
 
     /**
      * Radius of the dilate→erode pair, in working-grid cells.
      *
      * Scales with the grid, so the reach is the same fraction of the page at
-     * every input size. See [PAPER_OPEN_DIVISOR].
+     * every input size. See [PAPER_CLOSE_DIVISOR].
      */
     internal fun paperRadius(gw: Int, gh: Int): Int =
-        max(PAPER_OPEN_MIN_RADIUS, max(gw, gh) / PAPER_OPEN_DIVISOR)
+        max(PAPER_OPEN_MIN_RADIUS, max(gw, gh) / PAPER_CLOSE_DIVISOR)
 
     /**
-     * `cv::dilate` then `cv::erode` on a channel plane -- a closing: dark
-     * structure narrower than the window is filled with its surroundings.
+     * `cv::dilate` then `cv::erode` on one channel of the pooled grid.
+     *
+     * The closing is what turns "the average brightness of this patch, ink
+     * included" into "the brightness of the paper here": ink is narrower than the
+     * window, so the dilation swallows it from the surrounding paper and the
+     * erosion brings the level back down to the paper rather than the ink.
+     *
+     * Three box passes after that, because two left a visible cell structure on
+     * hard-edged shadows (measured: shadowed paper 204 instead of 244).
      */
-    private fun closeDarkStructure(grid: FloatArray, gw: Int, gh: Int): FloatArray {
+    private fun closeDarkStructure(pooled: Array<FloatArray>, channel: Int, gw: Int, gh: Int): FloatArray {
+        val plane = pooled[channel]
         val radius = paperRadius(gw, gh)
-        val dilated = windowOp(grid, gw, gh, radius, dilate = true)
-        return windowOp(dilated, gw, gh, radius, dilate = false)
+        var grid = windowOp(plane, gw, gh, radius, dilate = true)
+        grid = windowOp(grid, gw, gh, radius, dilate = false)
+        repeat(3) { grid = boxBlur3(grid, gw, gh) }
+        return grid
     }
 
-    /** Block maximum of one channel, i.e. the dilation half of the opening. */
-    private fun maxPool(
+    /**
+     * Per-cell **mean** of the frame, returned as three channel planes.
+     *
+     * This used to be a per-cell maximum, on the reasoning that paper is the
+     * brightest thing in a patch that also contains print. Measured against known
+     * paper levels, a max is biased **upwards by two to three standard deviations
+     * of sensor noise** — `bg/paper = 1.26` in a deep shadow, which is a 26 %
+     * error exactly where the gain is largest. That error is why dividing a hand
+     * shadow by the surface never reached white: the estimator was inflated.
+     *
+     * With a mean the bias drops to 1.02, and rejecting ink is left entirely to
+     * the closing that follows — which is the correct division of labour, and is
+     * what the background-estimation literature does. (Spec §10.1.)
+     */
+    private fun meanPool(
         pixels: IntArray,
         w: Int,
         h: Int,
         cell: Int,
         gw: Int,
-        gh: Int,
-        shift: Int
-    ): FloatArray {
-        val out = FloatArray(gw * gh)
+        gh: Int
+    ): Array<FloatArray> {
+        val outR = FloatArray(gw * gh)
+        val outG = FloatArray(gw * gh)
+        val outB = FloatArray(gw * gh)
         for (gy in 0 until gh) {
             val y0 = min(h - 1, gy * cell)
             val y1 = min(h, y0 + cell)
             for (gx in 0 until gw) {
                 val x0 = min(w - 1, gx * cell)
                 val x1 = min(w, x0 + cell)
-                var peak = 0
+                var sumR = 0
+                var sumG = 0
+                var sumB = 0
+                var count = 0
                 for (y in y0 until y1) {
                     val row = y * w
                     for (x in x0 until x1) {
-                        val value = (pixels[row + x] ushr shift) and 0xFF
-                        if (value > peak) peak = value
+                        val p = pixels[row + x]
+                        sumR += (p ushr 16) and 0xFF
+                        sumG += (p ushr 8) and 0xFF
+                        sumB += p and 0xFF
+                        count++
                     }
                 }
-                out[gy * gw + gx] = peak.toFloat()
+                val index = gy * gw + gx
+                if (count == 0) {
+                    outR[index] = 0f
+                    outG[index] = 0f
+                    outB[index] = 0f
+                } else {
+                    outR[index] = sumR.toFloat() / count
+                    outG[index] = sumG.toFloat() / count
+                    outB[index] = sumB.toFloat() / count
+                }
             }
         }
-        return out
+        return arrayOf(outR, outG, outB)
     }
 
     /**
      * Separable 1-D erosion/dilation of a grid. [dilate] picks max, otherwise min.
      *
-     * Naive window rather than a monotonic queue: the grid is at most
-     * 320 × 320 cells and the radius is one cell, so 9 samples per cell beats the
+     * Naive window rather than a monotonic queue: the grid is at most 320 x 320
+     * cells and the radius is a handful of cells, so the direct loop beats the
      * bookkeeping of a deque.
      */
     private fun windowOp(
@@ -951,26 +1064,72 @@ object DocumentFilters {
         return top + (bottom - top) * ty
     }
 
-    /** Paper level below which the gain ceiling would be exceeded. */
-    private const val PAPER_FLOOR = 255f / MAX_ILLUMINATION_GAIN
-
     /**
-     * `I / paper · 255` per channel, clamped into 0…255, with `paper` held at or
-     * above the map's per-channel floor so the gain cannot run away in darkness.
+     * `I / paper · 255` per channel, with the gain **saturated** rather than
+     * clamped.
+     *
+     * Below [knee] the division is applied exactly, so a page's shadows divide
+     * out as they should. Above it the gain approaches [cap] asymptotically:
+     *
+     * ```
+     * g' = knee + (cap − knee) · (1 − exp(−(g − knee) / (cap − knee)))
+     * ```
+     *
+     * Three properties matter. It is continuous at the knee (`g' = knee`), its
+     * slope there is 1 — so there is no seam to see — and it never exceeds [cap].
+     * A hard `max(floor, surface)` gave the same upper bound but split the frame
+     * into two behaviours along a visible contour.
      *
      * Writes into [out] rather than allocating: this runs once per pixel on a
      * 2000 px page. [out] is caller-owned, so a preview render and a bake running
      * on different dispatchers cannot corrupt each other.
      */
-    private fun normalise(pixel: Int, paper: PaperMap, x: Int, y: Int, out: IntArray) {
-        val paperR = max(paper.floorR, sample(paper.r, paper, x, y))
-        val paperG = max(paper.floorG, sample(paper.g, paper, x, y))
-        val paperB = max(paper.floorB, sample(paper.b, paper, x, y))
+    private fun normalise(
+        pixel: Int,
+        paper: PaperMap,
+        x: Int,
+        y: Int,
+        knee: Float,
+        cap: Float,
+        out: IntArray
+    ) {
+        val paperR = max(PAPER_EPSILON, sample(paper.r, paper, x, y))
+        val paperG = max(PAPER_EPSILON, sample(paper.g, paper, x, y))
+        val paperB = max(PAPER_EPSILON, sample(paper.b, paper, x, y))
 
-        out[0] = (((pixel ushr 16) and 0xFF) * 255f / paperR).roundToInt().coerceIn(0, 255)
-        out[1] = (((pixel ushr 8) and 0xFF) * 255f / paperG).roundToInt().coerceIn(0, 255)
-        out[2] = ((pixel and 0xFF) * 255f / paperB).roundToInt().coerceIn(0, 255)
+        out[0] = saturateGain(((pixel ushr 16) and 0xFF).toFloat(), paperR, knee, cap)
+        out[1] = saturateGain(((pixel ushr 8) and 0xFF).toFloat(), paperG, knee, cap)
+        out[2] = saturateGain((pixel and 0xFF).toFloat(), paperB, knee, cap)
     }
+
+    /** One channel of the saturated divide; see [normalise]. */
+    internal fun saturateGain(value: Float, surface: Float, knee: Float, cap: Float): Int {
+        val gain = 255f / max(PAPER_EPSILON, surface)
+        val eased = softKnee(gain, knee, cap)
+        return (value * eased).roundToInt().coerceIn(0, 255)
+    }
+
+    /**
+     * The soft-knee curve on its own, exposed for testing.
+     *
+     * Identity at or below [knee]; continuous with unit slope there; asymptotic
+     * to [cap]; strictly increasing everywhere.
+     */
+    internal fun softKnee(gain: Float, knee: Float, cap: Float): Float {
+        if (cap <= knee) return gain.coerceAtMost(cap)
+        if (gain <= knee) return gain
+        val over = gain - knee
+        val width = cap - knee
+        return knee + width * (1f - exp(-over / width))
+    }
+
+    /** Knee and cap for a frame, from whether it reads as a document. */
+    private fun gainLimits(pixels: IntArray): Pair<Float, Float> =
+        if (classifiesAsDocument(pixels)) {
+            GAIN_KNEE_DOCUMENT to GAIN_CAP_DOCUMENT
+        } else {
+            GAIN_KNEE_SCENE to GAIN_CAP_SCENE
+        }
 
     // ==================================================================================
     // Pure helpers — `internal` so DocumentFiltersTest can cover them on the JVM.
