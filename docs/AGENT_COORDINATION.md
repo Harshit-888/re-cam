@@ -78,7 +78,7 @@ Keep this table short. Delete your row when the change lands.
 | :--- | :--- | :--- | :--- |
 | Antigravity | ✅ committed | `docs/ORIGINAL_APP_FILTER_SPEC.md`, `docs/AGENTS_CHANGELOG.md` | Reverse-engineered native filter spec & decompiled algorithms |
 | Arena.ai | ✅ committed | `util/DocumentNaming.kt`, `ui/editor/CropAndFilterScreen.kt`, `Navigation.kt`, `NavigationKeys.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/PerspectiveWarp.kt`, `app/build.gradle.kts`, tests + docs | Done-button crash fix, post-capture review flow, folder move, note editing |
-| Arena.ai | 🔄 new branch, needs a build | `util/DocumentFilters.kt`, `DocumentFiltersTest.kt`, `app/build.gradle.kts`, docs | Dark-scene blow-out fix: the divide is now bounded relative to the frame's own paper level, and `wv3`'s classifier decides which bound applies. No signature changes; `classifiesAsDocument` is new and `internal`. |
+| Arena.ai | 🔄 in PR, needs a build | `util/DocumentFilters.kt`, `ui/editor/CropAndFilterScreen.kt`, `DocumentFiltersTest.kt`, `app/build.gradle.kts`, docs | Magic Color made uniform (mean-pooled estimator, soft knee), Clear B&W gets a clamped Sauvola refinement, Borders tap auto-detects, preview is warped+filtered. No public signature changed; `saturateGain`/`softKnee`/`boxMeanAndStd`/`sauvolaWindow` are new and `internal`. |
 
 ## 5. File ownership map
 

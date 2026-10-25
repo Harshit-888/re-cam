@@ -288,6 +288,152 @@ class DocumentFiltersTest {
         assertFalse(DocumentFilters.classifiesAsDocument(IntArray(0)))
     }
 
+    // ------------------------------------------------- saturation instead of a clamp
+
+    @Test
+    fun softKnee_isTheIdentityBelowTheKnee() {
+        // Everything up to the knee must be applied exactly, or a page's shadows
+        // stop dividing out.
+        val knee = 8f
+        val cap = 24f
+        for (gain in listOf(1f, 1.2f, 3.7f, 7.99f, knee)) {
+            assertEquals("gain $gain", gain, DocumentFilters.softKnee(gain, knee, cap), 1e-4f)
+        }
+    }
+
+    @Test
+    fun softKnee_isContinuousAtTheKnee() {
+        // The previous design used a hard max(floor, surface), which put a visible
+        // contour where the two behaviours met. Across the knee the curve must
+        // keep advancing at unit slope — a jump would be a step, and a flat spot
+        // would be a kink.
+        val knee = 8f
+        val cap = 24f
+        val epsilon = 1e-2f
+        val rise = DocumentFilters.softKnee(knee + epsilon, knee, cap) -
+            DocumentFilters.softKnee(knee - epsilon, knee, cap)
+        assertEquals("no step at the knee", 2f * epsilon, rise, 1e-3f)
+        assertEquals(knee, DocumentFilters.softKnee(knee, knee, cap), 1e-4f)
+    }
+
+    @Test
+    fun softKnee_slopeIsOneAtTheKnee() {
+        // Unit slope means no visible seam: the lift continues at the same rate
+        // across the knee before easing off.
+        val knee = 8f
+        val cap = 24f
+        val delta = 1e-2f
+        val slope = (DocumentFilters.softKnee(knee + delta, knee, cap) -
+            DocumentFilters.softKnee(knee, knee, cap)) / delta
+        assertEquals(1f, slope, 0.02f)
+    }
+
+    @Test
+    fun softKnee_neverExceedsTheCapAndAlwaysIncreases() {
+        val knee = 1.2f
+        val cap = 2f
+        var previous = 0f
+        var gain = 0.1f
+        while (gain < 200f) {
+            val eased = DocumentFilters.softKnee(gain, knee, cap)
+            assertTrue("monotonic at $gain", eased >= previous - 1e-5f)
+            assertTrue("capped at $gain: $eased", eased <= cap + 1e-4f)
+            previous = eased
+            gain *= 1.3f
+        }
+        // ...and it does get close to the cap, rather than stopping short of it.
+        assertTrue(DocumentFilters.softKnee(500f, knee, cap) > cap * 0.95f)
+    }
+
+    @Test
+    fun saturateGain_saturatesADarkSurfaceInsteadOfBlowingItOut() {
+        // A surface at 15/255 needs a gain of 17. Below a document knee of 8 that
+        // is eased, not applied: the pixel is lifted but not to white.
+        val docKnee = 8f
+        val docCap = 24f
+        val lifted = DocumentFilters.saturateGain(15f, 15f, docKnee, docCap)
+        assertTrue("must be brighter than the source", lifted > 100)
+        assertFalse("must not be forced to white", lifted == 255)
+
+        // A bright surface needs almost no gain and is passed through.
+        assertEquals(250, DocumentFilters.saturateGain(250f, 255f, docKnee, docCap))
+
+        // The scene limits are far tighter: the same pixel barely moves.
+        val scene = DocumentFilters.saturateGain(15f, 15f, 1.2f, 2f)
+        assertTrue("scene gain must stay near 2x, got $scene", scene in 25..32)
+    }
+
+    @Test
+    fun saturateGain_survivesAZeroSurface() {
+        // A black pixel whose surface collapsed to zero must not divide by zero.
+        val value = DocumentFilters.saturateGain(0f, 0f, 8f, 24f)
+        assertEquals(0, value)
+    }
+
+    // ------------------------------------------------------------ B&W local pass
+
+    @Test
+    fun boxMeanAndStd_matchesADirectComputation() {
+        // Integral-image statistics have to agree with the naive loops, or the
+        // local threshold drifts by a constant of the image.
+        val w = 9
+        val h = 7
+        val plane = FloatArray(w * h) { index -> ((index * 37) % 251).toFloat() }
+        val window = 5
+        val (mean, std) = DocumentFilters.boxMeanAndStd(plane, w, h, window)!!
+
+        val half = window / 2
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val x0 = (x - half).coerceAtLeast(0)
+                val x1 = (x + half + 1).coerceAtMost(w)
+                val y0 = (y - half).coerceAtLeast(0)
+                val y1 = (y + half + 1).coerceAtMost(h)
+                var sum = 0.0
+                var sumSq = 0.0
+                var count = 0
+                for (yy in y0 until y1) {
+                    for (xx in x0 until x1) {
+                        val v = plane[yy * w + xx].toDouble()
+                        sum += v
+                        sumSq += v * v
+                        count++
+                    }
+                }
+                val m = sum / count
+                val expectedStd = kotlin.math.sqrt((sumSq / count) - m * m)
+                assertEquals("mean at $x,$y", m.toFloat(), mean[y * w + x], 1e-3f)
+                assertEquals("std at $x,$y", expectedStd.toFloat(), std[y * w + x], 1e-3f)
+            }
+        }
+    }
+
+    @Test
+    fun boxMeanAndStd_reportsZeroDeviationOnAFlatField() {
+        // A blank margin has no text/paper decision in it, which is what the
+        // SAUVOLA_MIN_STD gate keys on.
+        val plane = FloatArray(64) { 200f }
+        val (mean, std) = DocumentFilters.boxMeanAndStd(plane, 8, 8, 5)!!
+        for (value in mean) assertEquals(200f, value, 1e-3f)
+        for (value in std) assertEquals(0f, value, 1e-3f)
+    }
+
+    @Test
+    fun sauvolaWindow_scalesWithThePageAndSkipsTinyOnes() {
+        // A local window narrower than a glyph is worse than no local pass, so
+        // tiny inputs take the global threshold instead.
+        assertEquals("tiny page", 1, DocumentFilters.sauvolaWindow(100, 120))
+
+        // A live preview is smaller than the bake, so the window must shrink with
+        // it rather than staying at a page-sized constant.
+        val preview = DocumentFilters.sauvolaWindow(900, 1200)
+        val bake = DocumentFilters.sauvolaWindow(1500, 2000)
+        assertTrue("preview window must be odd, got $preview", preview % 2 == 1)
+        assertTrue("bake window must be odd, got $bake", bake % 2 == 1)
+        assertTrue("window must scale with the page: $preview vs $bake", bake > preview)
+        assertTrue("bake window out of range: $bake", bake in 90..130)
+    }
+
     // ---------------------------------------------------------------------- otsu
 
     @Test

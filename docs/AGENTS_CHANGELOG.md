@@ -4,6 +4,96 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (o) — Arena.ai — Magic Color: one continuous curve, no lifted/not-lifted split
+
+### The report
+*Lighten* is good. *Magic Color* "lightens some areas and leaves some areas as it
+is"; the original does not do that. *Clear B&W* "needs more improvement".
+
+![source | 1.6 | now](filter_magic_uniformity.jpg)
+
+*Left: source, with a hard shadow across the bottom-right. Middle: 1.6 — the
+shadow quadrant stays grey. Right: now — one continuous curve, no quadrant left
+behind.*
+
+### Root cause: a hard clamp, not a per-region decision
+1.6 bounded the divide with `max(floor, surface)`, where the floor is **one
+global number** (`0.62 ×` the frame's lit level). On the reported frame that
+split the picture by threshold: **73.9 %** of pixels sat below it and got a flat
+~1.6× lift, the other 26 % were above it and quietly stopped being lifted. That
+is the artefact, exactly — not two different algorithms choosing regions, but one
+number switching the lift on and off, with the boundary visible.
+
+Replacing that with `softKnee` — identity below the knee, unit slope at it,
+asymptotic to the cap above it — removes the switch. Nothing in the frame is
+treated by two different rules.
+
+### It was not enough on its own: the estimator was biased
+With the clamp removed the deep shadow still came out grey (205 instead of 255).
+The cause was upstream. The generator pooled each cell with a **maximum**, on the
+reasoning that paper is the brightest thing in a patch containing print. Measured
+against a known paper level, a max is biased **up by 2–3 σ of sensor noise**:
+`bg/paper = 1.26` in a deep shadow, which is a 26 % error exactly where the gain
+is largest, and 1.91 on the real scan. Pooling with a **mean** drops that to
+1.02, and rejecting ink is left to the closing that follows — the correct
+division of labour, and what the background-estimation literature does.
+
+| change | deep-shadow paper | paper p5 | paper std |
+|---|---|---|---|
+| 1.6 (hard floor, max pool) | 106 | 62 | 60 |
+| soft knee, max pool | 205 | 160 | — |
+| soft knee, **mean pool** | **247** | **243** | **17** |
+
+A third box pass after the closing also matters: two left the cell grid visible
+on a hard-edged shadow.
+
+### Clear B&W
+Sauvola as a **bounded refinement** of Otsu, not a replacement:
+`T = m·(1 + k·(σ/R − 1))`, `k = 0.34`, `R = 128`, window `max(W,H)/16` clamped to
+an odd ≥ 15, computed from integral images so the cost does not grow with the
+window. Two guards, both from measurement:
+
+- under `σ < 6` the window holds no text/paper decision, so Otsu's answer is used
+  (ungated Sauvola speckles blank margins);
+- the local threshold may only go **below** Otsu, never above
+  (`[0.85·Otsu, Otsu]`). Measured unclamped, Sauvola left 5 % of already
+  normalised paper grey that plain Otsu got white, and a threshold above Otsu
+  turned ink grey. The asymmetry means it can recover a faint stroke and cannot
+  lose one.
+
+Also: document gain knee 6.5 → **8**, cap 16 → **24** (deep-shadow paper
+244 → 247, B&W paper purity 97.3 % → 98.3 %), gamma 1.28 → **1.35** (ink 41.5 →
+38.1, paper p5 unchanged).
+
+### Editor: the two things asked for
+- **Tapping *Borders* now detects them.** The chip calls the same
+  `detectBorders()` as the Auto detect button, so the quad is a starting point to
+  nudge rather than something to drag out from the frame edges. It will not
+  overwrite corners the user has already moved (`cornersEdited`), and *Full page*
+  clears that flag.
+- **The preview now shows the corrected, filtered page.** It runs
+  `PerspectiveWarp.warp` → `DocumentFilters.applyPreview`, the same
+  warp-then-filter order as `PageRenderer.bake`, so the preview and the saved
+  file agree wherever the quad is not the full frame. The Borders tab still shows
+  the uncropped frame, because that is what you aim at.
+
+### Known trade-off, not hidden
+A divide-based shadow removal brightens whatever is darkest locally, so a *printed
+photograph* on the page has its shadows lifted too. Both 1.6 and this revision do
+it; the fix for it is per-region protection (detect photo blocks, skip the
+divide inside them), which is not in this change. Deep-shadow noise is also
+amplified by the same gain — visible as grain on dark stamps.
+
+### Tests
+`softKnee` (identity below, continuity, unit slope, cap, monotonicity),
+`saturateGain` (document vs scene, zero surface), `boxMeanAndStd` (against a
+naive double loop, and zero deviation on a flat field), `sauvolaWindow` (odd,
+scaling, tiny inputs). 8 new; every expectation was checked against a Python
+transcription of the Kotlin.
+
+### Version
+**1.7 (code 8)**.
+
 ## 2026-10-25 (n) — Arena.ai — Document filters no longer blow up photos taken in the dark
 
 ### The report

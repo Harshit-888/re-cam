@@ -85,6 +85,7 @@ import com.example.docscanner.util.DocumentFilters
 import com.example.docscanner.util.ImageProcessingUtils
 import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.PageRenderer
+import com.example.docscanner.util.PerspectiveWarp
 import com.example.docscanner.util.DocumentDetector
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -157,6 +158,9 @@ fun CropAndFilterScreen(
     var isAutoDetecting by remember { mutableStateOf(false) }
     var detectionFailed by remember { mutableStateOf(false) }
     var loadedPageId by remember { mutableStateOf<String?>(null) }
+    // True once the user has dragged a corner on this page. Auto-detection on a
+    // Borders tap must never throw that work away.
+    var cornersEdited by remember { mutableStateOf(false) }
 
     // Unfiltered, downscaled source used for both detection and previewing.
     var previewSource by remember { mutableStateOf<Bitmap?>(null) }
@@ -212,26 +216,66 @@ fun CropAndFilterScreen(
         isCropMode = reviewMode
     }
 
-    // Render the selected filter for real, at preview resolution. Using the same
-    // DocumentFilters pipeline as the bake means what you see is what gets saved.
-    LaunchedEffect(previewSource, selectedFilter) {
+    // Render the selected filter for real, at preview resolution, on the page as
+    // it will be *saved* — i.e. after the perspective correction. Using the same
+    // warp-then-filter order as PageRenderer means what you see is what gets
+    // saved; filtering the uncropped frame made the preview disagree with the
+    // bake wherever the quad was not the full frame.
+    LaunchedEffect(previewSource, selectedFilter, corners, isCropMode) {
         val source = previewSource
         if (source == null) {
             previewBitmap = null
             return@LaunchedEffect
         }
-        if (selectedFilter == FilterType.ORIGINAL) {
+        // While the corners are being placed the user needs to see the whole
+        // frame, unwarped, to aim at. The corrected result is shown as soon as
+        // the Filters tab is selected.
+        if (isCropMode) {
             previewBitmap = source.asImageBitmap()
+            previewAspect = source.width.toFloat() / source.height.toFloat()
             return@LaunchedEffect
         }
         isFiltering = true
         // runCatching: an OutOfMemoryError mid-filter must not strand the UI in a
         // permanent "filtering…" state; fall back to the unfiltered page.
         val filtered = withContext(Dispatchers.Default) {
-            runCatching { DocumentFilters.applyPreview(source, selectedFilter) }.getOrNull()
+            runCatching {
+                val warped = PerspectiveWarp.warp(source, corners)
+                try {
+                    DocumentFilters.applyPreview(warped, selectedFilter)
+                } finally {
+                    if (warped !== source) warped.recycle()
+                }
+            }.getOrNull()
         }
-        previewBitmap = (filtered ?: source).asImageBitmap()
+        val shown = filtered ?: source
+        // The warp changes the aspect ratio, and the frame below is sized from
+        // this value — so it has to track what is actually on screen or the page
+        // is drawn stretched.
+        previewAspect = shown.width.toFloat() / shown.height.toFloat()
+        previewBitmap = shown.asImageBitmap()
         isFiltering = false
+    }
+
+    /**
+     * Runs border detection and applies the result.
+     *
+     * Shared by the first frame of a review, the *Auto detect* button and the
+     * *Borders* tab, so all three behave identically. Never overwrites corners the
+     * user has already dragged unless [force] is set.
+     */
+    fun detectBorders(force: Boolean = false) {
+        val source = previewSource ?: return
+        if (isAutoDetecting) return
+        if (!force && cornersEdited) return
+        scope.launch {
+            isAutoDetecting = true
+            val detection = withContext(Dispatchers.Default) { DocumentDetector.detect(source) }
+            corners = detection.corners
+            cornersEdited = false
+            detectionFailed = !detection.confident
+            isAutoDetecting = false
+        }
     }
 
     fun saveAndContinue() {
@@ -348,7 +392,13 @@ fun CropAndFilterScreen(
                         )
                         FilterChip(
                             selected = isCropMode,
-                            onClick = { isCropMode = true },
+                            onClick = {
+                                isCropMode = true
+                                // Opening the Borders tab detects the edges for
+                                // you; the quad is a starting point to nudge, not
+                                // something to drag out from the frame edges.
+                                detectBorders()
+                            },
                             leadingIcon = { Icon(Icons.Outlined.Crop, contentDescription = null) },
                             label = { Text("Borders") },
                             shape = RoundedCornerShape(16.dp)
@@ -387,24 +437,16 @@ fun CropAndFilterScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            TextButton(onClick = { corners = QuadCorners.FULL_FRAME }) {
+                            TextButton(onClick = {
+                                corners = QuadCorners.FULL_FRAME
+                                cornersEdited = false
+                            }) {
                                 Icon(Icons.Default.Fullscreen, contentDescription = null)
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text("Full page")
                             }
                             TextButton(
-                                onClick = {
-                                    val source = previewSource ?: return@TextButton
-                                    scope.launch {
-                                        isAutoDetecting = true
-                                        val detection = withContext(Dispatchers.Default) {
-                                            DocumentDetector.detect(source)
-                                        }
-                                        corners = detection.corners
-                                        detectionFailed = !detection.confident
-                                        isAutoDetecting = false
-                                    }
-                                },
+                                onClick = { detectBorders(force = true) },
                                 enabled = previewSource != null && !isAutoDetecting
                             ) {
                                 if (isAutoDetecting) {
@@ -624,6 +666,7 @@ fun CropAndFilterScreen(
                                                     )
                                                     else -> corners
                                                 }
+                                                cornersEdited = true
                                                 change.consume()
                                             } else if (zoom > 1.001f) {
                                                 // One finger pans the zoomed page.

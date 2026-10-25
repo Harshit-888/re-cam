@@ -345,3 +345,75 @@ as `documentImage`. That is harmless for the illumination model because a
 sky-dominated frame has nothing dark to be lifted. The case that matters is a
 landscape — sky *plus* dark ground — which scores `photoRatio ≈ 50 %` and is
 correctly not a document.
+
+---
+
+## 10. Filters, second pass — the background estimator and the local threshold
+
+*Implementation notes, added while acting on "lightens some areas and leaves
+others as it is". Numbering continues from §9.*
+
+### 10.1 The estimator must not be a maximum
+
+The dividing surface was pooled with a per-cell **maximum**, on the reasoning
+that paper is the brightest thing in a patch that also contains print. That
+reasoning is wrong once the estimate is measured instead of argued: a maximum
+over `n` samples of a noisy signal sits at roughly `mean + 2–3 σ`, so the estimate
+is biased *high* by an amount that is constant in absolute terms and therefore
+enormous relative to a dark region.
+
+Measured against known paper levels:
+
+| pool | `bg / paper` in a deep shadow | in lit paper | on the real dark scan |
+|---|---|---|---|
+| max | 1.26 | 1.03 | 1.91 |
+| mean | **1.02** | 1.00 | — |
+
+A 26 % inflated divisor is a 26 % shortfall in gain exactly where the gain is
+largest, which is why a hand shadow divided out to 205 instead of 255. The fix is
+mean pooling, with ink rejection left entirely to the closing — the same division
+of labour the shadow-removal literature uses ("the kernel must be wider than
+about twice the stroke width, or ink is absorbed into the background and erased
+along with the shadow").
+
+Three box passes after the closing, not two: two left the working-grid cell
+structure visible as banding on hard-edged shadows.
+
+### 10.2 A knee, never a clamp
+
+`max(floor, surface)` and a soft knee both bound the gain. The difference is what
+they look like: the clamp is a step, so the frame is partitioned into "lifted" and
+"not lifted" along a visible contour, and the second derivative has a jump there
+too, which bands the transition. The knee used instead —
+
+```
+g' = knee + (cap − knee)·(1 − exp(−(g − knee)/(cap − knee)))
+```
+
+— is `C¹` at the knee, has unit slope there, is strictly increasing, and is
+asymptotic to `cap`. Below the knee it is the identity, so a page still gets the
+full divide it needs.
+
+### 10.3 Sauvola as a refinement, not a replacement
+
+Once the illumination is normalised, a global threshold is the right answer for a
+clean page; what it cannot do is recover a stroke that is *locally* faint. A local
+standard-deviation threshold can, because it drops the threshold in
+low-contrast neighbourhoods instead of holding one number for the page:
+
+```
+T(x, y) = m(x, y)·(1 + k·(σ(x, y)/R − 1)),   k = 0.34, R = 128
+```
+
+Two guards keep it from doing harm, both measured rather than assumed:
+
+1. `σ < 6` ⇒ use Otsu's threshold. A blank margin has no text/paper decision in
+   it, and unguarded Sauvola lowers the threshold below the mean there and
+   speckles the page.
+2. The local threshold may only fall **below** Otsu's, within `[0.85·Otsu, Otsu]`.
+   Unclamped it left 5 % of already-normalised paper grey that plain Otsu got
+   white; above Otsu it turned ink grey. Asymmetric clamping makes the worst case
+   "within 15 % of Otsu" and lets the refinement only ever recover ink.
+
+Statistics come from summed-area tables, so the window size — `max(W,H)/16`,
+forced odd and ≥ 15 — costs nothing.
