@@ -416,6 +416,11 @@ object ImageStore {
         thumbKeys.forEach { key ->
             runCatching { ThumbnailStore.file(context, key).delete() }
         }
+        // Drop the memoised keys as well: nothing should keep answering for a page
+        // whose files are gone.
+        ThumbnailStore.invalidate(pageFile(context, page.id).absolutePath)
+        ThumbnailStore.invalidate(editedFile(context, page.id).absolutePath)
+        ThumbnailStore.invalidate(editedLosslessFile(context, page.id).absolutePath)
     }
 
     fun deleteDocumentFiles(context: Context, pages: List<ScannedPage>) {

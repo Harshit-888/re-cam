@@ -171,16 +171,28 @@ fun InfoPill(
     container: Color = MaterialTheme.colorScheme.surfaceContainerHighest,
     content: Color = MaterialTheme.colorScheme.onSurfaceVariant
 ) {
-    Surface(color = container, contentColor = content, shape = DocShapes.pill, modifier = modifier) {
+    // A `Box`, not a `Surface`: this is drawn once per library card ("12 pages"),
+    // and `Surface` composes semantics, a clip, a background and an elevation layer
+    // for every one of them. On a scroll that is per-tile overhead for a label.
+    Box(
+        modifier = modifier
+            .clip(DocShapes.pill)
+            .background(container)
+    ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
         ) {
             if (icon != null) {
-                Icon(icon, contentDescription = null, modifier = Modifier.size(13.dp))
+                Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(13.dp))
                 Spacer(Modifier.width(5.dp))
             }
-            Text(text, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+            Text(
+                text,
+                style = MaterialTheme.typography.labelMedium,
+                color = content,
+                maxLines = 1
+            )
         }
     }
 }

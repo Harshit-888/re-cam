@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
 
 /**
@@ -65,13 +66,43 @@ object ThumbnailStore {
         File(context.filesDir, "thumbs").apply { if (!exists()) mkdirs() }
 
     /**
+     * Last computed key per page, so the scroll path does not touch the filesystem.
+     *
+     * `key` used to stat the page file on every request — four syscalls per tile per
+     * appearance, including a `length()` that is only there to make the key unique.
+     * The value only changes when the page itself changes, and every page write in
+     * the app goes through [ImageStore], which calls [writeFor] and refreshes this
+     * entry, so the memo cannot go stale behind our back.
+     */
+    private val keyMemo = ConcurrentHashMap<String, String>()
+
+    /**
      * Cache key for the page behind [imageUri], or `null` when there is no such
      * page (a `content://` URI that was never imported, or a deleted file).
      *
-     * Includes the file's size and mtime; call it from a background dispatcher,
-     * it stats the file.
+     * Memoised: a hit does no I/O at all.
      */
     fun key(context: Context, imageUri: String?): String? {
+        if (imageUri.isNullOrBlank()) return null
+        keyMemo[imageUri]?.let { return it }
+        return computeKey(context, imageUri)?.also { keyMemo[imageUri] = it }
+    }
+
+    /**
+     * The memoised key, without falling back to the filesystem — or `null` if this
+     * page has never been looked at in this process.
+     *
+     * For callers that must not block, such as the first frame of a tile.
+     */
+    fun memoizedKey(imageUri: String?): String? =
+        if (imageUri.isNullOrBlank()) null else keyMemo[imageUri]
+
+    /** Forgets a page's key, e.g. once its files are gone. */
+    fun invalidate(imageUri: String?) {
+        if (imageUri != null) keyMemo.remove(imageUri)
+    }
+
+    private fun computeKey(context: Context, imageUri: String): String? {
         val file = ImageStore.resolveFile(context, imageUri) ?: return null
         return "$imageUri#${file.length()}:${file.lastModified()}"
     }
@@ -116,7 +147,12 @@ object ThumbnailStore {
      * @return `true` when a thumbnail is on disk afterwards.
      */
     fun writeFor(context: Context, imageUri: String?, source: Bitmap): Boolean {
-        val key = key(context, imageUri) ?: return false
+        if (imageUri.isNullOrBlank()) return false
+        // Deliberately re-stat rather than trusting the memo: this runs immediately
+        // after the page file was written, so it is the one place that must see the
+        // new mtime.
+        val key = computeKey(context, imageUri) ?: return false
+        keyMemo[imageUri] = key
         return writeBitmap(context, key, source)
     }
 

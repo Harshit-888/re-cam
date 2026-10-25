@@ -73,6 +73,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -294,26 +295,37 @@ fun DashboardScreen(
     // Warm the memory cache for the tiles just below the viewport.
     //
     // This is the difference between "the decoder is chasing the scroll" and "the
-    // scroll finds pixels". `collectLatest` matters: on a fast fling the previous
-    // window is stale the moment the next one is computed, and the decode of a
-    // tile that will never be seen is cancelled before it starts.
-    LaunchedEffect(gridState, listState, isGridView, activeDocs, coverSize) {
+    // scroll finds pixels". Two details keep it from *causing* jank instead:
+    //
+    // * it fires once per **row** that leaves the top of the screen, not once per
+    //   item, so a fling does not restart it every other frame;
+    // * it is a plain `collect`, not `collectLatest` — cancelling the previous
+    //   window's work mid-decode only wastes the work it had already started.
+    val docsForPrefetch = rememberUpdatedState(activeDocs)
+    LaunchedEffect(gridState, listState, isGridView, coverSize, listCoverSize) {
+        val perRow = if (isGridView) GRID_COLUMNS else 1
         snapshotFlow {
-            if (isGridView) {
-                gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            } else {
-                listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            }
+            val lastVisible =
+                if (isGridView) gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+                else listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+            // Quantised to whole rows: the prefetch window only moves when the user
+            // has actually scrolled past a row.
+            (lastVisible ?: -1) / perRow
         }
             .distinctUntilChanged()
-            .collectLatest { lastVisible ->
-                if (lastVisible < 0) return@collectLatest
+            .collect { row ->
+                if (row < 0) return@collect
+                val docs = docsForPrefetch.value
                 // The prefetch must use the *same* size the visible tiles ask for,
                 // or it warms entries nothing will read.
                 val size = if (isGridView) coverSize else listCoverSize
-                val end = (lastVisible + PREFETCH_AHEAD).coerceAtMost(activeDocs.lastIndex)
+                val lastVisible = row * perRow + perRow - 1
+                val end = (lastVisible + PREFETCH_AHEAD).coerceAtMost(docs.lastIndex)
                 for (index in (lastVisible + 1)..end) {
-                    val cover = activeDocs[index].pages.firstOrNull()?.imageUri ?: continue
+                    val cover = docs.getOrNull(index)?.pages?.firstOrNull()?.imageUri
+                        ?: continue
+                    // Already resident: no coroutine, no dispatcher hop, nothing.
+                    if (PageImageLoader.peek(cover, size.width, size.height) != null) continue
                     PageImageLoader.prefetch(context, cover, size.width, size.height)
                 }
             }
@@ -889,14 +901,21 @@ fun DocumentGridCard(
     var showMenu by remember { mutableStateOf(false) }
     val interactions = remember { MutableInteractionSource() }
 
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        shape = DocShapes.card,
-        shadowElevation = 0.dp,
+    // A `Box`, not a `Surface`, and no press-scale.
+    //
+    // Both are fine on a settings row and not fine in a grid of a hundred of them:
+    // `Surface` composes a handful of nodes (semantics, clip, background, elevation
+    // shadow) that all have to be created for every tile that scrolls in, and
+    // `Modifier.pressScale` is a `composed` factory — the pattern Compose's own docs
+    // warn about inside lazy lists — which adds a nested composition and a running
+    // animation per item. Neither buys anything visible on a photo tile: the ripple
+    // already says "pressed". This is what made the library heavier to scroll than
+    // the settings page, which is a plain list of text rows.
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .pressScale(interactions, pressedScale = 0.975f)
             .clip(DocShapes.card)
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
             .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
     ) {
         Column {
@@ -990,13 +1009,13 @@ fun DocumentListCard(
     val interactions = remember { MutableInteractionSource() }
     val listCoverSize = rememberListCoverSize()
 
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        shape = DocShapes.cardSmall,
+    // Same reasoning as `DocumentGridCard`: a list row that scrolls should cost a
+    // list row, not a Surface plus a composed modifier plus two clips.
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .pressScale(interactions, pressedScale = 0.98f)
             .clip(DocShapes.cardSmall)
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
             .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
     ) {
         Row(
@@ -1077,22 +1096,20 @@ fun DocumentListCard(
 /** Small round overflow affordance that does not shout on top of a thumbnail. */
 @Composable
 private fun TonalMenuButton(onClick: () -> Unit) {
-    Surface(
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.85f),
+    Box(
+        contentAlignment = Alignment.Center,
         modifier = Modifier
             .padding(6.dp)
             .size(30.dp)
             .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.85f))
             .clickable(onClick = onClick)
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(
-                Icons.Default.MoreVert,
-                contentDescription = "Options",
-                modifier = Modifier.size(17.dp)
-            )
-        }
+        Icon(
+            Icons.Default.MoreVert,
+            contentDescription = "Options",
+            modifier = Modifier.size(17.dp)
+        )
     }
 }
 

@@ -1,6 +1,5 @@
 package com.example.docscanner.ui.common
 
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,17 +11,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.docscanner.model.ScannedPage
-import com.example.docscanner.theme.Motion
 import com.example.docscanner.util.PageImageLoader
 
 /**
@@ -39,7 +37,17 @@ fun rememberPageImage(
     reqHeight: Int = 800
 ): ImageBitmap? {
     val context = LocalContext.current.applicationContext
-    val image by produceState<ImageBitmap?>(initialValue = null, imageUri, reqWidth, reqHeight) {
+    // Seeded from the memory cache: a page that has already been decoded anywhere
+    // in this process paints in the first frame instead of composing a placeholder
+    // first. That is the whole difference between a library that flickers grey while
+    // you scroll and one that simply moves.
+    val cached = remember(imageUri, reqWidth, reqHeight) {
+        PageImageLoader.peek(imageUri, reqWidth, reqHeight)?.asImageBitmap()
+    }
+    // Always re-resolve, even when seeded: an already-cached page answers from the
+    // memory cache with no decode, and a page whose `imageUri` changed (a re-bake)
+    // must not be left showing the old bitmap.
+    val image by produceState(initialValue = cached, imageUri, reqWidth, reqHeight) {
         value = PageImageLoader.load(context, imageUri, reqWidth, reqHeight)?.asImageBitmap()
     }
     return image
@@ -61,25 +69,21 @@ fun PageThumbnail(
 ) {
     val image = rememberPageImage(page.imageUri, reqWidth, reqHeight)
 
-    // A decode lands a few frames after the card does, so without this the tile
-    // pops from a grey placeholder to a photo in a single frame - the most
-    // unfinished-looking moment in a scrolling list. Fading the pixels in over
-    // 180 ms makes the same latency read as a deliberate reveal.
-    val reveal by animateFloatAsState(
-        targetValue = if (image != null) 1f else 0f,
-        animationSpec = Motion.fade,
-        label = "pageReveal"
-    )
-
+    // Deliberately no fade-in.
+    //
+    // This used to animate alpha from 0 to 1 over 180 ms *per tile*. During a fling
+    // a dozen tiles start that animation every second, and each one keeps a running
+    // animation on the frame clock plus a layer write — work that lands exactly when
+    // the screen has the least time to spare, on the one screen that must not
+    // stutter. A photo appearing crisply on its own tile is normal; a screen full of
+    // photos fading in and out is jank with a nice name.
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         if (image != null) {
             Image(
                 bitmap = image,
                 contentDescription = "Page ${page.pageIndex + 1}",
                 contentScale = contentScale,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer { alpha = reveal }
+                modifier = Modifier.fillMaxSize()
             )
         } else {
             Icon(

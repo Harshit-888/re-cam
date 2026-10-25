@@ -82,6 +82,24 @@ object PageImageLoader {
      */
     private val inFlight = ConcurrentHashMap<String, CompletableDeferred<Bitmap?>>()
 
+    /**
+     * The cached bitmap for this page and size, **without** suspending or touching
+     * the filesystem, or `null` if it is not in memory.
+     *
+     * This is what makes a fling feel like the settings list: a tile that scrolls
+     * back into view paints its photo in the very frame it is composed, instead of
+     * composing a grey placeholder and replacing it 30-60 ms later. It can only
+     * answer for pages this process has already loaded, which is exactly the case
+     * that matters — scrolling back up.
+     *
+     * Safe to call from composition: it is a plain `LruCache` read.
+     */
+    fun peek(imageUri: String?, reqWidth: Int, reqHeight: Int): Bitmap? {
+        if (imageUri.isNullOrBlank() || reqWidth <= 0 || reqHeight <= 0) return null
+        val thumbKey = ThumbnailStore.memoizedKey(imageUri) ?: return null
+        return cache.get("$thumbKey@${reqWidth}x$reqHeight")
+    }
+
     /** Decodes at a sampling rate appropriate for [reqWidth] x [reqHeight]. */
     suspend fun load(
         context: Context,
@@ -91,10 +109,23 @@ object PageImageLoader {
     ): Bitmap? {
         if (imageUri.isNullOrBlank() || reqWidth <= 0 || reqHeight <= 0) return null
 
-        // The key stats the page file. `load` is called from `produceState`, i.e.
-        // on the main dispatcher, so this is kept off it deliberately.
-        val thumbKey = withContext(Dispatchers.IO) { ThumbnailStore.key(context, imageUri) }
-            ?: return null
+        // Fast path with no thread hop: the key is memoised once a page has been
+        // seen, so a page that is already in memory — the normal case when scrolling
+        // back, and for anything prefetched — is answered on the caller's thread.
+        // Only a page nobody has looked at yet needs the filesystem (to stat it).
+        var thumbKey = ThumbnailStore.memoizedKey(imageUri)
+        if (thumbKey != null) {
+            cache.get("$thumbKey@${reqWidth}x$reqHeight")?.let {
+                PerfTrace.onCacheHit()
+                return it
+            }
+        }
+        // `load` is called from `produceState`, i.e. on the main dispatcher, so the
+        // stat stays off it deliberately.
+        if (thumbKey == null) {
+            thumbKey = withContext(Dispatchers.IO) { ThumbnailStore.key(context, imageUri) }
+                ?: return null
+        }
         val key = "$thumbKey@${reqWidth}x$reqHeight"
         cache.get(key)?.let {
             PerfTrace.onCacheHit()
@@ -159,19 +190,17 @@ object PageImageLoader {
         limit: Int = PRIME_LIMIT
     ): Int = withContext(Dispatchers.IO) {
         var written = 0
-        imageUris.asSequence()
-            .filter { it.isNotBlank() }
-            .distinct()
-            .forEach { uri ->
-                if (written >= limit) return@forEach
-                ensureActive()
-                val key = ThumbnailStore.key(context, uri) ?: return@forEach
-                if (ThumbnailStore.exists(context, key)) return@forEach
-                val decoded = ImageStore.loadBitmap(context, uri, ThumbnailStore.LONG_EDGE)
-                    ?: return@forEach
-                if (ThumbnailStore.writeFor(context, uri, decoded)) written++
-                decoded.recycle()
-            }
+        for (uri in imageUris) {
+            if (written >= limit) break
+            if (uri.isBlank()) continue
+            ensureActive()
+            val key = ThumbnailStore.key(context, uri) ?: continue
+            if (ThumbnailStore.exists(context, key)) continue
+            val decoded = ImageStore.loadBitmap(context, uri, ThumbnailStore.LONG_EDGE)
+                ?: continue
+            if (ThumbnailStore.writeFor(context, uri, decoded)) written++
+            decoded.recycle()
+        }
         written
     }
 
@@ -232,9 +261,17 @@ object PageImageLoader {
      * ratio, and recycles the original when it had to make a copy.
      *
      * Only ever shrinks: a small page is never upscaled to fill the box.
+     *
+     * A bitmap that is already within [NEAR_ENOUGH] of the box is left alone: the
+     * GPU crops and scales it for free as part of drawing, whereas making a second
+     * copy costs a ~1.3 MB allocation *per tile* — and those allocations are what
+     * fill the heap during a fling and hand the render thread a GC pause.
      */
     private fun scaleToFit(source: Bitmap, maxWidth: Int, maxHeight: Int): Bitmap {
         if (source.width <= maxWidth && source.height <= maxHeight) return source
+        val fitsClosely = source.width <= maxWidth * NEAR_ENOUGH &&
+            source.height <= maxHeight * NEAR_ENOUGH
+        if (fitsClosely) return source
         val scale = minOf(
             maxWidth.toFloat() / source.width,
             maxHeight.toFloat() / source.height
@@ -262,4 +299,15 @@ object PageImageLoader {
 
     /** Pages repaired per idle chunk. Small enough that one chunk is never felt. */
     private const val PRIME_LIMIT = 8
+
+    /**
+     * A decode up to this factor above the requested box is drawn as-is.
+     *
+     * 1.3 covers the normal grid case exactly: a stored 768 px thumbnail decoded
+     * for a 686 px tile used to cost a second ~1.5 MB bitmap plus a CPU rescale,
+     * per tile, every time it entered the screen. Letting the GPU do that one
+     * bilinear step instead removes both — and the allocations, not the arithmetic,
+     * are what actually stutter a fling (they are what the GC has to clean up).
+     */
+    private const val NEAR_ENOUGH = 1.30f
 }

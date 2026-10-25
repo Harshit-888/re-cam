@@ -4,15 +4,43 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
-## 2026-10-25 (af) — Antigravity — Round 20 build verification & DashboardScreen visibleItemsInfo fix
+## 2026-10-25 (ag) — Arena.ai — Round 21: the library scrolls like the settings list
 
-Verified Round 20 (dedicated 768px ThumbnailStore, background priming, ML Kit scroll-pause, and PerfTrace) locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. Resolved 1 compilation error:
+The user's benchmark was explicit: *"as smooth as the settings page scrolling."*
+That comparison is the diagnosis. Settings is a `LazyColumn` of shallow text rows;
+the library is a `LazyVerticalGrid` of photo tiles. Rounds 19-20 fixed the data
+and the decoding, so what was left is the cost of a **tile**: what it allocates,
+what it animates, and what it re-does every time it enters the screen.
 
-- `DashboardScreen.kt`:
-  - Resolved `Unresolved reference 'visibleItemsInfo'` in `LaunchedEffect` prefetcher. `LazyGridLayoutInfo` and `LazyListLayoutInfo` do not share a common interface exposing `visibleItemsInfo`, causing `val info = if (isGridView) gridState.layoutInfo else listState.layoutInfo` to infer `Any`. Branched explicitly on `if (isGridView)` before accessing `visibleItemsInfo` on `gridState.layoutInfo` and `listState.layoutInfo`.
-- Build status:
-  - All unit tests pass cleanly in 19s (`testDebugUnitTest`).
-  - `app-debug.apk` (65,545,972 bytes) assembled cleanly in 14s (`assembleDebug`).
+### Every fix below is something a settings row does not do
+
+| Where | Was | Now | Why it mattered on a fling |
+| :--- | :--- | :--- | :--- |
+| `ui/common/PageThumbnail.kt` | an `animateFloatAsState` fade-in **per tile**, 180 ms | no fade | a dozen tiles start that animation every second; each holds a running animation on the frame clock plus a layer write, exactly when the frame budget is tightest |
+| `PageThumbnail` first frame | grey placeholder, then the photo 30-60 ms later | seeded from the memory cache via `PageImageLoader.peek` | a tile that scrolls back into view paints in the frame it is composed — the flicker of grey is the thing that *reads* as lag even when frames are met |
+| `ui/dashboard` cards | `Surface` + `pressScale` + two clips (`.clip()` after `Surface`) | `Box` + `clip` + `background` + `clickable(ripple)` | `Surface` composes semantics/clip/background/elevation nodes, and `pressScale` is a `composed` factory (the pattern Compose's docs warn about in lazy lists): a nested composition **and** a running animation per item. A ripple already says "pressed". |
+| `DocumentListCard`, `TonalMenuButton`, `InfoPill` | `Surface` | `Box` | same, times one per row / one per tile |
+| prefetch | `collectLatest` on the **last visible item index** | quantised to **rows**, plain `collect` | it used to restart every other frame during a fling, cancelling decodes it had just started — self-inflicted work on the main thread |
+| `util/ThumbnailStore.kt` | `key()` stat'd the page file (4 syscalls) on **every** load | memoised per page (`keyMemo`), refreshed by `writeFor` after each page write | the scroll path no longer touches the filesystem at all |
+| `util/PageImageLoader.kt` | every load hopped to `Dispatchers.IO` even for a cache hit | cache hit answered on the caller's thread from the memoised key | one dispatcher hop per tile per appearance, removed |
+| `PageImageLoader.scaleToFit` | always produced a second bitmap to hit the exact box | leaves a decode up to `NEAR_ENOUGH = 1.30x` alone and lets the GPU do the last bilinear step | one ~1.5 MB allocation **and** a CPU rescale per tile became zero; the allocations, not the arithmetic, are what the GC has to collect mid-fling |
+| `PageImageLoader.primeThumbnails` | `return@forEach` after the limit — so it kept stat'ing the *whole* library every chunk | real `break` | thousands of pointless syscalls per idle chunk on a large library |
+
+### Nothing about the data changed
+
+No filter output, no scan geometry, no repository semantics. Every change is
+rendering, caching or scheduling.
+
+### Measuring it
+
+The debug frame monitor from round 20 still applies:
+
+```
+adb logcat -s DocScannerPerf
+```
+
+`cacheHits` should dominate during a fling (`thumbs` small, `pageDecodes` ~0) and
+`p90` should sit at the display's frame time.
 
 ## 2026-10-25 (ae) — Antigravity — Round 19 build verification & SearchBarField compilation fix
 
@@ -23,6 +51,16 @@ Verified Round 19 (library stability/scrolling performance and camera chrome ove
 - Build status:
   - All unit tests pass cleanly in 24s (`testDebugUnitTest`).
   - `app-debug.apk` (65,532,981 bytes) assembled cleanly in 11s (`assembleDebug`).
+
+## 2026-10-25 (af) — Antigravity — Round 20 build verification & DashboardScreen visibleItemsInfo fix
+
+Verified Round 20 (dedicated 768px ThumbnailStore, background priming, ML Kit scroll-pause, and PerfTrace) locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. Resolved 1 compilation error:
+
+- `DashboardScreen.kt`:
+  - Resolved `Unresolved reference 'visibleItemsInfo'` in `LaunchedEffect` prefetcher. `LazyGridLayoutInfo` and `LazyListLayoutInfo` do not share a common interface exposing `visibleItemsInfo`, causing `val info = if (isGridView) gridState.layoutInfo else listState.layoutInfo` to infer `Any`. Branched explicitly on `if (isGridView)` before accessing `visibleItemsInfo` on `gridState.layoutInfo` and `listState.layoutInfo`.
+- Build status:
+  - All unit tests pass cleanly in 19s (`testDebugUnitTest`).
+  - `app-debug.apk` (65,545,972 bytes) assembled cleanly in 14s (`assembleDebug`).
 
 ## 2026-10-25 (ae) — Arena.ai — Round 20: the covers stop decoding pages (the actual scroll jank)
 

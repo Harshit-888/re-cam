@@ -87,6 +87,7 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai & Antigravity | ✅ merged & verified (Round 15) | `app/build.gradle.kts`, `util/NativeFilters.kt`, `util/DocumentFilters.kt`, `app/src/main/rust/*`, `ui/*`, docs | Optional Rust pixel kernels behind byte-for-byte parity gate + UI scroll/dialog polish. Fixed NativeFilters Log.i JVM test initialization, in-process PATH lookup and Configuration Cache compatibility. 56 unit tests pass, `app-debug.apk` built. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 19) | `model/Models.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/common/PageThumbnail.kt`, `util/PageImageLoader.kt`, `ui/camera/ScannerCameraScreen.kt`, docs | Home-screen smoothness (immutable models so cards skip, dates formatted once, search debounced off-thread, single-flight thumb loader) and redesigned camera chrome. Fixed SearchBarField TextFieldDefaults.colors invocation. All unit tests pass, `app-debug.apk` built (65.5 MB). |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 20) | `util/ThumbnailStore.kt` (new), `util/PerfTrace.kt` (new), `util/ImageStore.kt`, `util/PageImageLoader.kt`, `ui/dashboard/DashboardScreen.kt`, `data/ScannerRepository.kt`, `MainActivity.kt`, docs | Dedicated 768px ThumbnailStore, background priming, ML Kit scroll-pause, and PerfTrace. Fixed DashboardScreen visibleItemsInfo smart-casting. All unit tests pass, `app-debug.apk` built (65.5 MB). |
+| Arena.ai | 🚧 in review (Round 21) | `ui/common/PageThumbnail.kt`, `ui/common/Expressive.kt`, `ui/dashboard/DashboardScreen.kt`, `util/PageImageLoader.kt`, `util/ThumbnailStore.kt`, docs | Library scroll raised to settings-list smoothness: no per-tile animations, no `Surface`/`composed` modifiers in lazy items, synchronous cache reads on the first frame, memoised thumbnail keys, row-quantised prefetch. See §6l. |
 
 ## 5. File ownership map
 
@@ -474,6 +475,38 @@ two cannot drift apart.
 frame percentiles plus how each cover was obtained; `JANK` lines are the ones to
 look at, and a large `pageDecodes` count there means some page still has no stored
 thumbnail.
+
+## 6l. Library scroll, round 3 — "as smooth as settings" (Arena, 2026-10-25, round 21)
+
+### Nothing to provision
+
+No dependencies, no assets, no native changes, no APIs.
+
+### What this round assumes (do not undo)
+
+1. **`PageThumbnail` has no fade-in on purpose.** It costs a running animation per
+   tile per appearance. If a fade is ever wanted back, it must not be a per-item
+   `animateFloatAsState`.
+2. **Lazy items must not use `Surface` or any `composed` modifier**
+   (`pressScale`, `entrance`, …). `Box` + `clip` + `background` + `clickable(ripple)`
+   is the house pattern for anything inside a `LazyColumn`/`LazyVerticalGrid`.
+   `pressScale`/`Surface` stay fine on static chrome (buttons, pills, the FAB).
+3. **`PageImageLoader.peek(...)` is the synchronous, composition-safe memory-cache
+   read.** `rememberPageImage` seeds `produceState` with it so a tile paints its
+   photo in its first frame. It is only correct because `ThumbnailStore` memoises
+   the key; if that memo is removed, `peek` silently stops working.
+4. **`ThumbnailStore.key` is memoised** and must be refreshed by `writeFor` (which
+   re-stats on purpose). Anything that rewrites a page file outside `ImageStore`
+   has to call `ThumbnailStore.invalidate(uri)`.
+5. **The prefetch loop is quantised to rows and uses `collect`.** Keying it on the
+   last visible *item* with `collectLatest` restarts it constantly and cancels its
+   own decodes.
+
+### Rule of thumb for this screen
+
+If a change adds work — any work — to the *first frame of a tile*, it is a
+regression on this screen even if it looks nicer. The user's benchmark is the
+settings list, which does none.
 
 ## 7. Known-good state
 
