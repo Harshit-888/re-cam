@@ -68,6 +68,7 @@ import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
@@ -191,7 +192,11 @@ fun ScannerCameraScreen(
     var maxZoomRatio by remember { mutableFloatStateOf(1f) }
 
     // ---- bind CameraX -----------------------------------------------------
-    DisposableEffect(hasCameraPermission) {
+    // `bindAttempt` is part of the key so the error card can offer a real retry:
+    // a camera that is briefly busy (another app still closing) is the single
+    // most common bind failure, and leaving the screen to fix it is a poor answer.
+    var bindAttempt by remember { mutableStateOf(0) }
+    DisposableEffect(hasCameraPermission, bindAttempt) {
         if (!hasCameraPermission) {
             onDispose { }
         } else {
@@ -535,10 +540,10 @@ fun ScannerCameraScreen(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .height(280.dp)
+                    .height(240.dp)
                     .background(
                         Brush.verticalGradient(
-                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.80f))
+                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.74f))
                         )
                     )
             )
@@ -693,6 +698,10 @@ fun ScannerCameraScreen(
         } else if (cameraError != null) {
             CameraErrorCard(
                 message = cameraError ?: "",
+                onRetry = {
+                    cameraError = null
+                    bindAttempt++
+                },
                 onImport = {
                     photoPickerLauncher.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -1210,6 +1219,7 @@ private fun CameraPermissionCard(
 @Composable
 private fun CameraErrorCard(
     message: String,
+    onRetry: () -> Unit,
     onImport: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
@@ -1248,11 +1258,19 @@ private fun CameraErrorCard(
         )
         Spacer(Modifier.height(22.dp))
         PillButton(
+            text = "Try again",
+            icon = Icons.Default.Refresh,
+            onClick = onRetry
+        )
+        Spacer(Modifier.height(12.dp))
+        PillButton(
             text = "Import photos instead",
             icon = Icons.Outlined.PhotoLibrary,
+            container = Color.White.copy(alpha = 0.14f),
+            content = Color.White,
             onClick = onImport
         )
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(6.dp))
         TextButton(onClick = onClose) {
             Text("Close", color = Color.White.copy(alpha = 0.8f))
         }
