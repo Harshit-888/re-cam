@@ -24,7 +24,7 @@
 
 | | Arena.ai | Antigravity |
 | :--- | :--- | :--- |
-| Writes to | `arena/bdeaf5fa-re-cam` branch, pushed to `origin` | local working tree |
+| Writes to | the current `arena/*` branch, pushed to `origin` | local working tree |
 | Verifies by | code review only — **no JDK / Android SDK in the Arena sandbox** | `./gradlew assembleDebug` + device install |
 | Must do before pulling | — | `git stash` or commit local work first |
 
@@ -92,6 +92,8 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai & Antigravity | ✅ merged & verified (Round 23) | `ui/editor/CropAndFilterScreen.kt`, `data/ScannerRepository.kt`, docs | The batch border pass now auto-detects every page instead of making the user walk them; the strip marks the pages the detector was unsure about. Additive `setPageCorners`. Fixed `needsCheck` param in `BordersControls`. See §6n. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 24) | `ui/dashboard/DashboardScreen.kt`, `util/ThumbnailStore.kt`, `util/PerfTrace.kt`, `MainActivity.kt`, `app/build.gradle.kts`, docs | First-fling warm-up, two-way non-blocking prefetch, single-pass thumbnail decode at the tile size, per-frame stage attribution and non-debuggable `benchmark` build type. Fixed `visibleItemsInfo` layout branch and `COMMAND_ISSUE_DURATION`. See §6o. |
 | Arena.ai | 🚧 in review (Round 25) | `data/LibraryStore.kt`, `data/SettingsStore.kt`, `data/ScannerRepository.kt`, `util/ImageStore.kt`, `util/PageImageLoader.kt`, `ui/camera/ScannerCameraScreen.kt`, `ui/editor/CropAndFilterScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `app/src/test/.../OrphanSweepTest.kt`, docs | Data-loss fixes (atomic library writes, flush on close, discarded scans and orphan page files deleted, editor geometry saved on exit), a prefetch priority gate, and a wider/earlier startup warm-up. See §6p. |
+
+| Arena.ai | 🚧 in review (Round 26) | `model/Models.kt`, `util/PdfGenerator.kt` (rewritten), `util/PdfWriter.kt` (new), `util/PdfSecurity.kt` (new), `ui/pdf/PdfExportSheet.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `app/src/test/.../PdfWriterTest.kt` + `PdfSecurityTest.kt` (new), docs | Password-protected PDFs, choose-the-size compression, rename at share time, and multi-select → merge from the library. **`PdfExportSheet` and `PdfGenerator.generatePdf` signatures changed** — see the changelog. See §6q. |
 
 ## 5. File ownership map
 
@@ -725,6 +727,83 @@ one that pays for compiling the hot path. `./gradlew assembleBenchmark` (see
 that starts the dashboard and swipes the library, generated on a physical device,
 `baseline-prof.txt` committed) is the only thing that removes that cost instead of
 hiding it. It cannot be produced in this sandbox: it needs `adb` and real hardware.
+
+## 6q. PDF output: password, size, name, merge (Arena, 2026-10-25, round 26)
+
+### Nothing to provision
+
+No new dependency, no new asset, no new binary. `pypdf`/`pypdfium2` were used in
+Arena's sandbox to *validate the file format* and are not part of the app.
+
+### Why there is a second PDF engine
+
+`android.graphics.pdf.PdfDocument` cannot encrypt, and it always embeds page
+images losslessly — which is exactly why a photographed page becomes a
+multi-megabyte attachment. There is also no PDF library anywhere in the original
+APK (`classes*.dex` contains only `com.shockwave.pdfium`, a *viewer*), so there was
+nothing to copy: `util/PdfWriter.kt` is written from the specification.
+
+The platform engine is still the default. `PdfGenerator.generatePdf` picks:
+
+| condition | engine | why |
+| :--- | :--- | :--- |
+| no password, `compression == ORIGINAL` | `PdfDocument` | byte-identical to every previous round — no regression on the ordinary export |
+| password, or any lossy level, or a merge | `PdfWriter` | it can encrypt and it chooses the image encoding |
+
+**Do not "simplify" this by deleting the platform path.** It is the only output
+that a device has actually been tested against at 300 DPI, and it is the reason a
+bug in the new writer can only ever affect an export the user explicitly opted
+into.
+
+### The one invariant both engines share
+
+`pdfPageGeometry(config, imageWidth, imageHeight)` (in `util/PdfGenerator.kt`) is
+the only place that decides where a page lands. Both engines call it. If you change
+paper, margins, orientation, `ImageScale` or the footer position, change it there —
+changing one engine's arithmetic would make an export with a password place the
+page somewhere else than the same export without one.
+
+Note that compression downscales the bitmap **after** the geometry is computed, so
+`Tiny` cannot move a page: it only lowers the pixel density inside the same
+rectangle.
+
+### Bitmap ownership on the writer path (relates to audit bug 8)
+
+The writer path decodes, lays out, encodes and **recycles** one page at a time. It
+is safe there because the encoded bytes are in hand before anything is recycled.
+The platform path still does not recycle (bug 8 stays open): `PdfDocument` may defer
+rasterising a drawn bitmap until `writeTo`, so recycling after `finishPage` could
+still blank a page. **Do not copy the writer path's `finally { recycle() }` into the
+platform path.**
+
+### What Antigravity should check
+
+1. `./gradlew testDebugUnitTest` — the two new test files are pure JVM and need no
+   device. `PdfSecurityTest` pins the *exact* `/O`, `/U` and per-object key bytes
+   that PDFium, MuPDF and pypdf all accepted; if a refactor changes them the export
+   stops opening, and the test says so first. `PdfWriterTest` writes a real file and
+   walks its cross-reference table, because a PDF is a format with offsets in it and
+   no compiler checks those.
+2. `./gradlew assembleDebug`, then on a device:
+   - export a scan with a password → open the shared PDF in Chrome or a reader →
+     it must ask for the passphrase, and the passphrase must be accepted;
+   - export the same scan at each of the four size levels → the toast prints the
+     real file size, and `Balanced` should be dramatically smaller than `Original`;
+   - long-press a card on the library screen → pick two → `Merge PDF` → the sheet
+     lists the order → the output is one PDF with both documents' pages.
+3. Anything that looks wrong in the *new* path only: the platform path is
+   untouched, so compare against an `Original`/no-password export.
+
+### Deliberate limitations
+
+- The writer draws text with base-14 Helvetica, so it is printable-ASCII only.
+  Page numbers, the failure notice and `/Title` go through it; **watermarks do
+  not** — they are composited into the page bitmap so they keep their Unicode.
+- `/R 3` RC4 128-bit is used instead of AES. It is what every reader supports
+  without shipping a hand-written AES. It protects a shared file from being opened;
+  it is not a vault.
+- Merges default to `Balanced`. The sheet's compression control is visible and the
+  default is never re-applied after the fact.
 
 ## 7. Known-good state
 

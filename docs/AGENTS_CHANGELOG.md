@@ -4,6 +4,78 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (al) — Arena.ai — Round 26: PDF password, file size, renaming, and merging
+
+Four things the user asked for, all in the share sheet: a passphrase, a smaller
+file, a name you choose, and the ability to pick several documents on the library
+screen and merge them into one PDF.
+
+### Signature changes — every caller is updated in this commit
+
+- **`PdfExportSheet(document, settings, onDismiss)` →
+  `PdfExportSheet(title, pages, settings, onDismiss, mergeSources = emptyList(),
+  defaultCompression = ORIGINAL)`.** It takes pages, not a document, because a
+  merge *is* the pages of several documents in a row. Caller updated:
+  `ui/detail/DocumentDetailScreen.kt`. New caller: `ui/dashboard/DashboardScreen.kt`.
+- **`PdfGenerator.generatePdf(context, document, config, bitmapProvider)` →
+  `PdfGenerator.generatePdf(context, title, pages, config)`.** The
+  `bitmapProvider` parameter is **gone**; the generator calls
+  `PageRenderer.bitmapForExport` itself, because the writer path has to own the
+  bitmap's lifetime (it recycles each page as soon as its bytes are encoded).
+- **`PdfExportConfig` gained `fileName`, `password` and `compression`** (all
+  defaulted, so existing construction still compiles). The old KDoc claim that
+  encryption was "intentionally absent" is now wrong and rewritten.
+- `PdfGenerator.sanitiseFileName` is now public, and `suggestedName(title, config)`
+  is new — the sheet uses both to show the file name it is about to write.
+- `DocumentGridCard` / `DocumentListCard` gained `onLongClick`, `selectionMode`,
+  `selected`, `selectionOrder` (all defaulted) and now use `combinedClickable`;
+  they are `@OptIn(ExperimentalFoundationApi::class)`.
+
+### New files
+
+| File | Contents |
+| :--- | :--- |
+| `util/PdfWriter.kt` | `PdfWriter` (byte-level PDF 1.4 writer: pages, xref, trailer, optional encryption), `PdfPagePlan`, `PdfPageImage`, `PdfImages` (JPEG and lossless Flate-with-PNG-predictor encoding). |
+| `util/PdfSecurity.kt` | `PdfSecurity` (standard security handler `/V 2 /R 3`, RC4 128-bit), `Rc4`, and the `hexToBytes`/`toHex` helpers. |
+| `util/PdfGenerator.kt` (rewritten) | Two engines behind one call; `PdfPageGeometry` + `pdfPageGeometry()` extracted so both engines compute the **same** rectangle for a page. |
+| `app/src/test/.../PdfSecurityTest.kt`, `PdfWriterTest.kt` | Known-answer tests for the crypto and byte-level structure tests for the writer. No device needed. |
+
+### Behaviour
+
+- **Password.** `/V 2 /R 3`, RC4 128-bit. RC4 rather than AES-128/256 was a
+  deliberate trade-off: AES would mean shipping an untested AES implementation,
+  whereas RC4 needs the 256-byte key-scheduling algorithm and nothing else, and
+  every reader supports it. It stops someone opening a shared scan; it is not a
+  vault. Validated before the Kotlin was written against **three** readers —
+  PDFium (the engine inside Android's own `PdfRenderer`), MuPDF and pypdf: right
+  password opens, wrong password is refused, streams decrypt byte-identically.
+- **Compression.** `Original` (Flate, lossless, what `PdfDocument` already writes),
+  `Balanced` (JPEG 85), `Small` (JPEG 70 at 80 % of the export resolution), `Tiny`
+  (JPEG 50 at 60 %). The geometry is computed **before** the downscale, so
+  compression never moves a page on its sheet.
+- **Renaming.** The name field is prefilled from Settings → PDF → Document Name
+  and is sanitised as you type; the sheet shows the exact file name it will write.
+  Exports no longer carry a `_<milliseconds>` suffix — a real collision gets `_2`.
+- **Merge.** Long-press a card on the library screen to start selection; the tap
+  order is the page order and each badge shows its number. The bottom bar's
+  `Merge PDF` opens the same sheet, listing the order before anything is written.
+  Merges default to `Balanced`, because ten documents at lossless page images is a
+  hundred-megabyte attachment; the control is visible and never overridden after.
+
+### Limits worth knowing
+
+- The writer's only font is base-14 Helvetica, so text it draws (page numbers, the
+  "image unavailable" notice, `/Title`) is restricted to printable ASCII. Page
+  **watermarks** are composited into the page bitmap with the platform text stack
+  instead, so they keep their Unicode — that is why `PdfImages.composeWatermark`
+  exists.
+- Passwords are restricted to printable ASCII in the UI: revision-3 passwords are
+  compared as raw bytes, and the field must not accept a character the handler
+  cannot represent.
+- **Bug 8 is still open** in the platform path (`PdfDocument` never recycles
+  `bitmapProvider` output). The new writer path does recycle, safely, because the
+  encoded bytes are in hand before the bitmap is released.
+
 ## 2026-10-25 (ak) — Antigravity — Rounds 21–24 build verification & compilation fixes
 
 Verified Rounds 21 through 24 locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. Resolved 3 compilation issues from uncompiled Arena commits:

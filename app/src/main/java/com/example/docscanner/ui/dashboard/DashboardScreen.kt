@@ -2,13 +2,16 @@ package com.example.docscanner.ui.dashboard
 
 import android.content.Context
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,6 +23,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -31,10 +35,12 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CallMerge
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -43,6 +49,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Sort
@@ -98,6 +105,7 @@ import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.model.Document
 import com.example.docscanner.model.DocumentSortOption
 import com.example.docscanner.model.Folder
+import com.example.docscanner.model.PdfCompression
 import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.theme.DocShapes
 import com.example.docscanner.theme.entrance
@@ -106,6 +114,7 @@ import com.example.docscanner.ui.common.InfoPill
 import com.example.docscanner.ui.common.PageThumbnail
 import com.example.docscanner.ui.common.PillButton
 import com.example.docscanner.ui.common.SectionLabel
+import com.example.docscanner.ui.pdf.PdfExportSheet
 import com.example.docscanner.util.DocumentNaming
 import com.example.docscanner.util.DocumentSearch
 import com.example.docscanner.util.ImageStore
@@ -189,6 +198,28 @@ fun DashboardScreen(
     var showFolderDialog by remember { mutableStateOf(false) }
     var showSortMenu by remember { mutableStateOf(false) }
     var moveDocId by remember { mutableStateOf<String?>(null) }
+
+    // Multi-select for merging.
+    //
+    // `selection` is an ordered **list**, not a set: the tap order is the order the
+    // pages land in the merged PDF, and the badge on each card shows that order.
+    // Choosing order by tapping is the cheapest way to make it explicit without
+    // adding a reorder screen; the sheet shows the result before anything is
+    // written.
+    var isSelecting by remember { mutableStateOf(false) }
+    var selection by remember { mutableStateOf<List<String>>(emptyList()) }
+    var mergeRequest by remember { mutableStateOf<List<Document>>(emptyList()) }
+    val toggleSelection: (String) -> Unit = { id ->
+        selection = if (selection.contains(id)) selection - id else selection + id
+    }
+    val endSelection: () -> Unit = {
+        isSelecting = false
+        selection = emptyList()
+    }
+    // Back leaves selection, not the screen. Without this the gesture that
+    // everyone uses to cancel a mode would navigate away from the library with
+    // documents still checked.
+    BackHandler(enabled = isSelecting) { endSelection() }
 
     // The index is rebuilt when the library changes, never when the query does: a
     // keystroke is now an index lookup instead of a scan of every page's text.
@@ -440,70 +471,106 @@ fun DashboardScreen(
         // changes nothing visually; the root Surface still paints the screen.
         containerColor = Color.Transparent,
         topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        "Doc Scanner",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                },
-                actions = {
-                    IconButton(onClick = { isGridView = !isGridView }) {
-                        Icon(
-                            if (isGridView) Icons.Outlined.ViewList else Icons.Outlined.GridView,
-                            contentDescription = if (isGridView) "Show as list" else "Show as grid"
+            // Selection replaces the bar rather than adding a second one: the title
+            // slot becomes the count, the only action that matters (select all) moves
+            // into it, and the app name comes back the moment selection ends.
+            if (isSelecting) {
+                SelectionTopBar(
+                    count = selection.size,
+                    allSelected = activeDocs.isNotEmpty() && selection.size == activeDocs.size,
+                    onCancel = endSelection,
+                    onToggleAll = {
+                        selection = if (activeDocs.isNotEmpty() && selection.size == activeDocs.size) {
+                            emptyList()
+                        } else {
+                            activeDocs.map { it.id }
+                        }
+                    }
+                )
+            } else {
+                TopAppBar(
+                    title = {
+                        Text(
+                            "Doc Scanner",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
                         )
-                    }
-                    Box {
-                        IconButton(onClick = { showSortMenu = true }) {
-                            Icon(Icons.Outlined.Sort, contentDescription = "Sort")
+                    },
+                    actions = {
+                        IconButton(onClick = { isGridView = !isGridView }) {
+                            Icon(
+                                if (isGridView) Icons.Outlined.ViewList else Icons.Outlined.GridView,
+                                contentDescription = if (isGridView) "Show as list" else "Show as grid"
+                            )
                         }
-                        DropdownMenu(
-                            expanded = showSortMenu,
-                            onDismissRequest = { showSortMenu = false }
-                        ) {
-                            DocumentSortOption.entries.forEach { option ->
-                                DropdownMenuItem(
-                                    text = { Text(option.label) },
-                                    trailingIcon = if (option == sortOption) {
-                                        { Icon(Icons.Default.Check, contentDescription = null) }
-                                    } else {
-                                        null
-                                    },
-                                    onClick = {
-                                        sortOption = option
-                                        showSortMenu = false
-                                    }
-                                )
+                        Box {
+                            IconButton(onClick = { showSortMenu = true }) {
+                                Icon(Icons.Outlined.Sort, contentDescription = "Sort")
                             }
-                        }
-                    }
-                    IconButton(onClick = onNavigateToSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
-                    }
-                    IconButton(onClick = onNavigateToTrash) {
-                        BadgedBox(
-                            badge = {
-                                if (trashCount > 0) {
-                                    Badge { Text("$trashCount") }
+                            DropdownMenu(
+                                expanded = showSortMenu,
+                                onDismissRequest = { showSortMenu = false }
+                            ) {
+                                DocumentSortOption.entries.forEach { option ->
+                                    DropdownMenuItem(
+                                        text = { Text(option.label) },
+                                        trailingIcon = if (option == sortOption) {
+                                            { Icon(Icons.Default.Check, contentDescription = null) }
+                                        } else {
+                                            null
+                                        },
+                                        onClick = {
+                                            sortOption = option
+                                            showSortMenu = false
+                                        }
+                                    )
                                 }
                             }
-                        ) {
-                            Icon(Icons.Default.Delete, contentDescription = "Trash")
                         }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface
+                        IconButton(onClick = onNavigateToSettings) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        }
+                        IconButton(onClick = onNavigateToTrash) {
+                            BadgedBox(
+                                badge = {
+                                    if (trashCount > 0) {
+                                        Badge { Text("$trashCount") }
+                                    }
+                                }
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = "Trash")
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface
+                    )
                 )
-            )
+            }
+        },
+        bottomBar = {
+            // The action bar takes the FAB's place while selecting: "merge these" is
+            // the one thing selection is for, and putting it under the thumb is the
+            // whole ergonomic point of a bottom bar.
+            if (isSelecting) {
+                SelectionActionBar(
+                    count = selection.size,
+                    mergeEnabled = selection.size >= 2,
+                    onMerge = {
+                        val docs = selection.mapNotNull { id -> documents.firstOrNull { it.id == id } }
+                        if (docs.size >= 2) mergeRequest = docs
+                    }
+                )
+            }
         },
         floatingActionButton = {
             // An extended FAB that reads as the app's one primary verb. The pill
             // shape and the amber-free primary keep it distinct from the cards.
-            CaptureFab(onClick = startScan)
+            // Hidden while selecting so two competing actions never share a corner.
+            if (!isSelecting) {
+                CaptureFab(onClick = startScan)
+            }
         }
     ) { innerPadding ->
         Column(
@@ -599,9 +666,22 @@ fun DashboardScreen(
                             dateLabel = dateLabels[doc.id]?.short.orEmpty(),
                             coverSize = coverSize,
                             snippet = snippetsByDocument[doc.id],
-                            onClick = { onNavigateToDetail(doc.id) },
+                            onClick = {
+                                if (isSelecting) toggleSelection(doc.id) else onNavigateToDetail(doc.id)
+                            },
+                            onLongClick = {
+                                if (isSelecting) {
+                                    toggleSelection(doc.id)
+                                } else {
+                                    isSelecting = true
+                                    selection = listOf(doc.id)
+                                }
+                            },
                             onDelete = { repository.moveToTrash(doc.id) },
-                            onMoveToFolder = { moveDocId = doc.id }
+                            onMoveToFolder = { moveDocId = doc.id },
+                            selectionMode = isSelecting,
+                            selected = selection.contains(doc.id),
+                            selectionOrder = selection.indexOf(doc.id) + 1
                         )
                     }
                 }
@@ -621,9 +701,22 @@ fun DashboardScreen(
                             document = doc,
                             dateLabel = dateLabels[doc.id]?.long.orEmpty(),
                             snippet = snippetsByDocument[doc.id],
-                            onClick = { onNavigateToDetail(doc.id) },
+                            onClick = {
+                                if (isSelecting) toggleSelection(doc.id) else onNavigateToDetail(doc.id)
+                            },
+                            onLongClick = {
+                                if (isSelecting) {
+                                    toggleSelection(doc.id)
+                                } else {
+                                    isSelecting = true
+                                    selection = listOf(doc.id)
+                                }
+                            },
                             onDelete = { repository.moveToTrash(doc.id) },
-                            onMoveToFolder = { moveDocId = doc.id }
+                            onMoveToFolder = { moveDocId = doc.id },
+                            selectionMode = isSelecting,
+                            selected = selection.contains(doc.id),
+                            selectionOrder = selection.indexOf(doc.id) + 1
                         )
                     }
                 }
@@ -652,6 +745,165 @@ fun DashboardScreen(
                 showFolderDialog = false
             }
         )
+    }
+
+    // A merge is the pages of the chosen documents, in tap order, through the same
+    // sheet as any other export — so paper, margins, page numbers, name, password
+    // and compression all apply to it too. Nothing is written until the sheet's
+    // button is pressed, and the sheet lists the order first.
+    if (mergeRequest.isNotEmpty()) {
+        val mergePages = remember(mergeRequest) { mergeRequest.flatMap { it.pages } }
+        PdfExportSheet(
+            title = mergeRequest.first().title,
+            pages = mergePages,
+            settings = settings,
+            mergeSources = mergeRequest,
+            // Ten documents at lossless page images is a hundred-megabyte
+            // attachment. The compression control is visible in the sheet and is
+            // not overridden afterwards, so this is a default, not a decision made
+            // for the user.
+            defaultCompression = PdfCompression.BALANCED,
+            onDismiss = {
+                mergeRequest = emptyList()
+                endSelection()
+            }
+        )
+    }
+}
+
+/**
+ * The bar that replaces the app name while documents are being picked.
+ *
+ * Kept separate from the library bar so neither has a conditional inside it: the
+ * title slot, the actions and the meaning of "back" are different in the two
+ * states, and a bar with a mode switch in it is a bar with two bugs.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SelectionTopBar(
+    count: Int,
+    allSelected: Boolean,
+    onCancel: () -> Unit,
+    onToggleAll: () -> Unit
+) {
+    TopAppBar(
+        title = {
+            Text(
+                if (count == 0) "Select documents" else "$count selected",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        navigationIcon = {
+            IconButton(onClick = onCancel) {
+                Icon(Icons.Default.Close, contentDescription = "Cancel selection")
+            }
+        },
+        actions = {
+            IconButton(onClick = onToggleAll) {
+                Icon(
+                    Icons.Default.SelectAll,
+                    contentDescription = if (allSelected) "Clear selection" else "Select all"
+                )
+            }
+        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface
+        )
+    )
+}
+
+/**
+ * Bottom action bar for selection: what is picked, and the one thing to do with it.
+ *
+ * A `PillButton` rather than a second bar-level button, so the primary action is
+ * the same object as every other primary action in the app.
+ */
+@Composable
+private fun SelectionActionBar(
+    count: Int,
+    mergeEnabled: Boolean,
+    onMerge: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
+        tonalElevation = 3.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(start = 22.dp, end = 20.dp, top = 14.dp, bottom = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (count == 0) "Nothing selected" else "$count selected",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    when {
+                        count == 0 -> "Pick two or more documents"
+                        count == 1 -> "Pick one more to merge"
+                        else -> "Tap order sets the page order"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            PillButton(
+                text = "Merge PDF",
+                icon = Icons.Default.CallMerge,
+                enabled = mergeEnabled,
+                onClick = onMerge
+            )
+        }
+    }
+}
+
+/**
+ * The check on a selected card.
+ *
+ * The number *is* the check: in a merge the order is the whole question, so the
+ * badge answers it in place instead of making the user hold an order in their head.
+ *
+ * Drawn straight into the existing thumbnail overlay — no `Surface`, no fade, no
+ * per-tile animation. A checkbox that animates is a checkbox that janks a fling.
+ */
+@Composable
+private fun SelectionBadge(order: Int, modifier: Modifier = Modifier) {
+    val selected = order > 0
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .size(26.dp)
+            .clip(CircleShape)
+            .background(
+                if (selected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    // Same tonal disc as the overflow button it replaces, so an
+                    // unselected card looks deliberate rather than half-finished.
+                    MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.85f)
+                }
+            )
+    ) {
+        if (selected) {
+            Text(
+                "$order",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimary
+            )
+        }
     }
 }
 
@@ -994,6 +1246,7 @@ private fun rememberListCoverSize(): IntSize {
 }
 
 /** Grid card: the page itself is the card, with the metadata in a quiet footer. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DocumentGridCard(
     document: Document,
@@ -1002,7 +1255,12 @@ fun DocumentGridCard(
     onClick: () -> Unit,
     onDelete: () -> Unit,
     onMoveToFolder: () -> Unit,
-    snippet: String? = null
+    onLongClick: () -> Unit = {},
+    snippet: String? = null,
+    selectionMode: Boolean = false,
+    selected: Boolean = false,
+    /** 1-based position in the merge order; 0 when not selected. */
+    selectionOrder: Int = 0
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val interactions = remember { MutableInteractionSource() }
@@ -1027,7 +1285,14 @@ fun DocumentGridCard(
         modifier = Modifier
             .fillMaxWidth()
             .clip(DocShapes.card)
-            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
+            // Long-press starts selection, the gesture every gallery uses. Same node
+            // count as `clickable`, so a scrolling tile costs exactly what it did.
+            .combinedClickable(
+                interactionSource = interactions,
+                indication = ripple(),
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
     ) {
         Column {
             Box(
@@ -1064,14 +1329,23 @@ fun DocumentGridCard(
                             .padding(8.dp)
                     )
                 }
-                Box(modifier = Modifier.align(Alignment.TopEnd)) {
-                    TonalMenuButton(onClick = { showMenu = true })
-                    DocumentMenu(
-                        expanded = showMenu,
-                        onDismiss = { showMenu = false },
-                        onMoveToFolder = onMoveToFolder,
-                        onDelete = onDelete
+                if (selectionMode) {
+                    SelectionBadge(
+                        order = if (selected) selectionOrder else 0,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(8.dp)
                     )
+                } else {
+                    Box(modifier = Modifier.align(Alignment.TopEnd)) {
+                        TonalMenuButton(onClick = { showMenu = true })
+                        DocumentMenu(
+                            expanded = showMenu,
+                            onDismiss = { showMenu = false },
+                            onMoveToFolder = onMoveToFolder,
+                            onDelete = onDelete
+                        )
+                    }
                 }
             }
 
@@ -1111,6 +1385,7 @@ fun DocumentGridCard(
 }
 
 /** List card: a compact row that keeps the thumbnail's shape language. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DocumentListCard(
     document: Document,
@@ -1118,7 +1393,11 @@ fun DocumentListCard(
     onClick: () -> Unit,
     onDelete: () -> Unit,
     onMoveToFolder: () -> Unit,
-    snippet: String? = null
+    onLongClick: () -> Unit = {},
+    snippet: String? = null,
+    selectionMode: Boolean = false,
+    selected: Boolean = false,
+    selectionOrder: Int = 0
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val interactions = remember { MutableInteractionSource() }
@@ -1131,7 +1410,12 @@ fun DocumentListCard(
             .fillMaxWidth()
             .clip(DocShapes.cardSmall)
             .background(MaterialTheme.colorScheme.surfaceContainerLow)
-            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
+            .combinedClickable(
+                interactionSource = interactions,
+                indication = ripple(),
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
     ) {
         Row(
             modifier = Modifier
@@ -1195,14 +1479,21 @@ fun DocumentListCard(
                 }
             }
 
-            Box {
-                TonalMenuButton(onClick = { showMenu = true })
-                DocumentMenu(
-                    expanded = showMenu,
-                    onDismiss = { showMenu = false },
-                    onMoveToFolder = onMoveToFolder,
-                    onDelete = onDelete
+            if (selectionMode) {
+                SelectionBadge(
+                    order = if (selected) selectionOrder else 0,
+                    modifier = Modifier.padding(end = 12.dp)
                 )
+            } else {
+                Box {
+                    TonalMenuButton(onClick = { showMenu = true })
+                    DocumentMenu(
+                        expanded = showMenu,
+                        onDismiss = { showMenu = false },
+                        onMoveToFolder = onMoveToFolder,
+                        onDelete = onDelete
+                    )
+                }
             }
         }
     }

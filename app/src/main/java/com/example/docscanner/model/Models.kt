@@ -146,12 +146,40 @@ enum class DocumentSortOption(val label: String) {
 }
 
 /**
+ * How the page images are encoded into the PDF.
+ *
+ * [ORIGINAL] is lossless: the page bitmap is Flate-compressed exactly as
+ * `android.graphics.pdf.PdfDocument` writes it, so a 300 DPI photo page is
+ * several megabytes. The other levels are JPEG at a known quality and pixel
+ * scale, which is what actually makes a scan small enough to attach to an email.
+ *
+ * They are named for what they are for, not with an invented "quality %":
+ * "78 %" tells nobody anything, and the number would be a lie the moment the
+ * encoder changed.
+ */
+enum class PdfCompression(
+    val label: String,
+    val detail: String,
+    /** JPEG quality when the level is lossy; ignored for [ORIGINAL]. */
+    val jpegQuality: Int,
+    /** Fraction of the export resolution the page is sampled at. */
+    val pixelScale: Float
+) {
+    ORIGINAL("Original", "Lossless, largest file", 0, 1f),
+    BALANCED("Balanced", "Looks the same, far smaller", 85, 1f),
+    SMALL("Small", "Good for email", 70, 0.8f),
+    TINY("Tiny", "Smallest, soft small text", 50, 0.6f);
+
+    val isLossless: Boolean get() = this == ORIGINAL
+}
+
+/**
  * PDF export options.
  *
- * Encryption is intentionally absent: `android.graphics.pdf.PdfDocument` cannot
- * password-protect output, so a `password` field here would be a promise the
- * engine cannot keep. Downscaling is expressed as [maxImageDimensionPx] instead
- * of the old unused `qualityPercent`.
+ * [password] is honoured by [com.example.docscanner.util.PdfWriter], not by
+ * `PdfDocument` — the platform writer cannot encrypt, so a passphrase switches
+ * the export to the app's own PDF writer. [compression] picks the encoding; the
+ * default keeps the platform writer and its byte-identical output.
  */
 data class PdfExportConfig(
     val paperSize: PaperSize = PaperSize.A4,
@@ -163,7 +191,16 @@ data class PdfExportConfig(
     /** How the page image is placed inside the printable area. */
     val imageScale: ImageScale = ImageScale.FIT,
     /** File name prefix from Settings → PDF → Document Name. Blank = none. */
-    val fileBaseName: String = ""
+    val fileBaseName: String = "",
+    /**
+     * Name typed in the share sheet, without the `.pdf` suffix. Blank keeps the
+     * settings-derived name, so the field is an override and not a new source of
+     * truth.
+     */
+    val fileName: String = "",
+    /** Passphrase the PDF asks for when it is opened. Blank = not encrypted. */
+    val password: String = "",
+    val compression: PdfCompression = PdfCompression.ORIGINAL
 )
 
 /**

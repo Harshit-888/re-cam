@@ -283,7 +283,8 @@ fun DocumentDetailScreen(
 
     if (showPdfExportSheet) {
         PdfExportSheet(
-            document = document,
+            title = document.title,
+            pages = document.pages,
             settings = settings,
             onDismiss = { showPdfExportSheet = false }
         )
