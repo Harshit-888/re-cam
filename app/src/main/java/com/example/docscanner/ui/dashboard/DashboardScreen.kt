@@ -73,6 +73,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -83,11 +84,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.model.Document
@@ -104,12 +108,17 @@ import com.example.docscanner.ui.common.SectionLabel
 import com.example.docscanner.util.DocumentNaming
 import com.example.docscanner.util.DocumentSearch
 import com.example.docscanner.util.ImageStore
+import com.example.docscanner.util.PageImageLoader
+import com.example.docscanner.util.ThumbnailStore
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -136,11 +145,6 @@ fun DashboardScreen(
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-
-    // Recognise text for pages that predate search (bounded to one batch per app
-    // start). Indexing is what makes a scan's words findable at all — the PDFs this
-    // app writes contain no text layer.
-    LaunchedEffect(Unit) { repository.backfillTextInBackground() }
 
     // Settings → Scan → "Use in-app camera" off: scanning goes straight to the
     // system photo picker and each picked image becomes a page. Same import path
@@ -277,6 +281,83 @@ fun DashboardScreen(
 
     val gridState = rememberLazyGridState()
     val listState = rememberLazyListState()
+
+    // The cover's pixel size is derived from the screen, not guessed.
+    //
+    // It used to be a literal 440 x 560. A two-column cell is ~150-180 dp wide,
+    // which is 460-630 px at 3x-3.5x — so every cover was *upscaled* into its card
+    // and looked soft. It also has to agree with the request the prefetcher makes,
+    // otherwise the prefetched bitmap is a cache miss.
+    val coverSize = rememberGridCoverSize()
+    val listCoverSize = rememberListCoverSize()
+
+    // Warm the memory cache for the tiles just below the viewport.
+    //
+    // This is the difference between "the decoder is chasing the scroll" and "the
+    // scroll finds pixels". `collectLatest` matters: on a fast fling the previous
+    // window is stale the moment the next one is computed, and the decode of a
+    // tile that will never be seen is cancelled before it starts.
+    LaunchedEffect(gridState, listState, isGridView, activeDocs, coverSize) {
+        snapshotFlow {
+            val info = if (isGridView) gridState.layoutInfo else listState.layoutInfo
+            info.visibleItemsInfo.lastOrNull()?.index ?: -1
+        }
+            .distinctUntilChanged()
+            .collectLatest { lastVisible ->
+                if (lastVisible < 0) return@collectLatest
+                // The prefetch must use the *same* size the visible tiles ask for,
+                // or it warms entries nothing will read.
+                val size = if (isGridView) coverSize else listCoverSize
+                val end = (lastVisible + PREFETCH_AHEAD).coerceAtMost(activeDocs.lastIndex)
+                for (index in (lastVisible + 1)..end) {
+                    val cover = activeDocs[index].pages.firstOrNull()?.imageUri ?: continue
+                    PageImageLoader.prefetch(context, cover, size.width, size.height)
+                }
+            }
+    }
+
+    // Recognise text for pages that predate search (bounded to one batch per app
+    // start). Indexing is what makes a scan's words findable at all — the PDFs this
+    // app writes contain no text layer.
+    //
+    // Started late and paused during a scroll. Recognition is an ML Kit inference
+    // per page plus a 2400 px decode; running that alongside the first fling is
+    // exactly what made the library feel slow right after launch even though the
+    // dashboard itself was doing less work than before.
+    LaunchedEffect(Unit) {
+        delay(OCR_START_DELAY_MS)
+        repository.backfillTextInBackground(
+            isBusy = { gridState.isScrollInProgress || listState.isScrollInProgress }
+        )
+    }
+
+    // Pages saved before thumbnails existed still have to be decoded in full the
+    // first time they appear. Build their thumbnails in the gaps instead: the work
+    // only runs while the list is *idle*, and `collectLatest` cancels it the moment
+    // a scroll starts (the loader checks for cancellation between pages), so the
+    // repair can never be what makes the fling stutter.
+    LaunchedEffect(gridState, listState) {
+        snapshotFlow { gridState.isScrollInProgress || listState.isScrollInProgress }
+            .distinctUntilChanged()
+            .collectLatest { scrolling ->
+                if (scrolling) return@collectLatest
+                delay(THUMBNAIL_PRIME_DELAY_MS)
+                val uris = repository.documents.value
+                    .asSequence()
+                    .filterNot { it.isTrash }
+                    .flatMap { it.pages.asSequence() }
+                    .map { it.imageUri }
+                    .toList()
+                // Chunks, with a pause between them: a long repair pass must not
+                // turn into the CPU pressure this round exists to remove. Each
+                // chunk starts by skipping what is already warm.
+                var written = 1
+                while (written > 0) {
+                    written = PageImageLoader.primeThumbnails(context, uris)
+                    if (written > 0) delay(PRIME_CHUNK_PAUSE_MS)
+                }
+            }
+    }
 
     val trashCount = remember(documents) { documents.count { it.isTrash } }
     val pageCount = remember(activeDocs) { activeDocs.sumOf { it.pages.size } }
@@ -421,10 +502,15 @@ fun DashboardScreen(
                 }
 
                 isGridView -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
+                    columns = GridCells.Fixed(GRID_COLUMNS),
                     state = gridState,
-                    contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 108.dp),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    contentPadding = PaddingValues(
+                        start = GRID_H_PADDING,
+                        end = GRID_H_PADDING,
+                        top = 4.dp,
+                        bottom = 108.dp
+                    ),
+                    horizontalArrangement = Arrangement.spacedBy(GRID_H_GAP),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
@@ -443,6 +529,7 @@ fun DashboardScreen(
                         DocumentGridCard(
                             document = doc,
                             dateLabel = dateLabels[doc.id]?.short.orEmpty(),
+                            coverSize = coverSize,
                             snippet = snippetsByDocument[doc.id],
                             onClick = { onNavigateToDetail(doc.id) },
                             onDelete = { repository.moveToTrash(doc.id) },
@@ -502,6 +589,65 @@ fun DashboardScreen(
 
 /** Pre-formatted dates for one document, built once per library change. */
 private data class DateLabels(val short: String, val long: String)
+
+/** Columns in the library grid. The cover size below is derived from it. */
+private const val GRID_COLUMNS = 2
+
+/** Horizontal inset of the grid. Shared with [rememberGridCoverSize]. */
+private val GRID_H_PADDING = 20.dp
+
+/** Gap between the two grid columns. Shared with [rememberGridCoverSize]. */
+private val GRID_H_GAP = 14.dp
+
+/** Width / height of a grid cover. Shared with [rememberGridCoverSize]. */
+private const val COVER_ASPECT = 0.78f
+
+/**
+ * Rows of covers to decode ahead of the viewport.
+ *
+ * Two rows: far enough that a fling finds warm tiles, close enough that a
+ * cancelled prefetch costs almost nothing.
+ */
+private const val PREFETCH_AHEAD = 4
+
+/**
+ * How long the library gets to itself before background text recognition starts.
+ *
+ * Long enough for launch, the first paint and the first scroll to be over; short
+ * enough that search finds older pages within seconds of opening the app.
+ */
+private const val OCR_START_DELAY_MS = 3000L
+
+/**
+ * How long the list has to be still before legacy thumbnails are built.
+ *
+ * Long enough that it never fires between two flicks of the same scroll gesture;
+ * short enough that a library is warm by the time anyone browses it.
+ */
+private const val THUMBNAIL_PRIME_DELAY_MS = 1200L
+
+/** Pause between thumbnail-repair chunks, so the decoder cannot saturate a core. */
+private const val PRIME_CHUNK_PAUSE_MS = 350L
+
+/** Pixel box of one grid cover, derived from the window instead of guessed. */
+@Composable
+private fun rememberGridCoverSize(): IntSize {
+    val density = LocalDensity.current
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp
+    return remember(density, screenWidthDp) {
+        val cellWidthPx = with(density) {
+            ((screenWidthDp.dp - GRID_H_PADDING * 2 - GRID_H_GAP) / GRID_COLUMNS).roundToPx()
+        }
+        val cellHeightPx = (cellWidthPx / COVER_ASPECT).roundToInt()
+        // Capped at the stored thumbnail's edge: a larger request could not be
+        // served by ThumbnailStore, so it would decode the whole page instead —
+        // and on any phone the cover is smaller than this anyway.
+        IntSize(
+            cellWidthPx.coerceIn(1, ThumbnailStore.LONG_EDGE),
+            cellHeightPx.coerceIn(1, ThumbnailStore.LONG_EDGE)
+        )
+    }
+}
 
 /**
  * How long typing has to pause before a query is ranked.
@@ -706,11 +852,32 @@ private fun FolderPill(
     }
 }
 
+/** Thumbnail box in a list row. Its pixel request is derived from these. */
+private val LIST_COVER_WIDTH = 52.dp
+private val LIST_COVER_HEIGHT = 66.dp
+
+/**
+ * Pixel box of a list row's tile.
+ *
+ * A literal 160 x 200 was 46 % larger than the 52 x 66 dp box on a 3x display —
+ * a wasted decode and a wasted cache entry, per row.
+ */
+@Composable
+private fun rememberListCoverSize(): IntSize {
+    val density = LocalDensity.current
+    return remember(density) {
+        with(density) {
+            IntSize(LIST_COVER_WIDTH.roundToPx(), LIST_COVER_HEIGHT.roundToPx())
+        }
+    }
+}
+
 /** Grid card: the page itself is the card, with the metadata in a quiet footer. */
 @Composable
 fun DocumentGridCard(
     document: Document,
     dateLabel: String,
+    coverSize: IntSize,
     onClick: () -> Unit,
     onDelete: () -> Unit,
     onMoveToFolder: () -> Unit,
@@ -733,19 +900,16 @@ fun DocumentGridCard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(0.78f)
+                    .aspectRatio(COVER_ASPECT)
                     .background(MaterialTheme.colorScheme.surfaceContainerHighest)
             ) {
                 val cover = document.pages.firstOrNull()
                 if (cover != null) {
-                    // 440 px covers a two-column grid cell on a 1440 px-wide
-                    // display at 3x without upscaling the bitmap; asking for less
-                    // is what made covers look soft on large phones.
                     PageThumbnail(
                         page = cover,
                         modifier = Modifier.fillMaxSize(),
-                        reqWidth = 440,
-                        reqHeight = 560,
+                        reqWidth = coverSize.width,
+                        reqHeight = coverSize.height,
                         fallbackIconSize = 44.dp
                     )
                 } else {
@@ -821,6 +985,7 @@ fun DocumentListCard(
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val interactions = remember { MutableInteractionSource() }
+    val listCoverSize = rememberListCoverSize()
 
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -839,7 +1004,7 @@ fun DocumentListCard(
         ) {
             Box(
                 modifier = Modifier
-                    .size(width = 52.dp, height = 66.dp)
+                    .size(width = LIST_COVER_WIDTH, height = LIST_COVER_HEIGHT)
                     .clip(DocShapes.thumbnail)
                     .background(MaterialTheme.colorScheme.surfaceContainerHighest),
                 contentAlignment = Alignment.Center
@@ -849,8 +1014,8 @@ fun DocumentListCard(
                     PageThumbnail(
                         page = cover,
                         modifier = Modifier.fillMaxSize(),
-                        reqWidth = 160,
-                        reqHeight = 200,
+                        reqWidth = listCoverSize.width,
+                        reqHeight = listCoverSize.height,
                         fallbackIconSize = 22.dp
                     )
                 } else {

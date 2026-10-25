@@ -14,6 +14,59 @@ Verified Round 19 (library stability/scrolling performance and camera chrome ove
   - All unit tests pass cleanly in 24s (`testDebugUnitTest`).
   - `app-debug.apk` (65,532,981 bytes) assembled cleanly in 11s (`assembleDebug`).
 
+## 2026-10-25 (ae) — Arena.ai — Round 20: the covers stop decoding pages (the actual scroll jank)
+
+Round 19 removed per-frame work from the dashboard, and it was still not smooth.
+This round found what was left, and it was not in the dashboard at all.
+
+### The cause
+
+**Every grid cover was produced by decoding the whole page.** No thumbnail was
+written anywhere before the home screen first asked for one, so a scroll was:
+
+- `BitmapFactory.decodeFile(<3200 px page>, inSampleSize = 4)` — 800x600 ARGB,
+  1.9 MB, then a `createScaledBitmap` to the tile;
+- and for *Clear B&W* / *Grayscale*, which are stored as **PNG** precisely because
+  they are worth keeping losslessly, a PNG has no DCT shortcut: the full 7.7
+  megapixel image is inflated whatever `inSampleSize` says. Tens of milliseconds
+  of CPU and ~30 MB of transient allocation **per tile**, two decode slots at a
+  time, while the user is flinging the list. That is the jank: not layout, not
+  recomposition, image decoding contending with the render thread (and ART's GC
+  pausing it).
+
+Two smaller causes were stacking on top of it at startup:
+
+- `backfillTextInBackground` began on the first composition and ran an ML Kit
+  inference (plus a 2400 px decode) per page straight through the user's first
+  scroll.
+- Each recognised page emitted a new library snapshot on its own: ~24
+  recompositions of the dashboard and ~24 rewrites of the whole `library.json`
+  in the first seconds of use.
+
+### The fix
+
+| File | Change |
+| :--- | :--- |
+| **`util/ThumbnailStore.kt` (new)** | One 768 px JPEG per page in **`filesDir/thumbs`**, written while the page is being saved. Key is `imageUri#length:mtime`, so a re-bake can never show a stale cover. Swept to 600 files. |
+| `util/ImageStore.kt` | `importFromUri`, `importFromFile` and `saveEditedPage` write the thumbnail immediately after the page — the full bitmap is already in hand there, so this costs a few ms at a moment nobody is waiting. `writeJpeg`/`writePng` now stamp a **strictly increasing** mtime (`nextStamp()`), so two saves inside one millisecond can no longer collide on a cache key. |
+| `util/PageImageLoader.kt` | Reads `ThumbnailStore` first (a ~40 KB JPEG, sampled down with `inSampleSize`), keeps the full-decode path only as a fallback for pages that predate the store — and repairs them by writing a thumbnail on the way through. Adds `prefetch(...)` and `primeThumbnails(...)`. Memory cache: `allocationByteCount`, cap `maxMemory/8` with a **24 MB floor** (the old 8 MB floor held four covers and thrashed). |
+| `ui/dashboard/DashboardScreen.kt` | Cover size is **derived from the window** (`rememberGridCoverSize`) instead of a literal 440x560 that was smaller than the tile it filled. Prefetches the next `PREFETCH_AHEAD = 4` tiles on every viewport change (`collectLatest`, so a stale window is cancelled). Primes legacy thumbnails once, ~1.8 s in, and only if the list is idle. OCR backfill starts 3 s in and pauses while the list scrolls. `DocumentGridCard` gains a **required `coverSize: IntSize`** parameter. |
+| `data/ScannerRepository.kt` | New `setPageOcrTexts(docId, Map<pageId, text>)` — **one library update per document**. `backfillTextInBackground(limit, isBusy: () -> Boolean = { false })` pauses between pages while `isBusy()` is true, and spaces documents by `OCR_BATCH_SPACING_MS = 220`. `setPageOcrText` is kept and delegates. |
+| **`util/PerfTrace.kt` (new)** | Debug-only frame monitor: `adb logcat -s DocScannerPerf` prints `p50/p90/max` frame times per 120-frame window plus how each cover was obtained (`cacheHits`, `thumbs`, `pageDecodes`). Installed from `MainActivity`; not installed in release, and the counters are a single volatile read when it is off. |
+
+### Why not Rust
+
+Recorded in `docs/RUST_MIGRATION_PLAN.md` §7: the scroll path has no pixel loop —
+it is framework layout plus a decoder that is already C++ — and two of the three
+causes were *scheduling*. Rust stays on the filter bake, where it already is.
+
+### What to check on a device
+
+`adb logcat -s DocScannerPerf` during a fling should show `pageDecodes` near zero
+after the first pass over a library (the legacy page that gets primed is the only
+one that should ever appear) and `p90` at ~17 ms. A `JANK` line with a large
+`pageDecodes` count means some page still has no stored thumbnail.
+
 ## 2026-10-25 (ad) — Arena.ai — Round 19: the library stops working per frame, the camera gets a designer
 
 **No new dependencies, no new files, no repository-layer signature changes.**

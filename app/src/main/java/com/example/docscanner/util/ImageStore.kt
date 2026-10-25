@@ -19,6 +19,7 @@ import java.util.UUID
  * ```
  * files/pages/<pageId>.jpg          pristine capture / first bake source
  * files/pages/<pageId>_edited.jpg   warp + rotation + filter bake shown to the user
+ * files/thumbs/<sha1>.jpg           one 768 px cover per page, written on save
  * files/signatures/<uuid>.png       transparent signature strokes
  * cache/exports/<title>_<ts>.pdf    generated PDFs
  * ```
@@ -135,6 +136,10 @@ object ImageStore {
                 val oriented = applyExifOrientation(decoded, orientation)
                 val target = pageFile(context, pageId)
                 writeJpeg(oriented, target, quality)
+                // The cover every screen will show, built now while the pixels are
+                // already decoded. See ThumbnailStore for why this cannot wait for
+                // the home screen to ask for it.
+                ThumbnailStore.writeFor(context, target.absolutePath, oriented)
                 if (oriented !== decoded) decoded.recycle()
                 target.absolutePath
             }
@@ -168,6 +173,7 @@ object ImageStore {
                 val oriented = applyExifOrientation(decoded, orientation)
                 val target = pageFile(context, pageId)
                 writeJpeg(oriented, target, quality)
+                ThumbnailStore.writeFor(context, target.absolutePath, oriented)
                 if (oriented !== decoded) decoded.recycle()
                 target.absolutePath
             }
@@ -220,6 +226,10 @@ object ImageStore {
         val target = if (lossless) editedLosslessFile(context, pageId) else editedFile(context, pageId)
         if (lossless) writePng(bitmap, target) else writeJpeg(bitmap, target, quality)
         runCatching { stale.delete() }
+        // The key includes the page's mtime, so this deliberately runs *after* the
+        // write: the old cover is invalidated by the new mtime and a fresh one is
+        // stored under the new key, with no bookkeeping anywhere else.
+        ThumbnailStore.writeFor(context, target.absolutePath, bitmap)
         target.absolutePath
     } catch (_: Throwable) {
         null
@@ -237,8 +247,9 @@ object ImageStore {
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
             out.flush()
         }
-        // Bitmap cache keys include the file's mtime; make sure it advances.
-        target.setLastModified(System.currentTimeMillis())
+        // Bitmap and thumbnail cache keys include the file's mtime; make sure it
+        // strictly advances (see [nextStamp]).
+        target.setLastModified(nextStamp())
     }
 
     /**
@@ -254,8 +265,29 @@ object ImageStore {
             bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
             out.flush()
         }
-        // Bitmap cache keys include the file's mtime; make sure it advances.
-        target.setLastModified(System.currentTimeMillis())
+        // Bitmap and thumbnail cache keys include the file's mtime; make sure it
+        // strictly advances (see [nextStamp]).
+        target.setLastModified(nextStamp())
+    }
+
+    /**
+     * A modification stamp that is **strictly increasing within this process**.
+     *
+     * Both caches ([PageImageLoader]'s bitmaps and [ThumbnailStore]'s files) treat
+     * "same path, same length, same mtime" as "same pixels". `currentTimeMillis()`
+     * does not guarantee that: a re-bake that produces the same byte count within
+     * the same millisecond — or within the same *second* on a filesystem with
+     * coarse timestamps — would keep the old key and show the pre-edit cover.
+     * Handing out a stamp that only ever moves forward closes that hole without
+     * letting timestamps drift into the future by more than the number of writes
+     * made inside one millisecond.
+     */
+    private var lastStamp = 0L
+
+    private fun nextStamp(): Long = synchronized(this) {
+        val candidate = maxOf(System.currentTimeMillis(), lastStamp + 1L)
+        lastStamp = candidate
+        candidate
     }
 
     /** Saves a signature PNG (transparent background). */

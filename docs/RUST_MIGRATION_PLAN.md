@@ -109,3 +109,49 @@ phase safe.
 - If Compose ever becomes the bottleneck *and* profiling proves it (it is currently
   ~2–6 ms/frame), revisit with data. The fix then is still baseline profiles and
   composition hygiene long before a language change.
+
+---
+
+## 7. Round 20 addendum — the dashboard jank is not a Rust candidate
+
+Asked directly whether Rust should be used to fix the remaining library scroll
+lag. The honest answer is **no**, and this section records the reasoning so the
+question does not get re-litigated every round.
+
+**The scroll path contains no pixel loop.** While the user flings the library the
+app runs: Compose measure/layout/draw, a per-frame snapshot read of
+`LazyGridState.layoutInfo`, and — off the main thread — image **decoding**. The
+first two are framework code Rust cannot enter. The third is `BitmapFactory`,
+which is already `libjpeg-turbo` + Skia in C/C++; a Rust decoder would be a slower
+reimplementation of the fastest code on the device, reachable only across a JNI
+boundary that also loses `inSampleSize` and the native hardware-buffer paths.
+
+Where the time actually went (round 20 diagnosis, see
+`docs/AGENTS_CHANGELOG.md` entry `(ae)`):
+
+1. Every grid cover decoded a **full page** — up to 3200 px, and a PNG for
+   *Clear B&W* / *Grayscale* — because no thumbnail was ever stored. ~30 MB of
+   transient allocation and tens of milliseconds of CPU per tile, two decode slots,
+   during the fling. Fixed by writing a 768 px JPEG when the page is saved
+   (`ThumbnailStore`), not by making the decode faster.
+2. Background OCR (an ML Kit inference per page) started immediately at launch and
+   ran straight through the first scroll. Fixed by delaying it and pausing it while
+   the list is moving.
+3. Roughly two dozen full-library emissions during that same startup (one per
+   recognised page) each recomposed the dashboard and rewrote `library.json`.
+   Fixed by batching text writes per document.
+
+None of those are arithmetic that a native kernel could speed up; two of the three
+are *scheduling*. Moving them to Rust would have made the app bigger and the jank
+unchanged.
+
+Where Rust **is** still the right tool is unchanged: the filter bake (phases 1–2
+above), which is pixel math over a 3200 px page and runs in the editor where
+latency is expected. The existing phase-2 plan stands.
+
+**If the library still feels slow after this round**, the next things to measure —
+in this order — are: a **baseline profile** (AOT-compiling Compose itself, worth
+20–40 % of frame time on first-run flows and free to add once a device is
+available), then per-card layer count (the cards currently clip twice: `Surface`
+clips to its shape and the call site clips again), then `Modifier.pressScale`'s
+`composed` factories. All three are Compose-side; still not Rust.

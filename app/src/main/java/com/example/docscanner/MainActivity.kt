@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.model.ThemeMode
 import com.example.docscanner.theme.DocScannerTheme
+import com.example.docscanner.util.PerfTrace
 
 class MainActivity : ComponentActivity() {
 
@@ -36,6 +37,11 @@ class MainActivity : ComponentActivity() {
         // Placeholder styles; the real ones are applied from the composed theme
         // below, because the user can override the system light/dark setting.
         enableEdgeToEdge()
+
+        // Debug builds only: logs per-window frame times and how each cover was
+        // obtained (memory / stored thumbnail / full page decode) under the
+        // `DocScannerPerf` tag. A no-op in release. See util/PerfTrace.kt.
+        PerfTrace.install(applicationContext)
 
         setContent {
             val settings by repository.settings.collectAsState()

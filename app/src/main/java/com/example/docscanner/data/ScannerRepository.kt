@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -37,6 +38,28 @@ import java.util.UUID
  */
 /** How many pages one background text-recognition pass may handle. */
 private const val OCR_BACKFILL_BATCH = 24
+
+/**
+ * Pause between the documents of a backfill pass.
+ *
+ * Each applied result emits a new library snapshot, and every snapshot is a
+ * recomposition of the home screen plus a rewrite of the whole `library.json`
+ * (which contains all of this text). Unspaced, a fresh install re-indexed the
+ * library two dozen times inside the first seconds of use — while the user was
+ * scrolling it. One short gap per *document* is invisible; one per page was not.
+ */
+private const val OCR_BATCH_SPACING_MS = 220L
+
+/**
+ * How long a paused backfill waits before asking again whether it may run.
+ *
+ * Text recognition is the most CPU-hungry thing this app does in the background
+ * (an ML Kit inference per page, plus a 2400 px decode). Letting it run while the
+ * user flings the library is the difference between a smooth list and a list that
+ * "feels laggy even though nothing changed" — the frames are dropped by contention,
+ * not by the dashboard.
+ */
+private const val OCR_PAUSE_POLL_MS = 250L
 
 class ScannerRepository(context: Context) {
 
@@ -244,7 +267,21 @@ class ScannerRepository(context: Context) {
      * background indexing would then reorder the library while the user is looking
      * at it. Text recognition is metadata about a page, not an edit to it.
      */
-    fun setPageOcrText(docId: String, pageId: String, text: String) {
+    fun setPageOcrText(docId: String, pageId: String, text: String) =
+        setPageOcrTexts(docId, mapOf(pageId to text))
+
+    /**
+     * Stores recognised text for several pages of one document in a **single**
+     * library update.
+     *
+     * This is the difference between one recomposition and N: `documents` is what
+     * the home screen collects, so every emission re-sorts the library, rebuilds
+     * the formatted date labels and re-runs the visible cards. Recognition is
+     * background work that must not be able to make the list stutter, so it is
+     * batched per document and applied once.
+     */
+    fun setPageOcrTexts(docId: String, texts: Map<String, String>) {
+        if (texts.isEmpty()) return
         _documents.update { docs ->
             docs.map { doc ->
                 if (doc.id != docId) {
@@ -252,7 +289,7 @@ class ScannerRepository(context: Context) {
                 } else {
                     doc.copy(
                         pages = doc.pages.map { page ->
-                            if (page.id == pageId) page.copy(ocrText = text) else page
+                            texts[page.id]?.let { page.copy(ocrText = it) } ?: page
                         }
                     )
                 }
@@ -276,10 +313,10 @@ class ScannerRepository(context: Context) {
             ?: return
         if (pending.isEmpty()) return
         scope.launch {
-            for (page in pending) {
-                val text = OcrEngine.readPage(page.imageUri) ?: continue
-                setPageOcrText(docId, page.id, text)
-            }
+            val texts = pending.mapNotNull { page ->
+                OcrEngine.readPage(page.imageUri)?.let { page.id to it }
+            }.toMap()
+            setPageOcrTexts(docId, texts)
         }
     }
 
@@ -290,7 +327,14 @@ class ScannerRepository(context: Context) {
      * the app into a long CPU burn. Pages still without text remain searchable by
      * title and tags.
      */
-    fun backfillTextInBackground(limit: Int = OCR_BACKFILL_BATCH) {
+    fun backfillTextInBackground(
+        limit: Int = OCR_BACKFILL_BATCH,
+        /**
+         * Checked between pages. While it returns `true` the pass waits, so work
+         * that nobody is waiting for never competes with a scroll.
+         */
+        isBusy: () -> Boolean = { false }
+    ) {
         val pending = _documents.value
             .filterNot { it.isTrash }
             .flatMap { doc ->
@@ -301,9 +345,18 @@ class ScannerRepository(context: Context) {
             .take(limit)
         if (pending.isEmpty()) return
         scope.launch {
-            for ((docId, page) in pending) {
-                val text = OcrEngine.readPage(page.imageUri) ?: continue
-                setPageOcrText(docId, page.id, text)
+            pending.groupBy({ it.first }, { it.second }).forEach { (docId, pages) ->
+                // Yield to the UI before starting a page, not after: a recognition
+                // pass that begins mid-fling is 200 ms of the CPU the next frame
+                // needed.
+                while (isBusy()) delay(OCR_PAUSE_POLL_MS)
+                val texts = pages.mapNotNull { page ->
+                    OcrEngine.readPage(page.imageUri)?.let { page.id to it }
+                }.toMap()
+                setPageOcrTexts(docId, texts)
+                // Let the frame, the JSON write and the index settle before the
+                // next document lands on top of them.
+                delay(OCR_BATCH_SPACING_MS)
             }
         }
     }

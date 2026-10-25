@@ -86,6 +86,7 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai & Antigravity | ✅ merged & verified (Round 14) | `theme/*`, `ui/*`, `docs/*` | Material 3 Expressive UI overhaul across all screens. Fixed `FiniteAnimationSpec` types, `Modifier.entrance` extension, and `Check` icon import. All unit tests pass, `app-debug.apk` built. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 15) | `app/build.gradle.kts`, `util/NativeFilters.kt`, `util/DocumentFilters.kt`, `app/src/main/rust/*`, `ui/*`, docs | Optional Rust pixel kernels behind byte-for-byte parity gate + UI scroll/dialog polish. Fixed NativeFilters Log.i JVM test initialization, in-process PATH lookup and Configuration Cache compatibility. 56 unit tests pass, `app-debug.apk` built. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 19) | `model/Models.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/common/PageThumbnail.kt`, `util/PageImageLoader.kt`, `ui/camera/ScannerCameraScreen.kt`, docs | Home-screen smoothness (immutable models so cards skip, dates formatted once, search debounced off-thread, single-flight thumb loader) and redesigned camera chrome. Fixed SearchBarField TextFieldDefaults.colors invocation. All unit tests pass, `app-debug.apk` built (65.5 MB). |
+| Arena.ai | 🚧 in review (Round 20) | `util/ThumbnailStore.kt` (new), `util/PerfTrace.kt` (new), `util/ImageStore.kt`, `util/PageImageLoader.kt`, `ui/dashboard/DashboardScreen.kt`, `data/ScannerRepository.kt`, `MainActivity.kt`, docs | The real cause of the remaining scroll jank: covers were decoded from whole pages. Thumbnails are written at save time, and OCR stops competing with the list. Nothing to provision; see §6k. |
 
 ## 5. File ownership map
 
@@ -260,9 +261,12 @@ changes; `PageImageLoader.clear()` gained an optional `Context` parameter
 - Lazy items must not use `Modifier.entrance(...)`: it composes an animation *and*
   an alpha layer per item and re-runs whenever a card scrolls into view. Use it on
   static header content only.
-- `PageImageLoader` now maintains a disk thumbnail cache under `cacheDir/thumbs`
-  for requests ≤ 1024 px. Anything larger (viewer, editor) deliberately bypasses
-  it. If you add a screen that shows pages at ≥ 1024 px, expect a full decode.
+- `PageImageLoader` maintains a disk thumbnail cache for requests ≤ its stored
+  thumbnail size. Anything larger (viewer, editor) deliberately bypasses it. If
+  you add a screen that shows pages at ≥ 768 px, expect a full decode.
+  **Superseded in round 20 — see §6k:** the cache moved from `cacheDir/thumbs` to
+  `filesDir/thumbs`, is written when the page is saved rather than on first
+  display, and is shared by every UI size instead of being keyed by request size.
 
 ## 6h. Border detection + filter speed (claimed by Arena, 2026-10-25, round 17)
 
@@ -414,6 +418,62 @@ changed in this round.
   auto-retires, a dead viewfinder must not.
 - The camera shows a discard confirmation when leaving with unsaved pages
   (`BackHandler` + close button → `requestClose()`).
+
+## 6k. Library scroll jank, round 2 (claimed by Arena, 2026-10-25, round 20)
+
+### Nothing to provision
+
+No new dependency, no model asset, no native change, no NDK work. (Rust was
+explicitly considered for this and rejected — see `docs/RUST_MIGRATION_PLAN.md` §7:
+the scroll path has no pixel loop, and `BitmapFactory` is already C++.)
+
+### The diagnosis, in one line
+
+The library was decoding **whole pages to draw thumbnails**, because nothing had
+ever written a thumbnail. PNG pages (*Clear B&W*, *Grayscale*) have no cheap
+sampled decode, so each tile cost tens of milliseconds and ~30 MB of transient
+allocation while the user scrolled — and background OCR plus ~24 full-library
+emissions were running through the same first scroll.
+
+### Contracts other code must not break
+
+1. **`ThumbnailStore` is the only place page covers live.** `filesDir/thumbs`, one
+   ~768 px JPEG per page, keyed `sha1(imageUri#length:mtime)`. Do not write
+   thumbnails anywhere else, and do not cache them by page id — the mtime is what
+   makes a re-bake invalidate the old cover with no bookkeeping.
+2. **Any new page-write path must call `ThumbnailStore.writeFor(...)`** right after
+   it writes the page file, while the bitmap is still in hand. The three that exist
+   (`importFromUri`, `importFromFile`, `saveEditedPage`) all do. A page written
+   without one is not broken — it falls back to a full decode the first time it is
+   displayed, which is the exact cost this round removed.
+3. **A request larger than `ThumbnailStore.LONG_EDGE` (768) deliberately bypasses
+   thumbnails** and decodes the page: that is the editor and the viewer. Keep grid
+   and strip requests under 768.
+4. **`ImageStore.writeJpeg` / `writePng` must keep stamping `nextStamp()`** rather
+   than `currentTimeMillis()`: both caches key on the mtime, and a same-millisecond
+   re-bake would otherwise keep the pre-edit cover.
+5. **`setPageOcrTexts` (plural) is the write path for recognition results** — one
+   update per document. `setPageOcrText` still exists and delegates, but a loop of
+   single-page calls is what made launch emit two dozen library snapshots.
+6. **`backfillTextInBackground(isBusy = ...)` keeps being called with a scroll
+   predicate** from the dashboard, and keeps its 3 s start delay. ML Kit inference
+   on two cores is enough to drop frames in the list, and that is not the list's
+   fault.
+
+### `DocumentGridCard` signature change
+
+`coverSize: IntSize` is now a **required** parameter (it used to be a hard-coded
+`reqWidth = 440`, which was smaller than the tile it filled on a 3x display).
+Compute it with `rememberGridCoverSize()` in the dashboard: it derives the cell from
+`LocalConfiguration.screenWidthDp` and the grid's own padding/gap constants, so the
+two cannot drift apart.
+
+### Measuring it
+
+`adb logcat -s DocScannerPerf` on a debug build. Every 120-frame window prints
+frame percentiles plus how each cover was obtained; `JANK` lines are the ones to
+look at, and a large `pageDecodes` count there means some page still has no stored
+thumbnail.
 
 ## 7. Known-good state
 
