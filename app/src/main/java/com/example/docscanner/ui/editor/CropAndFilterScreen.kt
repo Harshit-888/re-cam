@@ -121,6 +121,29 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
+ * Longest edge decoded for the automatic border pass.
+ *
+ * The detector itself works on a 360 px grey copy, so this only has to carry
+ * enough detail that a page edge survives the down-take; 720 is twice the working
+ * resolution and keeps the pass to a few megabytes per page instead of the ~15 MB
+ * a preview-sized decode would take.
+ */
+private const val DETECT_ALL_DIMENSION = 720
+
+/** How long the first page gets the machine to itself before the pass starts. */
+private const val AUTO_DETECT_START_DELAY_MS = 450L
+
+/**
+ * Pages the automatic pass will look at.
+ *
+ * Bounded for the same reason the OCR backfill is: a 200-page document must not
+ * turn opening the editor into a long burst of decoding. Pages past the limit keep
+ * the old behaviour — the strip walks them, and each one auto-detects as it is
+ * brought on screen.
+ */
+private const val AUTO_DETECT_LIMIT = 40
+
+/**
  * How long the filter strip must rest before a full-resolution preview render.
  *
  * Tapping through filters changes the selection every frame; each render is a
@@ -222,6 +245,16 @@ fun CropAndFilterScreen(
     // Pages whose borders the user has confirmed in this session.
     val borderedPages = remember(docId) { mutableStateMapOf<String, Boolean>() }
 
+    // Results of the automatic border pass over the *other* pages, plus its
+    // progress. Local to the session: the corners themselves are persisted, this
+    // map only exists so the strip can show what was confident and what was not.
+    val autoBorders = remember(docId) {
+        mutableStateMapOf<String, DocumentDetector.Detection>()
+    }
+    var isDetectingAll by remember { mutableStateOf(false) }
+    var detectedCount by remember { mutableIntStateOf(0) }
+    var detectTargetCount by remember { mutableIntStateOf(0) }
+
     // Batch bake progress: null when idle, otherwise the page being baked.
     var applyingPage by remember { mutableStateOf<Int?>(null) }
     var applyingTotal by remember { mutableIntStateOf(0) }
@@ -284,6 +317,78 @@ fun CropAndFilterScreen(
         }
 
         loadedPageId = activePageId
+    }
+
+    /**
+     * Detects the borders of every page that has never been cropped — once, when
+     * the review flow opens.
+     *
+     * The pass exists because the batch flow used to make the user walk each page
+     * by hand ("Next page", adjust, repeat) to reach a decision the detector can
+     * make on its own for most pages. Now the pages that are clean are already
+     * fixed by the time the user looks at the second one, and the only pages left
+     * to think about are the ones the detector was *not* confident about — which
+     * the strip marks in amber.
+     *
+     * The page being displayed is deliberately excluded: it runs the same detector
+     * as part of loading (see above) and writing it from here would race with the
+     * user's hands.
+     */
+    LaunchedEffect(docId, reviewMode) {
+        if (!reviewMode) return@LaunchedEffect
+        // The first page's preview and its filter swatches are what the user is
+        // looking at; this pass starts only once they have had the CPU to appear.
+        delay(AUTO_DETECT_START_DELAY_MS)
+        val targets = repository.getDocumentById(docId)?.pages.orEmpty()
+            .filter { it.corners.isFullFrame && it.id != activePageId }
+            .take(AUTO_DETECT_LIMIT)
+        if (targets.isEmpty()) return@LaunchedEffect
+
+        isDetectingAll = true
+        detectTargetCount = targets.size
+        detectedCount = 0
+        val found = LinkedHashMap<String, DocumentDetector.Detection>()
+        try {
+            for (page in targets) {
+                val bitmap = withContext(Dispatchers.IO) {
+                    ImageStore.loadBitmap(
+                        context,
+                        page.originalImageUri ?: page.imageUri,
+                        DETECT_ALL_DIMENSION
+                    )
+                }
+                if (bitmap != null) {
+                    // `finally` so a cancelled pass still frees its decode: the
+                    // user backing out of the screen must not leave a handful of
+                    // 720 px bitmaps waiting for the collector.
+                    val detection = try {
+                        withContext(Dispatchers.Default) { DocumentDetector.detect(bitmap) }
+                    } finally {
+                        bitmap.recycle()
+                    }
+                    if (!detection.corners.isFullFrame) found[page.id] = detection
+                }
+                detectedCount++
+            }
+        } finally {
+            isDetectingAll = false
+        }
+
+        if (found.isEmpty()) return@LaunchedEffect
+
+        // Only pages that are *still* un-cropped get written: the user may have
+        // started adjusting one of them while this ran.
+        val stillUntouched = repository.getDocumentById(docId)?.pages.orEmpty()
+            .filter { it.corners.isFullFrame && found.containsKey(it.id) }
+            .map { it.id }
+        if (stillUntouched.isEmpty()) return@LaunchedEffect
+
+        autoBorders.putAll(found.filterKeys { it in stillUntouched })
+        repository.setPageCorners(
+            docId,
+            stillUntouched.associateWith { id -> found.getValue(id).corners }
+        )
+        stillUntouched.forEach { borderedPages[it] = true }
     }
 
     // ---- filter swatches -----------------------------------------------------
@@ -477,13 +582,28 @@ fun CropAndFilterScreen(
         else -> "Page"
     }
 
+    // True once every page has a usable quad — set by the automatic pass, by the
+    // user walking the strip, or by both. It is what lets the primary button stop
+    // asking for a page-by-page walk that has already happened.
+    val everyPageBordered = pages.isNotEmpty() &&
+        pages.all { borderedPages[it.id] == true }
+    val uncertainPages = pages.count { autoBorders[it.id]?.confident == false }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
             EditorHeader(
                 title = if (isBordersStage) "Adjust borders" else "Choose a filter",
                 subtitle = if (isBordersStage) {
-                    "$pageLabel · tap a corner to fine-tune"
+                    when {
+                        isDetectingAll ->
+                            "Finding borders · $detectedCount of $detectTargetCount pages"
+                        everyPageBordered && uncertainPages == 0 ->
+                            "All ${pages.size} borders found · tap a page to adjust"
+                        uncertainPages > 0 ->
+                            "$pageLabel · $uncertainPages need${if (uncertainPages == 1) "s" else ""} a check"
+                        else -> "$pageLabel · tap a corner to fine-tune"
+                    }
                 } else {
                     "$pageLabel · applied to every page"
                 },
@@ -543,17 +663,27 @@ fun CropAndFilterScreen(
                         onRotateRight = {
                             rotation = ImageProcessingUtils.normalizeRotation(rotation + 90f)
                         },
-                        primaryLabel = if (hasNextPage) {
+                        primaryLabel = if (hasNextPage && !everyPageBordered) {
                             "Next page (${(activeIndex + 2).coerceAtMost(pages.size)} of ${pages.size})"
                         } else {
                             "Continue to filters"
                         },
-                        primaryIcon = if (hasNextPage) {
+                        primaryIcon = if (hasNextPage && !everyPageBordered) {
                             Icons.Default.ArrowForward
                         } else {
                             Icons.Default.AutoFixHigh
                         },
-                        onPrimary = { advanceOrFinish() }
+                        onPrimary = {
+                            // Every quad is already decided: jumping straight to the
+                            // filter keeps the promise the automatic pass just made
+                            // instead of walking pages the user does not need to see.
+                            if (everyPageBordered) {
+                                persistGeometry()
+                                stage = Stage.FILTERS
+                            } else {
+                                advanceOrFinish()
+                            }
+                        }
                     )
 
                     Stage.FILTERS -> FilterControls(
@@ -1042,6 +1172,10 @@ private fun BordersControls(
                         index = index,
                         selected = page.id == activePageId,
                         done = borderedPages[page.id] == true,
+                        // A confident detection is a tick; an unconfident one is a
+                        // warning, not a success. Showing both as "done" would be a
+                        // lie the user only discovers in the exported PDF.
+                        needsReview = autoBorders[page.id]?.confident == false,
                         onClick = { onSelectPage(index) }
                     )
                 }
@@ -1221,13 +1355,21 @@ private fun FilterSwatch(
     }
 }
 
-/** One page in the border pass: a thumbnail with its number and a done tick. */
+/**
+ * One page in the border pass: a thumbnail, its number, and how sure we are.
+ *
+ * Three states, and the third is the point of the whole strip: a page the user has
+ * confirmed is *filled*, a page the detector was confident about is *outlined in the
+ * accent colour*, and a page it was not sure about is *amber* with a "!" — so the
+ * order to work through is visible at a glance instead of being page order.
+ */
 @Composable
 private fun PageChip(
     page: ScannedPage,
     index: Int,
     selected: Boolean,
     done: Boolean,
+    needsReview: Boolean,
     onClick: () -> Unit
 ) {
     val interactions = remember { MutableInteractionSource() }
@@ -1261,13 +1403,20 @@ private fun PageChip(
                             .border(ring.dp, MaterialTheme.colorScheme.primary, DocShapes.thumbnail)
                     )
                 }
+                val accents = LocalDocAccents.current
+                val badgeColor = when {
+                    needsReview -> accents.scan
+                    done -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.85f)
+                }
+                val badgeContent = when {
+                    needsReview -> accents.onScan
+                    done -> MaterialTheme.colorScheme.onPrimary
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
                 Surface(
                     shape = DocShapes.pill,
-                    color = if (done) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.85f)
-                    },
+                    color = badgeColor,
                     modifier = Modifier
                         .padding(4.dp)
                         .size(16.dp)
@@ -1275,14 +1424,11 @@ private fun PageChip(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Text(
-                            "${index + 1}",
+                            if (needsReview) "!" else "${index + 1}",
                             style = MaterialTheme.typography.labelSmall,
                             fontSize = 9.sp,
-                            color = if (done) {
-                                MaterialTheme.colorScheme.onPrimary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
+                            fontWeight = if (needsReview) FontWeight.Bold else FontWeight.Normal,
+                            color = badgeContent
                         )
                     }
                 }

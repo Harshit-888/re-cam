@@ -4,6 +4,7 @@ import android.content.Context
 import com.example.docscanner.model.AppSettings
 import com.example.docscanner.model.Document
 import com.example.docscanner.model.Folder
+import com.example.docscanner.model.QuadCorners
 import com.example.docscanner.model.LibrarySnapshot
 import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.util.ImageStore
@@ -253,6 +254,36 @@ class ScannerRepository(context: Context) {
                     }
                     doc.copy(
                         pages = reordered.mapIndexed { index, p -> p.copy(pageIndex = index) },
+                        modifiedDate = System.currentTimeMillis()
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Stores the geometry of several pages of one document in a **single** library
+     * update.
+     *
+     * The multi-page border pass detects every page at once; writing each result
+     * through [updatePage] would emit one library snapshot per page, and every
+     * snapshot re-sorts the library and repaints the dashboard underneath. One
+     * update for the whole pass is the difference between a single flicker and a
+     * visibly busy background.
+     *
+     * `modifiedDate` moves once, because the document genuinely did change.
+     */
+    fun setPageCorners(docId: String, cornersByPage: Map<String, QuadCorners>) {
+        if (cornersByPage.isEmpty()) return
+        _documents.update { docs ->
+            docs.map { doc ->
+                if (doc.id != docId) {
+                    doc
+                } else {
+                    doc.copy(
+                        pages = doc.pages.map { page ->
+                            cornersByPage[page.id]?.let { page.copy(corners = it) } ?: page
+                        },
                         modifiedDate = System.currentTimeMillis()
                     )
                 }

@@ -89,6 +89,7 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai & Antigravity | ✅ merged & verified (Round 20) | `util/ThumbnailStore.kt` (new), `util/PerfTrace.kt` (new), `util/ImageStore.kt`, `util/PageImageLoader.kt`, `ui/dashboard/DashboardScreen.kt`, `data/ScannerRepository.kt`, `MainActivity.kt`, docs | Dedicated 768px ThumbnailStore, background priming, ML Kit scroll-pause, and PerfTrace. Fixed DashboardScreen visibleItemsInfo smart-casting. All unit tests pass, `app-debug.apk` built (65.5 MB). |
 | Arena.ai | 🚧 in review (Round 21) | `ui/common/PageThumbnail.kt`, `ui/common/Expressive.kt`, `ui/dashboard/DashboardScreen.kt`, `util/PageImageLoader.kt`, `util/ThumbnailStore.kt`, docs | Library scroll raised to settings-list smoothness: no per-tile animations, no `Surface`/`composed` modifiers in lazy items, synchronous cache reads on the first frame, memoised thumbnail keys, row-quantised prefetch. See §6l. |
 | Arena.ai | 🚧 in review (Round 22) | `ui/dashboard/DashboardScreen.kt`, `ui/common/PageThumbnail.kt`, `util/PerfTrace.kt`, docs | Overdraw removed (transparent Scaffold, footer-only card background, placeholder-only cover fill) and one perf log line per scroll gesture. See §6m. |
+| Arena.ai | 🚧 in review (Round 23) | `ui/editor/CropAndFilterScreen.kt`, `data/ScannerRepository.kt`, docs | The batch border pass now auto-detects every page instead of making the user walk them; the strip marks the pages the detector was unsure about. Additive `setPageCorners`. See §6n. |
 
 ## 5. File ownership map
 
@@ -558,6 +559,43 @@ I DocScannerPerf: JANK scroll frames=214 slow=3 avg=17.4ms worst=41.2ms cacheHit
 
 Read it in this order: `slow` (frames > 24 ms) → `pageDecodes` → `worst`. Any future
 "the list is laggy" report should start with this line.
+
+## 6n. Batch border pass (Arena, 2026-10-25, round 23)
+
+### Nothing to provision
+
+### The flow, as it now behaves
+
+1. Camera → *Done* → review opens on page 1 with its borders already detected.
+2. ~450 ms later a background pass detects **every other page that has never been
+   cropped** (≤ `AUTO_DETECT_LIMIT = 40`), writing them in one repository update.
+3. The page strip shows three states: filled = the user confirmed it, accent = the
+   detector was confident, amber **"!"** = it was not. Work the exclamation marks,
+   not the page numbers.
+4. *Continue to filters* → one filter → one bake over all pages, with progress.
+
+### Rules that make it safe (do not break these)
+
+- **Auto-detection never touches a page whose corners are not `isFullFrame`.** That
+  single condition is what stops the pass from silently re-cropping a page the user
+  already adjusted — in the pass, in the on-load detection, and at write time.
+- **The pass writes once, via `setPageCorners`.** Per-page `updatePage` calls would
+  emit one library snapshot per page (the lesson from the OCR backfill).
+- **The pass decodes at `DETECT_ALL_DIMENSION = 720`** and recycles each bitmap in a
+  `finally`. Do not raise it to preview size: the detector only reads 360 px.
+- **`PageChip(needsReview = …)` must keep distinguishing *confident* from *user
+  confirmed*.** Showing an unconfident detection as "done" is a lie the user only
+  finds in the exported PDF.
+- The primary action jumps straight to filters when `everyPageBordered`; the
+  page-by-page walk stays available for the pages that failed detection.
+
+### Deferred, deliberately
+
+Per-page filters (a different filter per page within one batch) are **not**
+implemented: one filter is applied to the document. That matches the requested flow
+("… *then* apply filters") and the single bake pass. If per-page filters are wanted,
+the bake loop in `applyFilterToPages` already iterates pages, so it is a UI change,
+not a pipeline change.
 
 ## 7. Known-good state
 

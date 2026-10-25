@@ -4,6 +4,48 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (ai) — Arena.ai — Round 23: the batch border pass does the walking
+
+The requested flow — *fix page 1, move to page 2, … then apply filters* — existed,
+but it made the user tap through every page to reach a decision the detector can
+reach on its own. For a clean ten-page scan that was nine "Next page" taps and nine
+identical confirmations of something already correct.
+
+### What changed
+
+- **`ui/editor/CropAndFilterScreen.kt`** — when the review flow opens, a background
+  pass detects the borders of **every page that has never been cropped**, 450 ms
+  after the first page has painted. Each page is decoded at 720 px (the detector
+  works at 360 internally), detected, and its bitmap recycled. Results are written
+  in **one** `setPageCorners` call at the end, and only for pages that are *still*
+  un-cropped at that moment — the user may have started adjusting one while the pass
+  ran. The page on screen is excluded; it has its own detection path on load.
+  Bounded to `AUTO_DETECT_LIMIT = 40` pages, like the OCR backfill.
+- **`data/ScannerRepository.kt`** — new `setPageCorners(docId, Map<pageId,
+  QuadCorners>)`: one library update for the whole pass, not one per page.
+- **The strip tells the truth about confidence.** `PageChip` gained
+  `needsReview: Boolean`. Three states, from `DocumentDetector.Detection.confident`:
+  filled primary = confirmed by the user, accent badge = detected confidently, amber
+  **"!"** = the detector was *not* sure. The pages worth looking at are now visible at
+  a glance, instead of being discovered in the exported PDF.
+- **The primary button stops asking for work that happened.** Once every page has a
+  quad, it reads *Continue to filters* and goes straight there; otherwise it keeps
+  offering the page-by-page walk. The header subtitle reports the pass
+  ("Finding borders · 3 of 8 pages", then "All 8 borders found · tap a page to
+  adjust", or "… · 2 need a check").
+
+### Unchanged
+
+Baking is still deferred until the filter stage, still from the pristine capture,
+still non-destructive; corner edits are still persisted immediately; the
+`savesLosslessly` / 3200 px / preview-dimension contract is untouched.
+
+### For Antigravity
+
+`setPageCorners` is additive. The auto-pass is review-mode only and idempotent — it
+skips any page whose corners are not `isFullFrame`, so re-entering the flow never
+re-crops a page the user was happy with.
+
 ## 2026-10-25 (ah) — Arena.ai — Round 22: overdraw, and a scroll line worth pasting
 
 Same complaint, next layer down. Round 21 made a card cost what a settings row
