@@ -1,5 +1,6 @@
 package com.example.docscanner.model
 
+import androidx.compose.runtime.Immutable
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -45,6 +46,7 @@ enum class PdfMargin(val label: String, val marginPt: Int) {
  * The default is the full frame. An inset default would silently crop every
  * captured page, which is what the previous revision did.
  */
+@Immutable
 @Serializable
 data class QuadCorners(
     val topLeftX: Float = 0f,
@@ -75,6 +77,19 @@ data class QuadCorners(
     }
 }
 
+/**
+ * The library's data classes are annotated [@Immutable] on purpose.
+ *
+ * Every field is a `val` and the repository always replaces a document wholesale
+ * (`doc.copy(pages = doc.pages + page)`) instead of mutating a list, so the
+ * promise is true. Without the annotation Compose infers these types as
+ * *unstable* — `List<ScannedPage>` is an interface, and the compiler cannot know
+ * the instance never changes — which makes every card in the library unskippable:
+ * one keystroke in the search field recomposed every visible thumbnail, and a
+ * fling re-ran the date formatting for a dozen cards per frame. With it, a card
+ * only recomposes when its own document or snippet actually changed.
+ */
+@Immutable
 @Serializable
 data class ScannedPage(
     val id: String,
@@ -98,6 +113,7 @@ data class ScannedPage(
     val signatureOverlayUri: String? = null
 )
 
+@Immutable
 @Serializable
 data class Document(
     val id: String,
@@ -111,6 +127,7 @@ data class Document(
     val notes: String = ""
 )
 
+@Immutable
 @Serializable
 data class Folder(
     val id: String,

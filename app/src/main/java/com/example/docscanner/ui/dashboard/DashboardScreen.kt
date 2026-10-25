@@ -27,7 +27,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -107,6 +109,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -182,16 +185,59 @@ fun DashboardScreen(
 
     // The index is rebuilt when the library changes, never when the query does: a
     // keystroke is now an index lookup instead of a scan of every page's text.
-    val searchIndex = remember(documents) { DocumentSearch.Index(documents) }
-    val searchHits = remember(searchIndex, searchQuery) {
-        if (searchQuery.isBlank()) emptyList() else searchIndex.search(searchQuery)
+    //
+    // It is also built only once someone searches, and off the frame thread.
+    // Constructing it tokenises every page's recognised text, and the one-time
+    // OCR backfill emits a new library snapshot per page — building it in
+    // composition meant the home screen paid for a full re-index of the library
+    // two dozen times at startup, on the thread that draws the list.
+    val queryActive = searchQuery.isNotBlank()
+    var searchIndex by remember { mutableStateOf<DocumentSearch.Index?>(null) }
+    LaunchedEffect(documents, queryActive) {
+        if (!queryActive) return@LaunchedEffect
+        searchIndex = withContext(Dispatchers.Default) { DocumentSearch.Index(documents) }
     }
+
+    // Ranking runs off the composition, after a debounce.
+    //
+    // It used to run inside `remember(searchQuery)`, which meant every single
+    // keystroke paid for a whole BM25 pass on the frame thread — measured in
+    // dropped frames on a library of a few hundred pages, and wasted entirely
+    // because "d", "do", "doc" were each ranked in turn. The debounce skips the
+    // intermediate prefixes; the dispatcher keeps even the final pass off the
+    // thread that has to draw the caret.
+    var searchHits by remember { mutableStateOf<List<DocumentSearch.Hit>>(emptyList()) }
+    var isSearching by remember { mutableStateOf(false) }
+    LaunchedEffect(searchIndex, searchQuery) {
+        val query = searchQuery
+        if (query.isBlank()) {
+            searchHits = emptyList()
+            isSearching = false
+            return@LaunchedEffect
+        }
+        val index = searchIndex
+        if (index == null) {
+            // The very first search of the session still has its index being
+            // built. Stay in the "searching" state so the empty library does not
+            // claim that nothing matched for those few frames.
+            isSearching = true
+            return@LaunchedEffect
+        }
+        isSearching = true
+        delay(SEARCH_DEBOUNCE_MS)
+        searchHits = withContext(Dispatchers.Default) { index.search(query) }
+        isSearching = false
+    }
+
     val snippetsByDocument = remember(searchHits) {
         searchHits.mapNotNull { hit -> hit.snippet?.let { hit.document.id to it } }.toMap()
     }
 
-    val activeDocs = remember(documents, searchHits, searchQuery, selectedFolderId, sortOption) {
-        val inFolder = if (searchQuery.isBlank()) {
+    // Keyed on *whether* a query is active, not on the query text: while the user
+    // is typing, `searchHits` has not changed yet, so the list must stay exactly
+    // as it was rather than being re-filtered and re-sorted for every character.
+    val activeDocs = remember(documents, searchHits, queryActive, selectedFolderId, sortOption) {
+        val inFolder = if (!queryActive) {
             documents.filterNot { it.isTrash }
         } else {
             // Relevance order is the point of a search; the sort control does not
@@ -201,7 +247,7 @@ fun DashboardScreen(
         inFolder
             .filter { doc -> selectedFolderId == null || doc.folderId == selectedFolderId }
             .let { docs ->
-                if (searchQuery.isNotBlank()) {
+                if (queryActive) {
                     docs
                 } else {
                     docs.sortedWith { a, b ->
@@ -216,6 +262,21 @@ fun DashboardScreen(
                 }
             }
     }
+
+    // One formatted label per document per library change, instead of one per
+    // card per frame: `SimpleDateFormat.format` allocates a String and a Date on
+    // every call, and a fling asks for a dozen cards a second.
+    val dateLabels = remember(documents) {
+        val short = SimpleDateFormat("MMM d", Locale.getDefault())
+        val long = SimpleDateFormat("MMM d, yyyy · h:mm a", Locale.getDefault())
+        documents.associate { doc ->
+            val date = Date(doc.modifiedDate)
+            doc.id to DateLabels(short.format(date), long.format(date))
+        }
+    }
+
+    val gridState = rememberLazyGridState()
+    val listState = rememberLazyListState()
 
     val trashCount = remember(documents) { documents.count { it.isTrash } }
     val pageCount = remember(activeDocs) { activeDocs.sumOf { it.pages.size } }
@@ -347,13 +408,21 @@ fun DashboardScreen(
             Spacer(Modifier.height(12.dp))
 
             when {
-                activeDocs.isEmpty() -> EmptyStateView(
-                    isSearch = searchQuery.isNotBlank(),
-                    onStartScan = startScan
-                )
+                activeDocs.isEmpty() -> {
+                    // A search that has not answered yet has nothing to report.
+                    // Showing "Nothing matches" for the two frames between the
+                    // keystroke and the ranked result reads as a glitch.
+                    if (!isSearching) {
+                        EmptyStateView(
+                            isSearch = searchQuery.isNotBlank(),
+                            onStartScan = startScan
+                        )
+                    }
+                }
 
                 isGridView -> LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
+                    state = gridState,
                     contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 108.dp),
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -373,6 +442,7 @@ fun DashboardScreen(
                         // item that appears, so the list never settles.
                         DocumentGridCard(
                             document = doc,
+                            dateLabel = dateLabels[doc.id]?.short.orEmpty(),
                             snippet = snippetsByDocument[doc.id],
                             onClick = { onNavigateToDetail(doc.id) },
                             onDelete = { repository.moveToTrash(doc.id) },
@@ -382,6 +452,7 @@ fun DashboardScreen(
                 }
 
                 else -> LazyColumn(
+                    state = listState,
                     contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 108.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxSize()
@@ -393,6 +464,7 @@ fun DashboardScreen(
                     ) { doc ->
                         DocumentListCard(
                             document = doc,
+                            dateLabel = dateLabels[doc.id]?.long.orEmpty(),
                             snippet = snippetsByDocument[doc.id],
                             onClick = { onNavigateToDetail(doc.id) },
                             onDelete = { repository.moveToTrash(doc.id) },
@@ -427,6 +499,19 @@ fun DashboardScreen(
         )
     }
 }
+
+/** Pre-formatted dates for one document, built once per library change. */
+private data class DateLabels(val short: String, val long: String)
+
+/**
+ * How long typing has to pause before a query is ranked.
+ *
+ * Long enough to skip the prefixes of a word the user is still typing, short
+ * enough that the result list feels like it is following the keyboard. At 120 ms
+ * a normal typist never sees a stale list, and a slow search never runs twice for
+ * one word.
+ */
+private const val SEARCH_DEBOUNCE_MS = 120L
 
 /** The one action the whole app is for, sized and shaped to be unmissable. */
 @Composable
@@ -463,6 +548,17 @@ fun SearchBarField(
     onQueryChange: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val scheme = MaterialTheme.colorScheme
+    val fieldColors = remember(scheme) {
+        TextFieldDefaults.colors(
+            focusedContainerColor = scheme.surfaceContainerHigh,
+            unfocusedContainerColor = scheme.surfaceContainerHigh,
+            focusedIndicatorColor = Color.Transparent,
+            unfocusedIndicatorColor = Color.Transparent,
+            disabledIndicatorColor = Color.Transparent,
+            errorIndicatorColor = Color.Transparent
+        )
+    }
     TextField(
         value = query,
         onValueChange = onQueryChange,
@@ -491,14 +587,10 @@ fun SearchBarField(
         textStyle = MaterialTheme.typography.bodyMedium,
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
         keyboardActions = KeyboardActions(onSearch = {}),
-        colors = TextFieldDefaults.colors(
-            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-            focusedIndicatorColor = Color.Transparent,
-            unfocusedIndicatorColor = Color.Transparent,
-            disabledIndicatorColor = Color.Transparent,
-            errorIndicatorColor = Color.Transparent
-        ),
+        // Remembered: the search field recomposes on every keystroke, and building
+        // a fresh `TextFieldColors` each time is an allocation per character for
+        // a value that only changes with the theme.
+        colors = fieldColors,
         modifier = modifier.height(54.dp)
     )
 }
@@ -620,13 +712,13 @@ private fun FolderPill(
 @Composable
 fun DocumentGridCard(
     document: Document,
+    dateLabel: String,
     onClick: () -> Unit,
     onDelete: () -> Unit,
     onMoveToFolder: () -> Unit,
     snippet: String? = null
 ) {
     var showMenu by remember { mutableStateOf(false) }
-    val dateFormat = remember { SimpleDateFormat("MMM d", Locale.getDefault()) }
     val interactions = remember { MutableInteractionSource() }
 
     Surface(
@@ -648,11 +740,14 @@ fun DocumentGridCard(
             ) {
                 val cover = document.pages.firstOrNull()
                 if (cover != null) {
+                    // 440 px covers a two-column grid cell on a 1440 px-wide
+                    // display at 3x without upscaling the bitmap; asking for less
+                    // is what made covers look soft on large phones.
                     PageThumbnail(
                         page = cover,
                         modifier = Modifier.fillMaxSize(),
-                        reqWidth = 360,
-                        reqHeight = 460,
+                        reqWidth = 440,
+                        reqHeight = 560,
                         fallbackIconSize = 44.dp
                     )
                 } else {
@@ -695,7 +790,7 @@ fun DocumentGridCard(
                 Spacer(Modifier.height(3.dp))
                 if (snippet == null) {
                     Text(
-                        dateFormat.format(Date(document.modifiedDate)),
+                        dateLabel,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1
@@ -720,13 +815,13 @@ fun DocumentGridCard(
 @Composable
 fun DocumentListCard(
     document: Document,
+    dateLabel: String,
     onClick: () -> Unit,
     onDelete: () -> Unit,
     onMoveToFolder: () -> Unit,
     snippet: String? = null
 ) {
     var showMenu by remember { mutableStateOf(false) }
-    val dateFormat = remember { SimpleDateFormat("MMM d, yyyy · h:mm a", Locale.getDefault()) }
     val interactions = remember { MutableInteractionSource() }
 
     Surface(
@@ -782,7 +877,7 @@ fun DocumentListCard(
                 Spacer(Modifier.height(4.dp))
                 Text(
                     "${document.pages.size} ${if (document.pages.size == 1) "page" else "pages"} · " +
-                        dateFormat.format(Date(document.modifiedDate)),
+                        dateLabel,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,

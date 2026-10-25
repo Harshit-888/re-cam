@@ -3,6 +3,7 @@ package com.example.docscanner.ui.camera
 import android.Manifest
 import android.media.MediaActionSound
 import android.content.pm.PackageManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,14 +17,23 @@ import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.background
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.material3.ripple
@@ -31,6 +41,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import com.example.docscanner.theme.DocShapes
 import com.example.docscanner.theme.LocalDocAccents
+import com.example.docscanner.theme.Motion
 import com.example.docscanner.theme.pressScale
 import com.example.docscanner.ui.common.PageThumbnail
 import com.example.docscanner.ui.common.PillButton
@@ -49,25 +60,24 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.BurstMode
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Filter1
 import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
-import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.outlined.PhotoLibrary
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -81,10 +91,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.viewinterop.AndroidView
@@ -95,6 +111,7 @@ import com.example.docscanner.util.DocumentNaming
 import com.example.docscanner.util.GalleryExporter
 import com.example.docscanner.util.ImageStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -136,7 +153,10 @@ fun ScannerCameraScreen(
     var isBatchMode by remember { mutableStateOf(true) }
     var flashMode by remember { mutableStateOf(FlashMode.AUTO) }
     var isCapturing by remember { mutableStateOf(false) }
+    // Transient, auto-dismissing feedback ("saved, gallery copy failed").
     var statusMessage by remember { mutableStateOf<String?>(null) }
+    // A failure that will not fix itself by waiting: camera bind error.
+    var cameraError by remember { mutableStateOf<String?>(null) }
 
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -215,7 +235,7 @@ fun ScannerCameraScreen(
                         imageCapture = capture
                         boundCamera = camera
                     } catch (t: Throwable) {
-                        statusMessage = "Camera unavailable: ${t.message ?: "unknown error"}"
+                        cameraError = t.message ?: "unknown error"
                     }
                 },
                 executor
@@ -326,6 +346,40 @@ fun ScannerCameraScreen(
         onFinishScan(docId)
     }
 
+    // ---- capture feedback --------------------------------------------------
+    // The shutter has to answer *before* the file exists: a capture takes a few
+    // hundred milliseconds to write, and a button that does nothing for that long
+    // reads as broken. Three cues cost almost nothing and are honest about what
+    // has happened — the image is in the session list, not yet on disk.
+    val haptics = LocalHapticFeedback.current
+    val flashAlpha = remember { Animatable(0f) }
+    val galleryBump = remember { Animatable(1f) }
+    LaunchedEffect(capturedPages.size) {
+        // A page just landed: the gallery tile takes it with a small spring, so
+        // the newest page announces itself without a toast.
+        if (capturedPages.isEmpty()) return@LaunchedEffect
+        galleryBump.snapTo(0.84f)
+        galleryBump.animateTo(1f, Motion.bouncy)
+    }
+
+    // One line of coaching on the way in. There is deliberately no guide frame
+    // drawn over the preview (see the note in the layout below), so this says the
+    // same thing once, then gets out of the way for good.
+    var showHint by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        delay(HINT_MS)
+        showHint = false
+    }
+
+    // Transient messages retire themselves. A snackbar that has to be dismissed
+    // is a dialog in disguise.
+    LaunchedEffect(statusMessage) {
+        if (statusMessage != null) {
+            delay(STATUS_MS)
+            statusMessage = null
+        }
+    }
+
     // ---- shutter ----------------------------------------------------------
     fun capturePage() {
         val capture = imageCapture ?: run {
@@ -335,6 +389,13 @@ fun ScannerCameraScreen(
         if (isCapturing) return
         isCapturing = true
         statusMessage = null
+
+        // Fires on the press, not on the save: the point is to confirm the press.
+        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        scope.launch {
+            flashAlpha.snapTo(FLASH_PEAK_ALPHA)
+            flashAlpha.animateTo(0f, tween(durationMillis = FLASH_MS, easing = LinearEasing))
+        }
 
         // Settings → Scan → Shutter sound. Many devices play their own click that
         // an app cannot suppress; this only adds ours when the row is on.
@@ -406,6 +467,17 @@ fun ScannerCameraScreen(
         )
     }
 
+    // ---- leaving with unsaved pages ---------------------------------------
+    var showDiscardDialog by remember { mutableStateOf(false) }
+    fun requestClose() {
+        if (capturedPages.isEmpty()) onClose() else showDiscardDialog = true
+    }
+    // System back follows the same rule as the close button. While the discard
+    // dialog is up it closes the dialog instead, which is what back should do.
+    BackHandler {
+        if (showDiscardDialog) showDiscardDialog = false else requestClose()
+    }
+
     // ---- UI ---------------------------------------------------------------
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
@@ -434,53 +506,80 @@ fun ScannerCameraScreen(
                     modifier = Modifier.fillMaxSize()
                 )
             }
+
+            // No guide frame over the preview, deliberately.
+            //
+            // The old overlay drew a dark window with a pulsing dashed border. It
+            // was decorative only (never part of the captured JPEG), and it hurt
+            // document detection: it taught users to fill the frame right past the
+            // paper edge, leaving no page boundary in the photo to find. The
+            // one-line hint below says the same thing without training the wrong
+            // composition.
+
+            // Scrims. The chrome sits over a white page far more often than over a
+            // dark desk, and white-on-white is unreadable. A soft gradient keeps
+            // the preview edge-to-edge *and* guarantees contrast where the controls
+            // live — a flat bar would cut the viewfinder in half.
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(190.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Black.copy(alpha = 0.62f), Color.Transparent)
+                        )
+                    )
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(280.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.80f))
+                        )
+                    )
+            )
+
+            // The frame the user pressed for, held for a fifth of a second.
+            // Cameras have done this since film because it is the only
+            // confirmation that can arrive before the file does. Driven through
+            // `graphicsLayer` so the animation never re-enters composition.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = flashAlpha.value }
+                    .background(Color.White)
+            )
         }
 
-        // No scrim and no guide frame: what the user frames is what gets
-        // captured, so there is nothing to line up against.
-        //
-        // The old overlay drew a dark window with a pulsing dashed border. It was
-        // decorative only (never part of the captured JPEG), and it actively hurt
-        // document detection: it taught users to fill the frame right past the
-        // paper edge, so there was no page boundary left in the photo for
-        // DocumentDetector to find.
-
-        // ---- chrome -----------------------------------------------------------
-        // Everything over the preview is "glass": translucent, high-contrast in
-        // both themes, and never white-on-white against a bright page.
+        // ---- top chrome -------------------------------------------------------
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             GlassButton(
                 icon = Icons.Default.Close,
                 contentDescription = "Close camera",
-                onClick = onClose
+                onClick = { requestClose() }
+            )
+
+            // Equal weights either side of the toggle put it on the true centre
+            // line, where a mode control belongs.
+            Spacer(Modifier.weight(1f))
+
+            ModeToggle(
+                isBatch = isBatchMode,
+                onChange = { isBatchMode = it }
             )
 
             Spacer(Modifier.weight(1f))
-
-            GlassPill(
-                onClick = { isBatchMode = !isBatchMode },
-                highlight = isBatchMode
-            ) {
-                Icon(
-                    if (isBatchMode) Icons.Default.BurstMode else Icons.Default.Filter1,
-                    contentDescription = null,
-                    tint = if (isBatchMode) accents.scan else Color.White,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    if (isBatchMode) "Batch" else "Single",
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelLarge
-                )
-            }
 
             GlassButton(
                 icon = when (flashMode) {
@@ -488,7 +587,11 @@ fun ScannerCameraScreen(
                     FlashMode.OFF -> Icons.Default.FlashOff
                     FlashMode.AUTO -> Icons.Default.FlashAuto
                 },
-                contentDescription = "Flash mode",
+                contentDescription = when (flashMode) {
+                    FlashMode.ON -> "Flash on"
+                    FlashMode.OFF -> "Flash off"
+                    FlashMode.AUTO -> "Flash auto"
+                },
                 tint = if (flashMode == FlashMode.ON) accents.scan else Color.White,
                 onClick = {
                     flashMode = when (flashMode) {
@@ -500,155 +603,312 @@ fun ScannerCameraScreen(
             )
         }
 
-        // Live count, right under the chrome — the one number the user needs while
-        // shooting a stack of pages.
-        AnimatedVisibility(
-            visible = capturedPages.isNotEmpty(),
-            enter = fadeIn() + slideInVertically { -it / 2 },
-            exit = fadeOut() + slideOutVertically { -it / 2 },
+        // ---- page counter / first-run hint ------------------------------------
+        // One slot, one message: the counter appears only once a page exists, by
+        // which time the hint has already retired, so the two never collide.
+        Box(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(top = 64.dp)
+                .padding(top = 62.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Surface(
-                shape = DocShapes.pill,
-                color = accents.scan,
-                contentColor = accents.onScan,
-                shadowElevation = 8.dp
+            AnimatedVisibility(
+                visible = capturedPages.isNotEmpty(),
+                enter = fadeIn() + scaleIn(initialScale = 0.85f),
+                exit = fadeOut() + scaleOut(targetScale = 0.85f)
             ) {
-                Text(
-                    text = "${capturedPages.size} ${if (capturedPages.size == 1) "page" else "pages"}",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                )
-            }
-        }
-
-        if (!hasCameraPermission || statusMessage != null) {
-            Surface(
-                shape = DocShapes.cardSmall,
-                color = Color.Black.copy(alpha = 0.78f),
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(32.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                Surface(
+                    shape = DocShapes.pill,
+                    color = accents.scan,
+                    contentColor = accents.onScan,
+                    shadowElevation = 8.dp
                 ) {
                     Text(
-                        text = statusMessage
-                            ?: "Camera permission is required to scan documents.",
-                        color = Color.White,
-                        style = MaterialTheme.typography.bodyMedium
+                        text = "${capturedPages.size} ${if (capturedPages.size == 1) "page" else "pages"} scanned",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                     )
-                    if (!hasCameraPermission) {
-                        Spacer(Modifier.height(14.dp))
-                        PillButton(
-                            text = "Grant permission",
-                            container = accents.scan,
-                            content = accents.onScan,
-                            onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }
-                        )
-                    }
+                }
+            }
+
+            AnimatedVisibility(
+                visible = showHint && capturedPages.isEmpty() && hasCameraPermission,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                Surface(
+                    shape = DocShapes.pill,
+                    color = Color.Black.copy(alpha = 0.45f),
+                    contentColor = Color.White
+                ) {
+                    Text(
+                        text = "Fill the frame with the page",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                    )
                 }
             }
         }
 
-        // ---- bottom controls --------------------------------------------------
-        Column(
+        // ---- transient message ------------------------------------------------
+        var lastStatus by remember { mutableStateOf("") }
+        LaunchedEffect(statusMessage) { statusMessage?.let { lastStatus = it } }
+        AnimatedVisibility(
+            visible = statusMessage != null,
+            enter = fadeIn() + slideInVertically { it / 2 },
+            exit = fadeOut() + slideOutVertically { it / 2 },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(bottom = 22.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .padding(start = 28.dp, end = 28.dp, bottom = 214.dp)
         ) {
-            // Zoom: pinch on the preview, or use these for discoverability and
-            // precision. Only shown when the device actually supports zoom.
-            AnimatedVisibility(visible = maxZoomRatio > 1.01f) {
-                Surface(
-                    shape = DocShapes.pill,
-                    color = Color.Black.copy(alpha = 0.55f),
-                    modifier = Modifier.padding(bottom = 16.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+            Surface(
+                shape = DocShapes.pill,
+                color = Color.Black.copy(alpha = 0.86f),
+                contentColor = Color.White,
+                shadowElevation = 6.dp
+            ) {
+                Text(
+                    text = lastStatus,
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                )
+            }
+        }
+
+        // ---- permission / error states ---------------------------------------
+        if (!hasCameraPermission) {
+            CameraPermissionCard(
+                onRequestPermission = { permissionLauncher.launch(Manifest.permission.CAMERA) },
+                onImport = {
+                    photoPickerLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                },
+                modifier = Modifier.align(Alignment.Center)
+            )
+        } else if (cameraError != null) {
+            CameraErrorCard(
+                message = cameraError ?: "",
+                onImport = {
+                    photoPickerLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                },
+                onClose = onClose,
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+
+        // ---- bottom controls --------------------------------------------------
+        if (hasCameraPermission && cameraError == null) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 18.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Zoom stops, Google-Camera style: discrete, tappable, and honest
+                // about what the sensor can do. Pinch still works on the preview.
+                val stops = remember(maxZoomRatio) { zoomStops(maxZoomRatio) }
+                AnimatedVisibility(visible = stops.size > 1) {
+                    Surface(
+                        shape = DocShapes.pill,
+                        color = Color.Black.copy(alpha = 0.48f),
+                        modifier = Modifier.padding(bottom = 20.dp)
                     ) {
-                        ZoomIcon(
-                            icon = Icons.Default.Remove,
-                            description = "Zoom out",
-                            enabled = zoomRatio > 1.001f,
-                            onClick = { zoomRatio = (zoomRatio - ZOOM_STEP).coerceAtLeast(1f) }
-                        )
-                        Surface(
-                            shape = DocShapes.pill,
-                            color = if (zoomRatio > 1.001f) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                Color.White.copy(alpha = 0.12f)
-                            },
-                            modifier = Modifier
-                                .padding(horizontal = 2.dp)
-                                .clickable { zoomRatio = 1f }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(3.dp)
                         ) {
-                            Text(
-                                text = String.format(Locale.US, "%.1f×", zoomRatio),
-                                color = if (zoomRatio > 1.001f) {
-                                    MaterialTheme.colorScheme.onPrimary
-                                } else {
-                                    Color.White
-                                },
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
-                            )
-                        }
-                        ZoomIcon(
-                            icon = Icons.Default.Add,
-                            description = "Zoom in",
-                            enabled = zoomRatio < maxZoomRatio - 0.001f,
-                            onClick = {
-                                zoomRatio = (zoomRatio + ZOOM_STEP).coerceAtMost(maxZoomRatio)
+                            stops.forEach { stop ->
+                                ZoomStopChip(
+                                    label = zoomLabel(stop),
+                                    selected = kotlin.math.abs(zoomRatio - stop) < ZOOM_SELECTED_EPSILON,
+                                    onClick = {
+                                        zoomRatio = stop.coerceIn(minZoomRatio, maxZoomRatio)
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    }
+                                )
                             }
-                        )
+                        }
                     }
                 }
-            }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 26.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Gallery: the last capture when there is one, otherwise the import
-                // affordance. Tapping either opens the picker.
-                GalleryTarget(
-                    lastPage = capturedPages.lastOrNull(),
-                    onClick = {
-                        photoPickerLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                        )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 26.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Gallery: the last page captured once there is one, otherwise
+                    // the import affordance. Tapping either opens the picker, so a
+                    // mis-tap costs the user a picker, never their scan.
+                    GalleryTarget(
+                        lastPage = capturedPages.lastOrNull(),
+                        count = capturedPages.size,
+                        scale = galleryBump.value,
+                        onClick = {
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        }
+                    )
+
+                    ShutterButton(
+                        isCapturing = isCapturing,
+                        enabled = hasCameraPermission,
+                        onClick = { capturePage() }
+                    )
+
+                    // The right slot mirrors the gallery tile's footprint, which is
+                    // what keeps the shutter on the exact centre line. A wide
+                    // labelled button here would visibly shove it left.
+                    if (capturedPages.isNotEmpty()) {
+                        FinishButton(onClick = { commitScan() })
+                    } else {
+                        Spacer(Modifier.size(54.dp))
                     }
-                )
-
-                ShutterButton(
-                    isCapturing = isCapturing,
-                    enabled = hasCameraPermission,
-                    onClick = { capturePage() }
-                )
-
-                if (capturedPages.isNotEmpty()) {
-                    DoneButton(count = capturedPages.size, onClick = { commitScan() })
-                } else {
-                    Spacer(Modifier.size(64.dp))
                 }
             }
         }
+
+        // ---- discard confirmation --------------------------------------------
+        if (showDiscardDialog) {
+            AlertDialog(
+                onDismissRequest = { showDiscardDialog = false },
+                shape = DocShapes.dialog,
+                title = { Text("Discard this scan?") },
+                text = {
+                    Text(
+                        "${capturedPages.size} " +
+                            (if (capturedPages.size == 1) "page has" else "pages have") +
+                            " not been added to your library yet."
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showDiscardDialog = false
+                        onClose()
+                    }) {
+                        Text("Discard", color = MaterialTheme.colorScheme.error)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDiscardDialog = false }) {
+                        Text("Keep scanning")
+                    }
+                }
+            )
+        }
+    }
+}
+
+/**
+ * Batch / single segmented control.
+ *
+ * Two states that change what the shutter does, so they are shown as one control
+ * with a moving selection rather than as a button that cycles: a cycle makes the
+ * user read the label every time to know what the next tap will do.
+ */
+@Composable
+private fun ModeToggle(isBatch: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .height(40.dp)
+            .clip(DocShapes.pill)
+            .background(Color.Black.copy(alpha = 0.44f))
+            .padding(3.dp)
+    ) {
+        ModeSegment(
+            label = "Single",
+            selected = !isBatch,
+            onClick = { onChange(false) }
+        )
+        ModeSegment(
+            label = "Batch",
+            selected = isBatch,
+            onClick = { onChange(true) }
+        )
+    }
+}
+
+@Composable
+private fun ModeSegment(label: String, selected: Boolean, onClick: () -> Unit) {
+    val interactions = remember { MutableInteractionSource() }
+    val container by animateColorAsState(
+        targetValue = if (selected) Color.White.copy(alpha = 0.94f) else Color.Transparent,
+        animationSpec = tween(durationMillis = 180),
+        label = "modeSegmentContainer"
+    )
+    val content by animateColorAsState(
+        targetValue = if (selected) Color.Black else Color.White.copy(alpha = 0.82f),
+        animationSpec = tween(durationMillis = 180),
+        label = "modeSegmentContent"
+    )
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .height(34.dp)
+            .clip(DocShapes.pill)
+            .background(container)
+            .clickable(
+                interactionSource = interactions,
+                indication = ripple(),
+                role = Role.RadioButton,
+                onClick = onClick
+            )
+            .padding(horizontal = 13.dp)
+    ) {
+        Text(
+            text = label,
+            color = content,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+        )
+    }
+}
+
+/** One tap target per zoom stop. Selected state is a filled accent, not a tint. */
+@Composable
+private fun ZoomStopChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    val accents = LocalDocAccents.current
+    val interactions = remember { MutableInteractionSource() }
+    val container by animateColorAsState(
+        targetValue = if (selected) accents.scan else Color.Transparent,
+        animationSpec = tween(durationMillis = 200),
+        label = "zoomChipContainer"
+    )
+    val content by animateColorAsState(
+        targetValue = if (selected) accents.onScan else Color.White.copy(alpha = 0.88f),
+        animationSpec = tween(durationMillis = 200),
+        label = "zoomChipContent"
+    )
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(width = 46.dp, height = 44.dp)
+            .clip(DocShapes.pill)
+            .background(container)
+            .clickable(
+                interactionSource = interactions,
+                indication = ripple(),
+                role = Role.RadioButton,
+                onClick = onClick
+            )
+    ) {
+        Text(
+            text = label,
+            color = content,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+        )
     }
 }
 
@@ -665,70 +925,30 @@ private fun GlassButton(
         shape = CircleShape,
         color = Color.Black.copy(alpha = 0.42f),
         modifier = Modifier
-            .size(44.dp)
+            .size(46.dp)
             .pressScale(interactions)
             .clip(CircleShape)
             .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = contentDescription, tint = tint, modifier = Modifier.size(20.dp))
+            Icon(
+                icon,
+                contentDescription = contentDescription,
+                tint = tint,
+                modifier = Modifier.size(20.dp)
+            )
         }
-    }
-}
-
-@Composable
-private fun GlassPill(
-    onClick: () -> Unit,
-    highlight: Boolean,
-    content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit
-) {
-    val interactions = remember { MutableInteractionSource() }
-    Surface(
-        shape = DocShapes.pill,
-        color = if (highlight) Color.Black.copy(alpha = 0.55f) else Color.Black.copy(alpha = 0.38f),
-        modifier = Modifier
-            .height(40.dp)
-            .pressScale(interactions, pressedScale = 0.94f)
-            .clip(DocShapes.pill)
-            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 14.dp),
-            content = content
-        )
-    }
-}
-
-@Composable
-private fun ZoomIcon(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    description: String,
-    enabled: Boolean,
-    onClick: () -> Unit
-) {
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(36.dp)
-            .clip(DocShapes.pill)
-            .clickable(enabled = enabled, onClick = onClick)
-    ) {
-        Icon(
-            icon,
-            contentDescription = description,
-            tint = Color.White.copy(alpha = if (enabled) 1f else 0.35f),
-            modifier = Modifier.size(18.dp)
-        )
     }
 }
 
 /**
  * The capture button.
  *
- * Two rings with the accent colour between them: the outer ring is the target,
- * the inner disc is the press. It compresses under the finger with a spring, which
- * is the cheapest way to make a shutter feel mechanical rather than like a button.
+ * A white ring, a gap that shows the preview through it, and a white disc: the
+ * shape every phone camera has used for fifteen years, because it reads as a
+ * physical shutter instead of a button. It compresses under the finger, and while
+ * a capture is in flight the ring sweeps amber — that is the one moment the user
+ * needs to know the app heard them and is working.
  */
 @Composable
 private fun ShutterButton(
@@ -736,121 +956,345 @@ private fun ShutterButton(
     enabled: Boolean,
     onClick: () -> Unit
 ) {
-    val accents = LocalDocAccents.current
     val interactions = remember { MutableInteractionSource() }
     val pressed by interactions.collectIsPressedAsState()
     val innerScale by animateFloatAsState(
         targetValue = when {
-            isCapturing -> 0.72f
-            pressed -> 0.86f
+            isCapturing -> 0.84f
+            pressed -> 0.88f
             else -> 1f
         },
         animationSpec = spring(dampingRatio = 0.55f, stiffness = 700f),
         label = "shutterInner"
+    )
+    val ringAlpha by animateFloatAsState(
+        targetValue = if (enabled) 1f else 0.35f,
+        label = "shutterEnabled"
     )
 
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
             .size(84.dp)
+            .graphicsLayer { alpha = ringAlpha }
             .clip(CircleShape)
             .clickable(
                 interactionSource = interactions,
                 indication = null,
                 enabled = enabled && !isCapturing,
+                onClickLabel = "Capture page",
+                role = Role.Button,
                 onClick = onClick
             )
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val ring = 3.5.dp.toPx()
-            drawCircle(color = Color.White.copy(alpha = 0.92f), radius = size.minDimension / 2f - ring / 2f, style = Stroke(ring))
+            val stroke = 3.dp.toPx()
             drawCircle(
-                color = accents.scan,
-                radius = size.minDimension / 2f - ring * 2.6f,
-                style = Stroke(ring * 1.6f)
+                color = Color.White.copy(alpha = 0.38f),
+                radius = size.minDimension / 2f - stroke / 2f,
+                style = Stroke(width = stroke)
             )
         }
+
+        if (isCapturing) {
+            SpinningRing(modifier = Modifier.fillMaxSize())
+        }
+
         Box(
             modifier = Modifier
-                .size(60.dp)
+                .size(62.dp)
                 .graphicsLayer {
                     scaleX = innerScale
                     scaleY = innerScale
                 }
                 .clip(CircleShape)
-                .background(Color.White),
-            contentAlignment = Alignment.Center
-        ) {
-            if (isCapturing) {
-                androidx.compose.material3.CircularProgressIndicator(
-                    color = Color.Black,
-                    strokeWidth = 2.5.dp,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        }
+                .background(Color.White)
+        )
+    }
+}
+
+/** Amber arc sweeping the shutter ring while a capture is being written. */
+@Composable
+private fun SpinningRing(modifier: Modifier = Modifier) {
+    val accents = LocalDocAccents.current
+    val transition = rememberInfiniteTransition(label = "shutterSpin")
+    val angle by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900, easing = LinearEasing)
+        ),
+        label = "shutterSpinAngle"
+    )
+    Canvas(modifier = modifier) {
+        val stroke = 3.5.dp.toPx()
+        drawArc(
+            color = accents.scan,
+            startAngle = angle,
+            sweepAngle = 96f,
+            useCenter = false,
+            topLeft = androidx.compose.ui.geometry.Offset(stroke / 2f, stroke / 2f),
+            size = androidx.compose.ui.geometry.Size(
+                size.width - stroke,
+                size.height - stroke
+            ),
+            style = Stroke(width = stroke, cap = StrokeCap.Round)
+        )
     }
 }
 
 /** Left-hand target: the last page captured, or the photo library. */
 @Composable
-private fun GalleryTarget(lastPage: ScannedPage?, onClick: () -> Unit) {
+private fun GalleryTarget(
+    lastPage: ScannedPage?,
+    count: Int,
+    scale: Float,
+    onClick: () -> Unit
+) {
+    val accents = LocalDocAccents.current
     val interactions = remember { MutableInteractionSource() }
-    Surface(
-        shape = DocShapes.thumbnail,
-        color = Color.Black.copy(alpha = 0.42f),
-        modifier = Modifier
-            .size(52.dp)
-            .pressScale(interactions)
-            .clip(DocShapes.thumbnail)
-            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
+    BadgedBox(
+        badge = {
+            if (count > 0) {
+                Badge(
+                    containerColor = accents.scan,
+                    contentColor = accents.onScan
+                ) {
+                    Text("$count")
+                }
+            }
+        },
+        modifier = Modifier.graphicsLayer {
+            scaleX = scale
+            scaleY = scale
+        }
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            if (lastPage != null) {
-                PageThumbnail(
-                    page = lastPage,
-                    reqWidth = 160,
-                    reqHeight = 200,
-                    modifier = Modifier.fillMaxSize()
+        Surface(
+            shape = DocShapes.thumbnail,
+            color = Color.Black.copy(alpha = 0.42f),
+            modifier = Modifier
+                .size(54.dp)
+                .pressScale(interactions)
+                .clip(DocShapes.thumbnail)
+                .clickable(
+                    interactionSource = interactions,
+                    indication = ripple(),
+                    onClickLabel = "Choose from gallery",
+                    onClick = onClick
                 )
-            } else {
-                Icon(
-                    Icons.Outlined.PhotoLibrary,
-                    contentDescription = "Import from gallery",
-                    tint = Color.White,
-                    modifier = Modifier.size(24.dp)
-                )
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                if (lastPage != null) {
+                    PageThumbnail(
+                        page = lastPage,
+                        reqWidth = 180,
+                        reqHeight = 220,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Icon(
+                        Icons.Outlined.PhotoLibrary,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
             }
         }
     }
 }
 
-/** Finish the capture set and move on to the border pass. */
+/**
+ * Finish the capture set and move on to the border pass.
+ *
+ * A filled accent circle the same size as the gallery tile, so the bottom row is
+ * symmetrical and the shutter stays dead centre. The count it used to carry now
+ * lives in two clearer places: the badge on the tile and the counter under the
+ * chrome.
+ */
 @Composable
-private fun DoneButton(count: Int, onClick: () -> Unit) {
+private fun FinishButton(onClick: () -> Unit) {
     val accents = LocalDocAccents.current
     val interactions = remember { MutableInteractionSource() }
     Surface(
-        shape = DocShapes.pill,
+        shape = CircleShape,
         color = accents.scan,
         contentColor = accents.onScan,
-        shadowElevation = 8.dp,
+        shadowElevation = 6.dp,
         modifier = Modifier
-            .height(48.dp)
-            .pressScale(interactions, pressedScale = 0.94f)
-            .clip(DocShapes.pill)
-            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
+            .size(54.dp)
+            .pressScale(interactions, pressedScale = 0.92f)
+            .clip(CircleShape)
+            .clickable(
+                interactionSource = interactions,
+                indication = ripple(),
+                onClickLabel = "Finish scan",
+                onClick = onClick
+            )
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 16.dp)
-        ) {
-            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(6.dp))
-            Text("Done ($count)", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                Icons.Default.Check,
+                contentDescription = "Finish scan",
+                modifier = Modifier.size(24.dp)
+            )
         }
     }
 }
 
-/** Zoom increment for the +/- buttons, in camera zoom-ratio units. */
-private const val ZOOM_STEP = 0.5f
+/**
+ * What the screen shows instead of a black rectangle when there is no camera to
+ * look through: why it needs one, how to grant it, and a way to keep working
+ * without it.
+ */
+@Composable
+private fun CameraPermissionCard(
+    onRequestPermission: () -> Unit,
+    onImport: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val accents = LocalDocAccents.current
+    Column(
+        modifier = modifier.padding(horizontal = 36.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = accents.scan.copy(alpha = 0.16f),
+            modifier = Modifier.size(84.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Default.PhotoCamera,
+                    contentDescription = null,
+                    tint = accents.scan,
+                    modifier = Modifier.size(36.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(22.dp))
+        Text(
+            "Camera access needed",
+            style = MaterialTheme.typography.headlineSmall,
+            color = Color.White,
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Doc Scanner uses the camera only to photograph pages. You can also " +
+                "import photos you have already taken.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.White.copy(alpha = 0.72f),
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(24.dp))
+        PillButton(
+            text = "Allow camera",
+            icon = Icons.Default.PhotoCamera,
+            container = accents.scan,
+            content = accents.onScan,
+            onClick = onRequestPermission
+        )
+        Spacer(Modifier.height(12.dp))
+        PillButton(
+            text = "Import photos",
+            icon = Icons.Outlined.PhotoLibrary,
+            container = Color.White.copy(alpha = 0.14f),
+            content = Color.White,
+            onClick = onImport
+        )
+    }
+}
+
+/** A camera that will not open is a dead end unless the user can still get in. */
+@Composable
+private fun CameraErrorCard(
+    message: String,
+    onImport: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier.padding(horizontal = 36.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = Color.White.copy(alpha = 0.10f),
+            modifier = Modifier.size(72.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Default.PhotoCamera,
+                    contentDescription = null,
+                    tint = Color.White.copy(alpha = 0.8f),
+                    modifier = Modifier.size(30.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+        Text(
+            "Camera unavailable",
+            style = MaterialTheme.typography.titleLarge,
+            color = Color.White,
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            message,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color.White.copy(alpha = 0.66f),
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(22.dp))
+        PillButton(
+            text = "Import photos instead",
+            icon = Icons.Outlined.PhotoLibrary,
+            onClick = onImport
+        )
+        Spacer(Modifier.height(10.dp))
+        TextButton(onClick = onClose) {
+            Text("Close", color = Color.White.copy(alpha = 0.8f))
+        }
+    }
+}
+
+// ---- constants ------------------------------------------------------------
+
+/** How long the first-run hint stays before it retires for good. */
+private const val HINT_MS = 2800L
+
+/** How long a transient status message is shown before it dismisses itself. */
+private const val STATUS_MS = 4200L
+
+/** Peak white of the shutter flash, and how long it takes to clear. */
+private const val FLASH_PEAK_ALPHA = 0.80f
+private const val FLASH_MS = 260
+
+/** Zoom ratios closer than this to a stop count as that stop being selected. */
+private const val ZOOM_SELECTED_EPSILON = 0.06f
+
+/**
+ * The zoom stops worth offering: whole stops the sensor can reach, plus the
+ * sensor's own limit so nothing is unreachable.
+ */
+private fun zoomStops(maxZoom: Float): List<Float> {
+    if (maxZoom <= 1.15f) return emptyList()
+    val stops = ArrayList<Float>(4)
+    stops.add(1f)
+    listOf(2f, 5f, 10f).forEach { candidate ->
+        if (candidate < maxZoom - ZOOM_SELECTED_EPSILON) stops.add(candidate)
+    }
+    if (maxZoom > stops.last() + ZOOM_SELECTED_EPSILON) stops.add(maxZoom)
+    return stops
+}
+
+/** "2×" for whole stops, "3.7×" for a sensor limit that is not round. */
+private fun zoomLabel(ratio: Float): String {
+    val rounded = kotlin.math.round(ratio)
+    return if (kotlin.math.abs(ratio - rounded) < ZOOM_SELECTED_EPSILON) {
+        String.format(Locale.US, "%.0f\u00d7", ratio)
+    } else {
+        String.format(Locale.US, "%.1f\u00d7", ratio)
+    }
+}

@@ -4,6 +4,108 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (ad) — Arena.ai — Round 19: the library stops working per frame, the camera gets a designer
+
+**No new dependencies, no new files, no repository-layer signature changes.**
+
+### Why the home screen still felt slow
+
+Round 16 removed the collapsing app bar and the per-item entrance animations — the
+two things that were obviously re-running on every scroll frame. What it could not
+remove was the cost of a *recomposition*: the library's data classes were unstable,
+so nothing could be skipped, and the work inside a card was not free.
+
+- **`model/Models.kt` — `@Immutable` on `QuadCorners`, `ScannedPage`, `Document`,
+  `Folder`.** Compose inferred all four as *unstable*, because `List<ScannedPage>`
+  is an interface the compiler cannot prove immutable. An unstable parameter makes
+  a composable unskippable, so one keystroke in the search field recomposed every
+  visible card, and every list emission recomposed all of them. The promise is
+  true: every field is a `val` and the repository always replaces a document
+  (`doc.copy(pages = doc.pages + page)`) instead of mutating a list. **Do not add a
+  `var` or a mutable collection to these classes** — that would silently make the
+  promise a lie and bring the jank back.
+- **Dates are formatted once per library change**, into a `DateLabels` map, instead
+  of once per card per frame. `SimpleDateFormat.format` allocated a `String` and a
+  `Date` for every card the fling touched.
+- **`DocumentGridCard` / `DocumentListCard` now take `dateLabel: String`** instead
+  of reading `document.modifiedDate` themselves. Additive-but-required parameter:
+  update any new call site.
+- **Search no longer runs in composition.** `DocumentSearch.Index` is now built
+  *on demand* (first query of the session) and *off the main thread*
+  (`Dispatchers.Default`); the query itself is debounced by
+  `SEARCH_DEBOUNCE_MS = 120` and ranked on `Dispatchers.Default`. Previously the
+  index was rebuilt inside `remember(documents)` — on the frame thread — and the
+  one-time OCR backfill emits a library snapshot **per page**, so the home screen
+  re-tokenised the whole library up to 24 times at startup.
+- **`activeDocs` is keyed on `queryActive`, not on the query text**, so typing does
+  not re-filter and re-sort the library for every character.
+- **Grid and list scroll positions are remembered separately**
+  (`rememberLazyGridState` / `rememberLazyListState`), so toggling the layout no
+  longer throws the user back to the top.
+- **Cover thumbnails are requested at 440 × 560** (was 360 × 460): a two-column
+  card on a 1440 px display was being upscaled.
+
+### `util/PageImageLoader.kt`
+
+`load(...)` keeps its signature and its two caches; the internals changed:
+
+- The cache key (two `stat` calls) is computed on `Dispatchers.IO`. `load` is called
+  from `produceState`, i.e. on the main dispatcher, so metadata was previously read
+  on a background thread only by accident of the enclosing `withContext`.
+- **Single-flight** (`inFlight: ConcurrentHashMap<String, CompletableDeferred<…>>`).
+  A fling disposes and recomposes cards faster than a page decodes, so the same
+  page was frequently inflated twice at once. Waiters must *not* take a
+  `decodeDispatcher` slot while waiting — that limiter holds its permit for the
+  whole coroutine body, so two waiters would starve the decoder they wait for.
+- **`ensureActive()` before decoding.** An in-flight `BitmapFactory.decodeFile`
+  cannot be interrupted; the only useful moment to give up is before it starts,
+  otherwise cards that have already scrolled away keep both decode slots.
+- **`scaleToFit`**: `inSampleSize` only halves, so a 3200 px page asked for at
+  440 px decoded at 800 px — 1.9 MB cached per card instead of 0.9 MB, and a
+  texture the GPU re-uploads on every frame. The cached bitmap is now exactly the
+  requested box, and the on-disk thumbnail is written at that size too.
+
+### `ui/common/PageThumbnail.kt`
+
+Decoded pixels fade in over 180 ms instead of appearing in one frame. Same
+placeholder, same layout, no shimmer — the tile never changes size, so the reveal
+cannot cause a reflow.
+
+### `ui/camera/ScannerCameraScreen.kt` — chrome rebuilt
+
+All capture behaviour is untouched: same CameraX binding, 4:3 resolution strategy,
+flash/torch cycling, pinch zoom, gallery import, batch auto-commit, gallery
+auto-save, `indexTextInBackground` at commit. What changed is everything drawn on
+top of the preview:
+
+- Gradient scrims top and bottom instead of relying on the controls' own backing:
+  white chrome over a white page was the worst legibility case in the app.
+- **Batch / Single is a segmented control**, not a button that cycles — a cycle
+  makes the user read the label to know what the next tap does.
+- **Capture feedback that arrives on the press**, not on the save: a haptic tick, a
+  260 ms white frame flash (driven through `graphicsLayer`, so it never re-enters
+  composition) and a spring bump on the gallery tile as the page lands. While a
+  capture is in flight the shutter ring sweeps amber — previously the shutter
+  swapped its white disc for a spinner.
+- **Zoom is a row of discrete stops** (1×, 2×, 5×… plus the sensor's own limit),
+  Google-Camera style; pinch still works on the preview. The old `+`/`−` pair told
+  the user nothing about the range and cost two taps for a common action.
+- **Finish is a circular accent check** the same size as the gallery tile, which
+  keeps the shutter on the exact centre line; the page count moved to a badge on
+  the tile and to the counter pill under the chrome.
+- Camera-permission and camera-bind failures are now full cards with an
+  "Import photos" fallback instead of a black rectangle with one button.
+- `statusMessage` is a self-dismissing pill (`STATUS_MS = 4200`). **A camera bind
+  failure no longer goes through `statusMessage`** — it sets the new
+  `cameraError`, which stays up until the user leaves, because "try again later"
+  is not useful advice for a black viewfinder.
+- Leaving with unsaved pages asks first: `BackHandler` and the close button share
+  `requestClose()`, which raises a discard dialog when `capturedPages` is
+  non-empty. Back closes the dialog rather than the screen while it is up.
+- A one-line hint ("Fill the frame with the page") retires after `HINT_MS = 2800`.
+  The static guide frame stays deleted — this says the same thing without teaching
+  users to fill the frame past the paper edge.
+
 ## 2026-10-25 (ac) — Antigravity — Rounds 16, 17 & 18 build verification & memory tuning
 
 Verified Rounds 16, 17, and 18 locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`:

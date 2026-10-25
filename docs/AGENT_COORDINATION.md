@@ -86,6 +86,7 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai & Antigravity | ✅ merged & verified (Round 14) | `theme/*`, `ui/*`, `docs/*` | Material 3 Expressive UI overhaul across all screens. Fixed `FiniteAnimationSpec` types, `Modifier.entrance` extension, and `Check` icon import. All unit tests pass, `app-debug.apk` built. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 15) | `app/build.gradle.kts`, `util/NativeFilters.kt`, `util/DocumentFilters.kt`, `app/src/main/rust/*`, `ui/*`, docs | Optional Rust pixel kernels behind byte-for-byte parity gate + UI scroll/dialog polish. Fixed NativeFilters Log.i JVM test initialization, in-process PATH lookup and Configuration Cache compatibility. 56 unit tests pass, `app-debug.apk` built. |
 | Arena.ai & Antigravity | ✅ merged & verified (Rounds 16–18) | `ui/dashboard/*`, `ui/camera/*`, `util/DocumentDetector.kt`, `util/DocumentFilters.kt`, `util/OcrEngine.kt`, `util/DocumentSearch.kt`, `util/PageImageLoader.kt` | Home screen jank fixes (pinned "Doc Scanner", disk thumbs), 4:3 viewfinder & subpixel border detector rebuild, sliding median, and offline ML Kit OCR search. All tests pass, `app-debug.apk` built (65.3 MB). |
+| Arena.ai | 🚧 in review (Round 19) | `model/Models.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/common/PageThumbnail.kt`, `util/PageImageLoader.kt`, `ui/camera/ScannerCameraScreen.kt`, docs | Home-screen smoothness (immutable models so cards skip, dates formatted once, search debounced off-thread) and a rebuilt camera chrome. Nothing to provision; see §6j. |
 
 ## 5. File ownership map
 
@@ -374,6 +375,46 @@ implements the re-rank it needs one asset:
   changes. Reuse it the same way if another screen gets a search field.
 - Search results are ordered by relevance, so the sort control is ignored while a
   query is active. That is intentional.
+
+## 6j. Home smoothness + camera chrome (claimed by Arena, 2026-10-25, round 19)
+
+### Nothing to provision
+
+No new dependency, no model file, no native artefact, no NDK work. §6i is still the
+open contract (Rust toolchain + the optional embedding asset) and none of it
+changed in this round.
+
+### Four invariants that this round depends on — please don't undo them
+
+1. **`QuadCorners`, `ScannedPage`, `Document` and `Folder` are `@Immutable`.**
+   Compose cannot prove `List<…>` immutable, so without the annotation every card
+   in the library is unskippable and any recomposition of the dashboard redraws
+   every visible thumbnail. If a field ever has to change, replace the instance
+   (`copy(...)`) and emit a new list — the repository already does exactly that.
+   Adding a `var` or a `MutableList` field would invalidate the annotation.
+2. **`DocumentSearch.Index` is not built in composition.** It is built on the first
+   query of a session, on `Dispatchers.Default`, inside a `LaunchedEffect`. The
+   OCR backfill emits one library snapshot per page, so a `remember(documents)`
+   index would rebuild the whole thing up to 24 times at startup.
+3. **`PageImageLoader.load` is single-flight and must stay that way.** Waiters must
+   await *outside* the `decodeDispatcher` limiter — `limitedParallelism` holds its
+   permit for the whole coroutine body, so a waiter that parks inside it can
+   deadlock the decoder it is waiting for.
+4. **`PageImageLoader` returns shared, already-downscaled bitmaps.** Callers must
+   not recycle or mutate them (`applyEnhancements` never recycles its source, which
+   is why it is safe). The bitmap is sized to the request, so raising
+   `reqWidth`/`reqHeight` at a call site raises memory per cached card.
+
+### Behaviour notes
+
+- `DocumentGridCard` and `DocumentListCard` take `dateLabel: String`; the dashboard
+  formats every label once per library change (`DateLabels`). A new card call site
+  must pass one rather than formatting a date inside the card.
+- Camera bind failures set `cameraError` (persistent card) rather than
+  `statusMessage` (self-dismissing pill). Keep the split: transient advice
+  auto-retires, a dead viewfinder must not.
+- The camera shows a discard confirmation when leaving with unsaved pages
+  (`BackHandler` + close button → `requestClose()`).
 
 ## 7. Known-good state
 

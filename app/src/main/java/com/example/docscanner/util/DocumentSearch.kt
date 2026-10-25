@@ -14,9 +14,10 @@ import kotlin.math.ln
  * character typed, and it can only answer "yes/no" — it cannot put the best match
  * first, and it cannot show *why* something matched.
  *
- * [Index] is built once per library change (a few milliseconds of tokenising) and
- * answers queries from an inverted index with BM25 scoring, so results arrive
- * ranked with the sentence that matched.
+ * [Index] is built once per library change — on demand, on a background
+ * dispatcher, a few milliseconds of tokenising — and answers queries from an
+ * inverted index with BM25 scoring, so results arrive ranked with the sentence
+ * that matched.
  *
  * ## Why BM25
  *
