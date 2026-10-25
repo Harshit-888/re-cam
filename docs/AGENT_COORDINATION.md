@@ -85,6 +85,7 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai | ✅ merged & verified | `util/DocumentFilters.kt`, `util/DocumentFiltersTest.kt`, docs | Native divide table fix from `libimageproc.so` (`0x105e0`–`0x10734`): signed row difference, complemented response byte, 56 tests passing. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 14) | `theme/*`, `ui/*`, `docs/*` | Material 3 Expressive UI overhaul across all screens. Fixed `FiniteAnimationSpec` types, `Modifier.entrance` extension, and `Check` icon import. All unit tests pass, `app-debug.apk` built. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 15) | `app/build.gradle.kts`, `util/NativeFilters.kt`, `util/DocumentFilters.kt`, `app/src/main/rust/*`, `ui/*`, docs | Optional Rust pixel kernels behind byte-for-byte parity gate + UI scroll/dialog polish. Fixed NativeFilters Log.i JVM test initialization, in-process PATH lookup and Configuration Cache compatibility. 56 unit tests pass, `app-debug.apk` built. |
+| Arena.ai & Antigravity | ✅ merged & verified (Rounds 16–18) | `ui/dashboard/*`, `ui/camera/*`, `util/DocumentDetector.kt`, `util/DocumentFilters.kt`, `util/OcrEngine.kt`, `util/DocumentSearch.kt`, `util/PageImageLoader.kt` | Home screen jank fixes (pinned "Doc Scanner", disk thumbs), 4:3 viewfinder & subpixel border detector rebuild, sliding median, and offline ML Kit OCR search. All tests pass, `app-debug.apk` built (65.3 MB). |
 
 ## 5. File ownership map
 

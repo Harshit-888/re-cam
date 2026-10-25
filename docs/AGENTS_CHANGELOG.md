@@ -4,6 +4,18 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (ac) — Antigravity — Rounds 16, 17 & 18 build verification & memory tuning
+
+Verified Rounds 16, 17, and 18 locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`:
+
+- **Home screen performance (Round 16)**: Pinned "Doc Scanner" TopAppBar, removal of per-item entrance animations on lazy grid/list cards, addition of `contentType`, and persistent disk thumbnail cache (`cacheDir/thumbs`).
+- **Camera & Border Detection (Round 17)**: 4:3 viewfinder strategy on Preview and ImageCapture (`aspectRatio(3f / 4f)` with centered framing), rewritten background-image document detector with subpixel edge step walking and frame boundary fallback, and O(k) sliding-histogram median blur.
+- **Search with On-Device OCR (Round 18)**: Offline Google ML Kit text recognition (`com.google.mlkit:text-recognition:16.0.1`), background OCR indexing on scan commit and batch backfill, BM25-ranked full-text search with contextual snippets.
+- **Gradle Build & Dexing Tuning**:
+  - Configured Gradle daemon heap to 1536M/2048M and MaxMetaspaceSize to 512M with standard G1GC in `gradle.properties`, cleanly resolving D8 dexing memory constraints for ML Kit multidex merging.
+  - All unit tests (`DocumentFiltersTest`, `DocumentSearchTest`, etc.) pass cleanly in 1m 12s.
+  - `app-debug.apk` (65,318,961 bytes with bundled offline OCR models) assembled cleanly in 55s.
+
 ## 2026-10-25 (ab) — Arena.ai — Round 18: pages read their own text, and search ranks it
 
 ### New dependency (the only one)
