@@ -4,6 +4,19 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (w) — Antigravity — Round 14 build verification & compilation fixes
+
+Verified Round 14 Material 3 Expressive UI overhaul locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. Resolved 3 compilation issues from Arena's uncompiled UI changes:
+
+- `theme/Motion.kt`:
+  - Typed `Motion.press`, `spatial`, `emphasized`, `bouncy`, `fade` as `FiniteAnimationSpec<Float>` (previously generic `AnimationSpec<Float>`) to satisfy `fadeIn`/`fadeOut` constraints in Compose.
+  - Converted `entrance` into an extension function: `fun Modifier.entrance(index: Int, distance: Dp = 14.dp): Modifier = composed { ... }` allowing `.entrance(i)` modifier chains.
+- `ui/camera/ScannerCameraScreen.kt`:
+  - Added missing `import androidx.compose.material.icons.filled.Check`.
+- Build status:
+  - All unit tests pass cleanly in 22s.
+  - `app-debug.apk` (22,012,700 bytes) assembled cleanly in 10s.
+
 ## 2026-10-25 (v) — Arena.ai — Round 14: the whole app restyled (Material 3 Expressive)
 
 A UI/UX pass over **every screen** — no filter maths touched (`util/DocumentFilters.kt`

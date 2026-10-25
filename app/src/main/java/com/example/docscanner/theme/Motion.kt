@@ -1,6 +1,7 @@
 package com.example.docscanner.theme
 
 import androidx.compose.animation.core.AnimationSpec
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -31,31 +32,31 @@ import androidx.compose.ui.unit.dp
  */
 object Motion {
     /** For anything that answers a touch. Fast enough to feel instant. */
-    val press: AnimationSpec<Float> = spring(
+    val press: FiniteAnimationSpec<Float> = spring(
         dampingRatio = 0.55f,
         stiffness = Spring.StiffnessHigh
     )
 
     /** Selection, expansion, shape and colour changes. */
-    val spatial: AnimationSpec<Float> = spring(
+    val spatial: FiniteAnimationSpec<Float> = spring(
         dampingRatio = 0.78f,
         stiffness = Spring.StiffnessMediumLow
     )
 
     /** Big arrivals: sheets, stage changes, page transitions. */
-    val emphasized: AnimationSpec<Float> = spring(
+    val emphasized: FiniteAnimationSpec<Float> = spring(
         dampingRatio = 0.85f,
         stiffness = 260f
     )
 
     /** A deliberately visible overshoot, for one-off delight moments. */
-    val bouncy: AnimationSpec<Float> = spring(
+    val bouncy: FiniteAnimationSpec<Float> = spring(
         dampingRatio = 0.45f,
         stiffness = Spring.StiffnessMediumLow
     )
 
     /** Opacity only. Springs on alpha look like flicker. */
-    val fade: AnimationSpec<Float> = tween(durationMillis = 180, easing = LinearEasing)
+    val fade: FiniteAnimationSpec<Float> = tween(durationMillis = 180, easing = LinearEasing)
 
     /** Stagger step between sibling items entering a screen. */
     const val staggerMs = 45
@@ -95,8 +96,7 @@ fun Modifier.pressScale(
  * Only the first few items are staggered — past that the list would arrive slower
  * than the user can scroll.
  */
-@Composable
-fun entrance(index: Int, distance: Dp = 14.dp): Modifier {
+fun Modifier.entrance(index: Int, distance: Dp = 14.dp): Modifier = composed {
     var started by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { started = true }
     val progress by animateFloatAsState(
@@ -107,7 +107,7 @@ fun entrance(index: Int, distance: Dp = 14.dp): Modifier {
         ),
         label = "entrance"
     )
-    return Modifier
+    this
         .alpha(progress)
         .graphicsLayer { translationY = (1f - progress) * distance.toPx() }
 }
