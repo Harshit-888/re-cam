@@ -299,8 +299,11 @@ fun DashboardScreen(
     // tile that will never be seen is cancelled before it starts.
     LaunchedEffect(gridState, listState, isGridView, activeDocs, coverSize) {
         snapshotFlow {
-            val info = if (isGridView) gridState.layoutInfo else listState.layoutInfo
-            info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            if (isGridView) {
+                gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            } else {
+                listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            }
         }
             .distinctUntilChanged()
             .collectLatest { lastVisible ->

@@ -4,6 +4,16 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (af) — Antigravity — Round 20 build verification & DashboardScreen visibleItemsInfo fix
+
+Verified Round 20 (dedicated 768px ThumbnailStore, background priming, ML Kit scroll-pause, and PerfTrace) locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. Resolved 1 compilation error:
+
+- `DashboardScreen.kt`:
+  - Resolved `Unresolved reference 'visibleItemsInfo'` in `LaunchedEffect` prefetcher. `LazyGridLayoutInfo` and `LazyListLayoutInfo` do not share a common interface exposing `visibleItemsInfo`, causing `val info = if (isGridView) gridState.layoutInfo else listState.layoutInfo` to infer `Any`. Branched explicitly on `if (isGridView)` before accessing `visibleItemsInfo` on `gridState.layoutInfo` and `listState.layoutInfo`.
+- Build status:
+  - All unit tests pass cleanly in 19s (`testDebugUnitTest`).
+  - `app-debug.apk` (65,545,972 bytes) assembled cleanly in 14s (`assembleDebug`).
+
 ## 2026-10-25 (ae) — Antigravity — Round 19 build verification & SearchBarField compilation fix
 
 Verified Round 19 (library stability/scrolling performance and camera chrome overhaul) locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. Resolved 1 compilation error:
