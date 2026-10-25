@@ -47,7 +47,7 @@ internal object NativeFilters {
         System.loadLibrary(LIBRARY)
         nativeVersion() == EXPECTED_ABI
     }.getOrElse { error ->
-        Log.i(TAG, "Rust kernels unavailable (${error.javaClass.simpleName}: ${error.message})")
+        runCatching { Log.i(TAG, "Rust kernels unavailable (${error.javaClass.simpleName}: ${error.message})") }
         false
     }
 

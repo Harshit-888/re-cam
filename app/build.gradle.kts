@@ -39,6 +39,7 @@ android {
     }
 
     testOptions {
+        unitTests.isReturnDefaultValues = true
         unitTests.all {
             it.maxParallelForks = 1
             it.jvmArgs("-Xmx512m")
@@ -66,16 +67,18 @@ kotlin {
 // The output goes to src/main/jniLibs/, which is git-ignored: binaries are build
 // artifacts here (AGENTS.md §2.5), so they are produced, never committed.
 
-fun commandAvailable(command: String): Boolean = runCatching {
-    ProcessBuilder("sh", "-c", "command -v $command")
-        .redirectErrorStream(true)
-        .start()
-        .waitFor() == 0
-}.getOrDefault(false)
+fun hasExecutableOnPath(executable: String): Boolean {
+    val isWindows = System.getProperty("os.name").lowercase().contains("win")
+    val candidates = if (isWindows) listOf("$executable.exe", "$executable.cmd", "$executable.bat", executable) else listOf(executable)
+    val pathDirs = System.getenv("PATH")?.split(File.pathSeparator).orEmpty()
+    return pathDirs.any { dir ->
+        candidates.any { name -> File(dir, name).isFile }
+    }
+}
 
 val rustDir = layout.projectDirectory.dir("src/main/rust").asFile
 val jniLibsDir = layout.projectDirectory.dir("src/main/jniLibs").asFile
-val rustToolchainReady = commandAvailable("cargo") && commandAvailable("cargo-ndk")
+val rustToolchainReady = hasExecutableOnPath("cargo") && hasExecutableOnPath("cargo-ndk")
 
 val buildRustKernels = tasks.register<Exec>("buildRustKernels") {
     group = "build"
@@ -88,14 +91,7 @@ val buildRustKernels = tasks.register<Exec>("buildRustKernels") {
         "-o", jniLibsDir.absolutePath,
         "build", "--release"
     )
-    onlyIf {
-        if (!rustToolchainReady) {
-            logger.lifecycle(
-                "cargo / cargo-ndk not found: skipping Rust kernels (Kotlin reference will be used)."
-            )
-        }
-        rustToolchainReady
-    }
+    enabled = rustToolchainReady
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(buildRustKernels) }

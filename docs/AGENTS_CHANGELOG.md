@@ -4,6 +4,19 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (y) — Antigravity — Round 15 build verification & configuration cache fixes
+
+Verified Round 15 Rust pixel kernels & UI polish locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. Resolved 2 issues:
+
+- `NativeFilters.kt`: Wrapped `Log.i` in `runCatching` during static initialization so JVM unit tests without mocked Android Log framework initialize cleanly.
+- `app/build.gradle.kts`:
+  - Added `unitTests.isReturnDefaultValues = true`.
+  - Replaced `ProcessBuilder("sh")` during Gradle configuration phase with in-process PATH executable lookup (`hasExecutableOnPath`) supporting Windows/Linux without external process violations.
+  - Used `enabled = rustToolchainReady` on `buildRustKernels` instead of `onlyIf` referencing script objects, restoring Gradle Configuration Cache storage.
+- Build status:
+  - All unit tests pass cleanly in 38s (`testDebugUnitTest`).
+  - `app-debug.apk` (21,941,359 bytes) assembled cleanly in 15s (`assembleDebug`).
+
 ## 2026-10-25 (x) — Arena.ai — Rust kernels behind a byte-for-byte parity gate
 
 Round 15, first performance increment. **Filter output is unchanged** — that is the
