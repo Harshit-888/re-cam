@@ -112,11 +112,23 @@ object ThumbnailStore {
     fun exists(context: Context, key: String): Boolean = file(context, key).isFile
 
     /**
-     * Decodes the stored thumbnail for [key], sampled down towards
-     * [reqWidth] x [reqHeight].
+     * Decodes the stored thumbnail for [key] **at** the size a tile will draw.
      *
-     * Sampling matters even here: a 768 px thumbnail decoded for a 160 px strip
-     * tile would touch 1.8 MB for 0.1 MB of output.
+     * Two steps, and the second is the one that matters:
+     *
+     * 1. `inSampleSize` takes the cheap power-of-two cut. On its own it is not
+     *    enough — a 768 px thumbnail for a 459 px cover comes back at full size,
+     *    and something then has to make a second bitmap and rescale on the CPU.
+     * 2. `inDensity` / `inTargetDensity` ask the *decoder* for the final size, so
+     *    the scale happens inside the single native pass: no intermediate 3 MB
+     *    bitmap, no `createScaledBitmap`, and Skia's resampler rather than a
+     *    second-hand bilinear stretch.
+     *
+     * That removes roughly 3 MB of allocation per tile that enters the screen.
+     * During a fling that is the difference between a quiet collector and a young
+     * generation filling every couple of hundred milliseconds. If a platform ever
+     * ignores the density hint, the result is simply what this method used to
+     * return — the caller still scales, so this can only be faster, never wrong.
      */
     fun read(context: Context, key: String, reqWidth: Int, reqHeight: Int): Bitmap? {
         val source = file(context, key)
@@ -125,13 +137,23 @@ object ThumbnailStore {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(source.absolutePath, bounds)
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+            val targetLong = maxOf(reqWidth, reqHeight)
+            val sample = ImageStore.calculateInSampleSize(
+                bounds.outWidth,
+                bounds.outHeight,
+                targetLong
+            )
+            val sampledLong = maxOf(bounds.outWidth, bounds.outHeight) / sample.coerceAtLeast(1)
             val options = BitmapFactory.Options().apply {
-                inSampleSize = ImageStore.calculateInSampleSize(
-                    bounds.outWidth,
-                    bounds.outHeight,
-                    maxOf(reqWidth, reqHeight)
-                )
+                inSampleSize = sample
                 inPreferredConfig = Bitmap.Config.ARGB_8888
+                if (sampledLong > targetLong && targetLong > 0) {
+                    // Densities are just a ratio here: the source's own long edge
+                    // against the long edge of the box the tile draws into.
+                    inScaled = true
+                    inDensity = sampledLong
+                    inTargetDensity = targetLong
+                }
             }
             BitmapFactory.decodeFile(source.absolutePath, options)
         }.getOrNull()

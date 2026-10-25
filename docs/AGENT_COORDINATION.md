@@ -90,6 +90,7 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai | 🚧 in review (Round 21) | `ui/common/PageThumbnail.kt`, `ui/common/Expressive.kt`, `ui/dashboard/DashboardScreen.kt`, `util/PageImageLoader.kt`, `util/ThumbnailStore.kt`, docs | Library scroll raised to settings-list smoothness: no per-tile animations, no `Surface`/`composed` modifiers in lazy items, synchronous cache reads on the first frame, memoised thumbnail keys, row-quantised prefetch. See §6l. |
 | Arena.ai | 🚧 in review (Round 22) | `ui/dashboard/DashboardScreen.kt`, `ui/common/PageThumbnail.kt`, `util/PerfTrace.kt`, docs | Overdraw removed (transparent Scaffold, footer-only card background, placeholder-only cover fill) and one perf log line per scroll gesture. See §6m. |
 | Arena.ai | 🚧 in review (Round 23) | `ui/editor/CropAndFilterScreen.kt`, `data/ScannerRepository.kt`, docs | The batch border pass now auto-detects every page instead of making the user walk them; the strip marks the pages the detector was unsure about. Additive `setPageCorners`. See §6n. |
+| Arena.ai | 🚧 in review (Round 24) | `ui/dashboard/DashboardScreen.kt`, `util/ThumbnailStore.kt`, `util/PerfTrace.kt`, `MainActivity.kt`, `app/build.gradle.kts`, docs | First-fling warm-up, two-way non-blocking prefetch, single-pass thumbnail decode at the tile size, per-frame stage attribution and a non-debuggable `benchmark` build type. See §6o. |
 
 ## 5. File ownership map
 
@@ -602,6 +603,67 @@ implemented: one filter is applied to the document. That matches the requested f
 ("… *then* apply filters") and the single bake pass. If per-page filters are wanted,
 the bake loop in `applyFilterToPages` already iterates pages, so it is a UI change,
 not a pipeline change.
+
+## 6o. Dashboard: the first fling, and how to read a slow one (Arena, 2026-10-25, round 24)
+
+### Nothing to provision
+
+### What a tile now costs
+
+1. **On screen:** the bitmap comes from the memory cache on the composition thread
+   (`PageImageLoader.peek`) and is drawn 1:1, because the decoded bitmap is exactly
+   the tile's pixel size.
+2. **Just off screen:** prefetched two **rows** in each direction, launched without
+   waiting for the previous row.
+3. **At launch:** the first four rows are warmed into the memory cache 180 ms after
+   the library appears (`WARM_ROWS` / `WARM_START_DELAY_MS`), so the first fling is
+   not the one empty fling of the session.
+4. **On disk:** one 768 px JPEG per page; `ThumbnailStore.read` scales *inside* the
+   decode (`inDensity`/`inTargetDensity`), so no intermediate full-size bitmap.
+
+### Rules (do not break these)
+
+- **Never await a prefetch inside the row collector.** `prefetchRow` launches; the
+  collector must stay free to see the next row boundary. Awaiting made prefetch lag
+  one frame behind a fast fling.
+- **Never let `ThumbnailStore.read` return something bigger than the request** when
+  it can avoid it: the tile path is only cheap because the bitmap needs no
+  resampling at draw time (see the `inDensity` block).
+- `WARM_ROWS` work must stay **outside** the idle gate — the point is to finish
+  before the first gesture, not after it.
+
+### Reading a slow scroll (`adb logcat -s DocScannerPerf`)
+
+The gesture line is:
+
+```
+[JANK|smooth] scroll frames=… slow=… avg=… worst=… stages(sync/layout/draw/cmd/gpu)=…/…/…/…/…ms cacheHits=… thumbs=… pageDecodes=…
+```
+
+- `sync` + `layout` large (say > 8 ms each): the cost is **composition/layout** —
+  make the tile cheaper, or reduce how many tiles cross the viewport per frame.
+- `draw` + `cmd` + `gpu` large with `sync`/`layout` small: the cost is **pixels** —
+  texture size and fill rate. Next levers, in order: decode covers at 90 % of the
+  cell (imperceptible, 20 % fewer bytes), then `RGB_565` for grid/list covers only
+  (the bake and PDF paths must stay ARGB_8888).
+- `pageDecodes` non-zero on a warm library: a fallback path is being taken, meaning
+  a thumbnail is missing or its key changed.
+- Everything small but `avg` still ~16.7 ms with `slow` > 0: the frames are being
+  delivered late for a reason outside the app's main thread — check a non-debug
+  build with `./gradlew assembleBenchmark` before optimising anything else.
+
+### The debug-build question
+
+`assembleDebug` produces a **debuggable** APK: interpreted/JIT'd code paths and live
+Compose debug hooks. That penalty is multiplicative and hits the heaviest screen
+first, which is the whole reason a photo grid can trail a text list in a debug build
+and match it in release. The `benchmark` build type (non-debuggable, unminified,
+debug-signed, same application id) is the honest comparison:
+
+```
+./gradlew assembleBenchmark
+adb install -r app/build/outputs/apk/benchmark/app-benchmark.apk
+```
 
 ## 7. Known-good state
 

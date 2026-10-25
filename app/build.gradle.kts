@@ -20,6 +20,31 @@ android {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
+
+        // ---- a build you can actually judge the app by -----------------------
+        // `assembleDebug` produces a *debuggable* APK: ART interprets and JITs
+        // instead of running optimised code, and Compose's own runtime keeps its
+        // debug hooks live. That penalty is multiplicative and it lands hardest on
+        // the screen with the most work per frame, which is why a photo grid can
+        // look janky next to a list of text in a debug build and be perfectly
+        // smooth in the same code built for release.
+        //
+        // `release` is not installable here (no release keystore), so this type is
+        // identical to it — no minification, no shrinking — except that it is
+        // non-debuggable and signed with the debug key. That makes it the honest
+        // answer to "is this the code or the build": install it over the debug app
+        // (same application id, same key, data kept) and compare.
+        //
+        //     ./gradlew assembleBenchmark
+        //     adb install -r app/build/outputs/apk/benchmark/app-benchmark.apk
+        create("benchmark") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            matchingFallbacks += listOf("release")
+            // `findByName`, not `getByName`: this must never be able to break
+            // `assembleDebug` on a machine without a debug keystore configured yet.
+            signingConfig = signingConfigs.findByName("debug")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

@@ -117,6 +117,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -293,43 +294,73 @@ fun DashboardScreen(
     val coverSize = rememberGridCoverSize()
     val listCoverSize = rememberListCoverSize()
 
-    // Warm the memory cache for the tiles just below the viewport.
+    // Warm the memory cache for the tiles around the viewport.
     //
     // This is the difference between "the decoder is chasing the scroll" and "the
-    // scroll finds pixels". Two details keep it from *causing* jank instead:
+    // scroll finds pixels". Three details keep it from *causing* jank instead:
     //
-    // * it fires once per **row** that leaves the top of the screen, not once per
+    // * it fires once per **row** that crosses the viewport edge, not once per
     //   item, so a fling does not restart it every other frame;
-    // * it is a plain `collect`, not `collectLatest` — cancelling the previous
-    //   window's work mid-decode only wastes the work it had already started.
+    // * each prefetch is `launch`ed instead of awaited, so a row that takes 40 ms
+    //   to decode never delays the next row's tracking;
+    // * a tile already in memory costs one `LruCache` lookup and no coroutine at
+    //   all — which is the common case when scrolling back up.
     val docsForPrefetch = rememberUpdatedState(activeDocs)
     LaunchedEffect(gridState, listState, isGridView, coverSize, listCoverSize) {
+        // `collect`'s lambda is a `FlowCollector`, not the effect's scope, so the
+        // scope has to be taken before it.
+        val scope = this
         val perRow = if (isGridView) GRID_COLUMNS else 1
+        val size = if (isGridView) coverSize else listCoverSize
         snapshotFlow {
-            val lastVisible =
-                if (isGridView) gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
-                else listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
-            // Quantised to whole rows: the prefetch window only moves when the user
-            // has actually scrolled past a row.
-            (lastVisible ?: -1) / perRow
+            val info = if (isGridView) gridState.layoutInfo else listState.layoutInfo
+            val first = info.visibleItemsInfo.firstOrNull()?.index ?: -1
+            val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            // Quantised to whole rows: the window only moves when the user has
+            // actually scrolled past a row.
+            (first / perRow) to (last / perRow)
         }
             .distinctUntilChanged()
-            .collect { row ->
-                if (row < 0) return@collect
+            .collect { (firstRow, lastRow) ->
+                if (lastRow < 0) return@collect
                 val docs = docsForPrefetch.value
-                // The prefetch must use the *same* size the visible tiles ask for,
-                // or it warms entries nothing will read.
-                val size = if (isGridView) coverSize else listCoverSize
-                val lastVisible = row * perRow + perRow - 1
-                val end = (lastVisible + PREFETCH_AHEAD).coerceAtMost(docs.lastIndex)
-                for (index in (lastVisible + 1)..end) {
-                    val cover = docs.getOrNull(index)?.pages?.firstOrNull()?.imageUri
-                        ?: continue
-                    // Already resident: no coroutine, no dispatcher hop, nothing.
-                    if (PageImageLoader.peek(cover, size.width, size.height) != null) continue
-                    PageImageLoader.prefetch(context, cover, size.width, size.height)
+                // Downward first: that is the direction a fling usually goes, and
+                // it gets first use of the two decode slots.
+                for (row in (lastRow + 1)..(lastRow + PREFETCH_ROWS)) {
+                    prefetchRow(scope, context, docs, row, perRow, size)
+                }
+                for (row in (firstRow - PREFETCH_ROWS)..(firstRow - 1)) {
+                    prefetchRow(scope, context, docs, row, perRow, size)
                 }
             }
+    }
+
+    // Fill the memory cache for the first screens as soon as the library exists.
+    //
+    // Prefetch alone is one step behind a fast flick: it only starts for a row that
+    // has already left the top of the screen, so the first gesture after launch used
+    // to meet grey tiles all the way down — nothing beyond the first screen was in
+    // memory, and a decode takes tens of milliseconds. A settings row is never blank
+    // because there is nothing to decode; this is the same promise for a photo.
+    //
+    // Cheap by construction: eight covers at ~6 ms each on the decode threads, with
+    // a `peek` skip for anything already warm. It is deliberately *not* gated on
+    // idleness — the whole point is to finish before the first fling starts — and it
+    // is keyed on the library so a newly scanned document warms its own cover.
+    LaunchedEffect(activeDocs, isGridView, coverSize, listCoverSize) {
+        if (activeDocs.isEmpty()) return@LaunchedEffect
+        // Let the first frame, its layout and its own tile requests go first: the
+        // loop decodes one page at a time and must not delay the screen itself.
+        delay(WARM_START_DELAY_MS)
+        val perRow = if (isGridView) GRID_COLUMNS else 1
+        val size = if (isGridView) coverSize else listCoverSize
+        val last = (perRow * WARM_ROWS - 1).coerceAtMost(activeDocs.lastIndex)
+        for (index in 0..last) {
+            val cover = activeDocs.getOrNull(index)?.pages?.firstOrNull()?.imageUri
+                ?: continue
+            if (PageImageLoader.peek(cover, size.width, size.height) != null) continue
+            PageImageLoader.load(context, cover, size.width, size.height)
+        }
     }
 
     // Recognise text for pages that predate search (bounded to one batch per app
@@ -619,6 +650,33 @@ fun DashboardScreen(
     }
 }
 
+/**
+ * Starts decodes for the covers of one row, without waiting for them.
+ *
+ * `launch` on the caller's scope, not `prefetch` inline: the collector has to stay
+ * responsive to the next row boundary, and a decode takes tens of milliseconds.
+ * Tiles already in memory are skipped, so a row the user is scrolling back over
+ * costs nothing at all.
+ */
+private fun prefetchRow(
+    scope: CoroutineScope,
+    context: Context,
+    docs: List<Document>,
+    row: Int,
+    perRow: Int,
+    size: IntSize
+) {
+    if (row < 0) return
+    val start = row * perRow
+    if (start > docs.lastIndex) return
+    val end = (start + perRow - 1).coerceAtMost(docs.lastIndex)
+    for (index in start..end) {
+        val cover = docs.getOrNull(index)?.pages?.firstOrNull()?.imageUri ?: continue
+        if (PageImageLoader.peek(cover, size.width, size.height) != null) continue
+        scope.launch { PageImageLoader.prefetch(context, cover, size.width, size.height) }
+    }
+}
+
 /** Pre-formatted dates for one document, built once per library change. */
 private data class DateLabels(val short: String, val long: String)
 
@@ -635,12 +693,28 @@ private val GRID_H_GAP = 14.dp
 private const val COVER_ASPECT = 0.78f
 
 /**
- * Rows of covers to decode ahead of the viewport.
+ * Rows of covers to decode beyond the viewport, in both directions.
  *
  * Two rows: far enough that a fling finds warm tiles, close enough that a
- * cancelled prefetch costs almost nothing.
+ * cancelled prefetch costs almost nothing. Counted in **rows**, not items, so the
+ * window moves when the user has actually crossed a row rather than on every
+ * item — and it is symmetric, because scrolling back up is as common as scrolling
+ * down and costs the same decode.
  */
-private const val PREFETCH_AHEAD = 4
+private const val PREFETCH_ROWS = 2
+
+/**
+ * Rows of covers warmed into the memory cache as soon as the library is idle.
+ *
+ * This is the first-fling fix. Prefetch only starts once a row has *left* the top
+ * of the screen, which is one step behind a fast flick: the first gesture after
+ * launch used to find grey tiles all the way down, because nothing beyond the
+ * first screen was in memory yet and a decode takes tens of milliseconds. A
+ * settings row never has that problem — its content is already there. Warming a
+ * screen and a half up front makes the first fling find pixels the same way every
+ * later one does.
+ */
+private const val WARM_ROWS = 4
 
 /**
  * How long the library gets to itself before background text recognition starts.
@@ -657,6 +731,9 @@ private const val OCR_START_DELAY_MS = 3000L
  * short enough that a library is warm by the time anyone browses it.
  */
 private const val THUMBNAIL_PRIME_DELAY_MS = 1200L
+
+/** How long the first screen gets before its neighbours are warmed into memory. */
+private const val WARM_START_DELAY_MS = 180L
 
 /** Pause between thumbnail-repair chunks, so the decoder cannot saturate a core. */
 private const val PRIME_CHUNK_PAUSE_MS = 350L

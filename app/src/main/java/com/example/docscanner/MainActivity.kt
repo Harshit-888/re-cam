@@ -40,8 +40,13 @@ class MainActivity : ComponentActivity() {
 
         // Debug builds only: logs per-window frame times and how each cover was
         // obtained (memory / stored thumbnail / full page decode) under the
-        // `DocScannerPerf` tag. A no-op in release. See util/PerfTrace.kt.
+        // `DocScannerPerf` tag, plus the per-frame stage breakdown while a scroll is
+        // running. A no-op in release. See util/PerfTrace.kt.
         PerfTrace.install(applicationContext)
+        // The stage breakdown needs a `Window`, which only the Activity has. Without
+        // it the scroll line still reports frames and image work, just not where the
+        // frame went.
+        PerfTrace.attachWindow(window)
 
         setContent {
             val settings by repository.settings.collectAsState()
@@ -91,6 +96,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // The frame-metrics listener holds this Window; leaving it attached would
+        // outlive the Activity it belongs to.
+        PerfTrace.detachWindow(window)
         // Configuration changes recreate the Activity but must not tear down the
         // repository mid-write; only a real finish ends its scope.
         if (isFinishing) {

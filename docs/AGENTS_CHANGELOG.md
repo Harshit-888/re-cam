@@ -4,6 +4,52 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (aj) — Arena.ai — Round 24: the tiles are there before the finger is
+
+Third report of the same complaint, so this round stops guessing about *which* part
+of a photo tile costs a frame and does two things instead: removes the rest of the
+work that is provably redundant, and instruments the frame so the next report is
+data rather than a hypothesis.
+
+### What changed
+
+- **`ui/dashboard/DashboardScreen.kt`** — the memory cache is **warmed for the
+  first screens** (`WARM_ROWS = 4`, `WARM_START_DELAY_MS = 180`) instead of being
+  left to prefetch. Prefetch can only fire for a row that has already left the top
+  of the screen, so the first fling after launch met grey tiles all the way down;
+  a settings row is never blank because there is nothing to decode. Prefetch is now
+  **symmetric (rows above and below)** and each request is `launch`ed rather than
+  awaited, so a slow row can no longer delay the tracking of the next one.
+  `PREFETCH_AHEAD` (items) → `PREFETCH_ROWS = 2` (rows), plus a new top-level
+  `prefetchRow(scope, context, docs, row, perRow, size)`.
+- **`util/ThumbnailStore.kt`** — `read` now decodes **at** the size the tile draws,
+  using `inDensity`/`inTargetDensity` so the scale happens inside the single native
+  pass. Previously a 768 px thumbnail for a 459 px cover produced a 3 MB bitmap and
+  then a second 1 MB bitmap from `createScaledBitmap` — about 4 MB of allocation
+  per tile entering the screen, which is a young-generation collection every couple
+  of hundred milliseconds during a fling. It also makes the cached bitmap **exactly**
+  the tile size, so the GPU draws it 1:1 instead of resampling a 1.2× texture every
+  frame. Same signature; if a platform ignores the density hint the result is what
+  it used to return and the caller still scales.
+- **`util/PerfTrace.kt`, `MainActivity.kt`** — per-gesture **stage attribution** via
+  `Window.OnFrameMetricsAvailableListener`: the scroll line now ends in
+  `stages(sync/layout/draw/cmd/gpu)=…`, which separates *our* work (composition and
+  layout) from the render side (draw commands and GPU). New `attachWindow`/
+  `detachWindow`, called from `MainActivity.onCreate`/`onDestroy`; debug-only, and
+  the listener counts nothing outside a gesture.
+- **`app/build.gradle.kts`** — new **`benchmark` build type**: identical to `release`
+  (no minification) but non-debuggable and signed with the debug key, so it installs
+  over the debug app and keeps its data. `./gradlew assembleBenchmark`. A debuggable
+  APK runs interpreted/JIT'd code with Compose's debug hooks live, and that penalty
+  lands hardest on the screen with the most work per frame — which is the one being
+  compared. This type is the only way to see the app as it actually ships without a
+  release keystore.
+
+### Not changed
+
+Card structure, palette, shapes, typography, filter pipeline, bake path, and the
+`ThumbnailStore` on-disk format (768 px JPEG, same keys) are all untouched.
+
 ## 2026-10-25 (ai) — Arena.ai — Round 23: the batch border pass does the walking
 
 The requested flow — *fix page 1, move to page 2, … then apply filters* — existed,
