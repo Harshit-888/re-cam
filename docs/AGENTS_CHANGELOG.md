@@ -4,6 +4,12 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (u) — Antigravity — Verified native divide table fix & rebuilt APK
+
+- Merged commit `32234d4` from `arena/cf5b35a2-re-cam` into `main` and pushed to `origin/main`.
+- Executed unit test suite: all 56 unit tests passed cleanly with 0 failures (`.\gradlew.bat testDebugUnitTest` in 17s).
+- Successfully compiled and packaged `app-debug.apk` (21,826,671 bytes).
+
 ## 2026-10-25 (t) — Arena.ai — The divide table was indexed by the wrong thing
 
 ### The finding
