@@ -549,16 +549,14 @@ fun SearchBarField(
     modifier: Modifier = Modifier
 ) {
     val scheme = MaterialTheme.colorScheme
-    val fieldColors = remember(scheme) {
-        TextFieldDefaults.colors(
-            focusedContainerColor = scheme.surfaceContainerHigh,
-            unfocusedContainerColor = scheme.surfaceContainerHigh,
-            focusedIndicatorColor = Color.Transparent,
-            unfocusedIndicatorColor = Color.Transparent,
-            disabledIndicatorColor = Color.Transparent,
-            errorIndicatorColor = Color.Transparent
-        )
-    }
+    val fieldColors = TextFieldDefaults.colors(
+        focusedContainerColor = scheme.surfaceContainerHigh,
+        unfocusedContainerColor = scheme.surfaceContainerHigh,
+        focusedIndicatorColor = Color.Transparent,
+        unfocusedIndicatorColor = Color.Transparent,
+        disabledIndicatorColor = Color.Transparent,
+        errorIndicatorColor = Color.Transparent
+    )
     TextField(
         value = query,
         onValueChange = onQueryChange,

@@ -4,6 +4,16 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (ae) — Antigravity — Round 19 build verification & SearchBarField compilation fix
+
+Verified Round 19 (library stability/scrolling performance and camera chrome overhaul) locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. Resolved 1 compilation error:
+
+- `DashboardScreen.kt`:
+  - Removed invalid `remember(scheme) { TextFieldDefaults.colors(...) }` wrapper in `SearchBarField` because `TextFieldDefaults.colors` is an `@Composable` function and cannot be called inside a non-composable `remember` calculation lambda.
+- Build status:
+  - All unit tests pass cleanly in 24s (`testDebugUnitTest`).
+  - `app-debug.apk` (65,532,981 bytes) assembled cleanly in 11s (`assembleDebug`).
+
 ## 2026-10-25 (ad) — Arena.ai — Round 19: the library stops working per frame, the camera gets a designer
 
 **No new dependencies, no new files, no repository-layer signature changes.**
