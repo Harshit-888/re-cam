@@ -44,6 +44,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,6 +55,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -67,6 +69,7 @@ import com.example.docscanner.model.ImageScale
 import com.example.docscanner.model.PageOrientation
 import com.example.docscanner.model.PaperSize
 import com.example.docscanner.model.ThemeMode
+import com.example.docscanner.util.PerfTrace
 
 /**
  * Preferences screen.
@@ -90,6 +93,10 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     var activeDialog by remember { mutableStateOf<SettingsDialog?>(null) }
+    // Debug builds only; both stay null in release, where the monitor is never
+    // installed and these flows are never written.
+    val lastGesture by PerfTrace.lastGesture.collectAsState()
+    val lastWindow by PerfTrace.lastWindow.collectAsState()
 
     // Saving to the public Pictures folder is only permission-free from Android 10
     // (scoped storage). On 8/9 the app needs WRITE_EXTERNAL_STORAGE, so ask at the
@@ -265,6 +272,47 @@ fun SettingsScreen(
                     onClick = { activeDialog = SettingsDialog.EMAIL_SUBJECT }
                 )
             }
+            // ------------------------------------------------------- diagnostics
+            // The frame numbers, in the app, for the one person who has to report
+            // them. "Run adb and paste the line" is a request that does not survive
+            // contact with a phone; this does. Release builds never render it —
+            // `PerfTrace` is not even installed there.
+            if (PerfTrace.isEnabled) {
+                item { SectionDivider() }
+                item { SectionHeader("Performance (debug)") }
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 24.dp, end = 20.dp, bottom = 4.dp)
+                    ) {
+                        Text(
+                            lastGesture ?: "Scroll the library once, then come back.",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (lastWindow != null) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                lastWindow.orEmpty(),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "avg ≈ 17 ms is one 60 Hz frame. Large sync/layout means the " +
+                                "app's own composition; large draw/cmd/gpu means pixels and " +
+                                "textures. pageDecodes should be 0 once the library is warm.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
             item { Spacer(modifier = Modifier.height(24.dp)) }
         }
     }

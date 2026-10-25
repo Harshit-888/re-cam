@@ -62,6 +62,16 @@ screen and merge them into one PDF.
   Merges default to `Balanced`, because ten documents at lossless page images is a
   hundred-megabyte attachment; the control is visible and never overridden after.
 
+### In-app performance readout (debug builds only)
+
+`PerfTrace` now mirrors the two lines it writes to logcat into `lastGesture` and
+`lastWindow` (`StateFlow<String?>`), and `SettingsScreen` renders them under
+**Performance (debug)** with a one-line guide to reading them. Gated on
+`PerfTrace.isEnabled`, which is only true when the app is debuggable — release
+builds do not install the monitor and do not render the section.
+
+`PerfTrace` additions are additive: `lastGesture`, `lastWindow`, `isEnabled`.
+
 ### Limits worth knowing
 
 - The writer's only font is base-14 Helvetica, so text it draws (page numbers, the

@@ -776,6 +776,15 @@ rasterising a drawn bitmap until `writeTo`, so recycling after `finishPage` coul
 still blank a page. **Do not copy the writer path's `finally { recycle() }` into the
 platform path.**
 
+### Reading the scroll numbers without a cable
+
+`PerfTrace` mirrors its per-gesture and per-window lines into two `StateFlow`s, and
+`ui/settings/SettingsScreen.kt` renders them in a **Performance (debug)** card that
+exists only when the app is debuggable. If a scroll is still not smooth, that card
+is the whole diagnosis: `avg` near 17 ms with `slow=0` is a 60 Hz screen doing its
+job; `draw`/`cmd`/`gpu` dominating the stage averages means pixels and textures,
+not composition; `sync`/`layout` dominating means our own composition.
+
 ### What Antigravity should check
 
 1. `./gradlew testDebugUnitTest` — the two new test files are pure JVM and need no

@@ -11,6 +11,9 @@ import android.view.FrameMetrics
 import android.view.Window
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Frame-time and image-work counters, for debug builds only.
@@ -31,6 +34,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * thumbnail, or from a full page decode (which should be near zero once a library
  * has been primed).
  *
+ * The same two lines are mirrored into [lastGesture] and [lastWindow] and rendered
+ * by Settings → Performance, because a number that needs `adb`, a cable and a
+ * computer to read is a number that never gets reported.
+ *
  * Release builds never install the callback: [install] checks the debug flag, and
  * the counters are incremented only while [installed] is true, so the cost in
  * production is a single volatile read per image load.
@@ -50,6 +57,24 @@ object PerfTrace {
 
     @Volatile
     private var installed = false
+
+    /**
+     * The two lines the monitor would have printed, for the debug readout in
+     * Settings.
+     *
+     * The log is the right channel for a number you want to analyse; it is the
+     * wrong channel for a number you want to *report*, because it needs a cable,
+     * a computer and an unlocked bootloader. The same strings are mirrored here so
+     * anyone can scroll the library, open Settings and read what happened.
+     */
+    private val _lastGesture = MutableStateFlow<String?>(null)
+    val lastGesture: StateFlow<String?> = _lastGesture.asStateFlow()
+
+    private val _lastWindow = MutableStateFlow<String?>(null)
+    val lastWindow: StateFlow<String?> = _lastWindow.asStateFlow()
+
+    /** True when the frame monitor is running: debug builds only. */
+    val isEnabled: Boolean get() = installed
 
     /**
      * Where a frame's time went, per gesture.
@@ -239,15 +264,14 @@ object PerfTrace {
         } else {
             ""
         }
-        Log.i(
-            TAG,
-            "$verdict scroll frames=$gestureFrames slow=$gestureJank " +
-                "avg=${ms(average)} worst=${ms(gestureWorstNs)}$stages " +
-                // Read, never reset: the two-second window report owns the reset,
-                // so a gesture line must not steal its counts.
-                "cacheHits=${cacheHits.get()} thumbs=${thumbDecodes.get()} " +
-                "pageDecodes=${pageDecodes.get()}"
-        )
+        val line = "$verdict scroll frames=$gestureFrames slow=$gestureJank " +
+            "avg=${ms(average)} worst=${ms(gestureWorstNs)}$stages " +
+            // Read, never reset: the two-second window report owns the reset,
+            // so a gesture line must not steal its counts.
+            "cacheHits=${cacheHits.get()} thumbs=${thumbDecodes.get()} " +
+            "pageDecodes=${pageDecodes.get()}"
+        Log.i(TAG, line)
+        _lastGesture.value = line
     }
 
     private fun report() {
@@ -266,11 +290,9 @@ object PerfTrace {
         val detail = "frames=$WINDOW p50=${ms(p50)} p90=${ms(p90)} max=${ms(max)} " +
             "cacheHits=${cacheHits.getAndSet(0)} thumbs=${thumbDecodes.getAndSet(0)} " +
             "pageDecodes=${pageDecodes.getAndSet(0)}"
-        if (janky) {
-            Log.i(TAG, "JANK $detail")
-        } else {
-            Log.i(TAG, "smooth $detail")
-        }
+        val line = if (janky) "JANK $detail" else "smooth $detail"
+        Log.i(TAG, line)
+        _lastWindow.value = line
     }
 
     private fun ms(nanos: Long): String = "${nanos / 1_000_000}ms"
