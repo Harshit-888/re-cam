@@ -68,15 +68,25 @@ class SettingsStore(
         pending.value = settings
     }
 
+    /** Writes immediately, bypassing the debounce. Used on the way out of the app. */
+    suspend fun writeNowBlocking(settings: AppSettings) = withContext(Dispatchers.IO) {
+        writeNow(settings)
+    }
+
     private fun writeNow(settings: AppSettings) {
         try {
             val target = settingsFile
             val temp = File(target.parentFile, "$FILE_NAME.tmp")
             temp.writeText(json.encodeToString(AppSettings.serializer(), settings))
-            if (target.exists()) target.delete()
+            // Rename over the target rather than deleting it first: see the note in
+            // LibraryStore.writeNow. Deleting first is a window with no settings at
+            // all, and a kill inside it silently resets the user's theme.
             if (!temp.renameTo(target)) {
-                target.writeText(temp.readText())
-                temp.delete()
+                try {
+                    temp.copyTo(target, overwrite = true)
+                } finally {
+                    temp.delete()
+                }
             }
         } catch (_: Throwable) {
             // A lost settings write must never crash the UI; the next change reschedules.

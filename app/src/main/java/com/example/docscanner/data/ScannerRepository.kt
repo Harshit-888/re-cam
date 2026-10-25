@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.util.UUID
 
 /**
@@ -62,6 +63,17 @@ private const val OCR_BATCH_SPACING_MS = 220L
  */
 private const val OCR_PAUSE_POLL_MS = 250L
 
+/**
+ * How long after launch the orphan sweep runs.
+ *
+ * Page files that no document points at — a discarded scan, an import that failed
+ * halfway, a capture interrupted by a crash — otherwise stay on disk forever at
+ * one to three megabytes each. The sweep is a directory listing plus a handful of
+ * `delete` calls on `Dispatchers.IO`; the delay only keeps it away from the first
+ * frames, which is when the user is most likely to be scrolling.
+ */
+private const val ORPHAN_SWEEP_DELAY_MS = 5000L
+
 class ScannerRepository(context: Context) {
 
     private val appContext = context.applicationContext
@@ -99,6 +111,13 @@ class ScannerRepository(context: Context) {
                     documents = documents
                 )
             }.collect { store.schedule(it) }
+        }
+
+        // Delete page files nothing references. Late, off the main thread, and
+        // after the restored library is known: see ORPHAN_SWEEP_DELAY_MS.
+        scope.launch {
+            delay(ORPHAN_SWEEP_DELAY_MS)
+            ImageStore.sweepOrphans(appContext, referencedPageFiles())
         }
     }
 
@@ -460,13 +479,71 @@ class ScannerRepository(context: Context) {
         }
     }
 
+    // -------------------------------------------------------- file hygiene
+
+    /**
+     * Deletes the page files of pages that were captured but never committed.
+     *
+     * The camera writes each page to `files/pages` the moment the shutter fires —
+     * before any document exists — so leaving the session without pressing Done
+     * used to leave full-resolution JPEGs behind with nothing pointing at them.
+     * Deliberately on the repository's scope, not the screen's: the screen is
+     * already being disposed when this is called.
+     */
+    fun discardPages(pages: List<ScannedPage>) {
+        if (pages.isEmpty()) return
+        val snapshot = pages.toList()
+        scope.launch { ImageStore.deleteDocumentFiles(appContext, snapshot) }
+    }
+
+    /**
+     * Every file a document in the library — including the trash — still needs.
+     *
+     * All three names per page, not just `imageUri`: the pristine capture is not
+     * referenced by the model once a page has been baked, and it is exactly the
+     * source the next re-edit needs. Sweeping on `imageUri` alone would quietly
+     * destroy every original in the library.
+     */
+    private fun referencedPageFiles(): Set<String> {
+        val paths = HashSet<String>()
+        _documents.value.forEach { doc ->
+            doc.pages.forEach { page ->
+                paths += ImageStore.pageFile(appContext, page.id).absolutePath
+                paths += ImageStore.editedFile(appContext, page.id).absolutePath
+                paths += ImageStore.editedLosslessFile(appContext, page.id).absolutePath
+                listOfNotNull(page.imageUri, page.originalImageUri, page.signatureOverlayUri)
+                    .filterNot { it.startsWith("content://") }
+                    .filter { it.contains('/') }
+                    .forEach { paths += it }
+            }
+        }
+        return paths
+    }
+
     // -------------------------------------------------------- lifecycle
 
     /**
-     * Cancels the persistence scope. Call from the owning Activity's
-     * `onDestroy` only when finishing (not on configuration change).
+     * Flushes the last edit and cancels the persistence scope. Call from the owning
+     * Activity's `onDestroy` only when finishing (not on configuration change).
+     *
+     * The flush is deliberate and blocking: every mutation is persisted through a
+     * 150 ms debounce, so without this a rename, a page move or a filter applied in
+     * the last moments before the app was closed is simply lost. It is a single
+     * small file write on the way out; the alternative is silent data loss.
      */
     fun close() {
+        runCatching {
+            runBlocking {
+                store.writeNowBlocking(
+                    LibrarySnapshot(
+                        schemaVersion = LibraryStore.CURRENT_SCHEMA_VERSION,
+                        folders = _folders.value,
+                        documents = _documents.value
+                    )
+                )
+                settingsStore.writeNowBlocking(_settings.value)
+            }
+        }
         scope.cancel()
     }
 

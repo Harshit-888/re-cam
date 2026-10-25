@@ -18,6 +18,71 @@ Verified Rounds 21 through 24 locally with `./gradlew testDebugUnitTest` and `./
   - All unit tests pass cleanly in 31s (`testDebugUnitTest`).
   - `app-debug.apk` (65,384,497 bytes) assembled cleanly in 17s (`assembleDebug`).
 
+## 2026-10-25 (ak) — Arena.ai — Round 25: a data-loss sweep, and a faster first fling
+
+An audit of the storage, capture and editor paths for defects rather than a feature.
+Five of them were losing user data or leaking it; two were making the first scroll
+after launch slower than it had to be.
+
+### Data loss
+
+- **`data/LibraryStore.kt`, `data/SettingsStore.kt`** — `writeNow` deleted the target
+  before renaming the temp file over it. That is a window in which `library.json`
+  does not exist: a kill, a crash or the OS reclaiming the process inside it left no
+  library at all, and the next launch started from an empty one. The rename now goes
+  straight over the target (atomic on a normal filesystem); the copy fallback
+  overwrites instead of deleting first. `SettingsStore` gained `writeNowBlocking`.
+- **`data/ScannerRepository.kt`** — `close()` cancelled the persistence scope without
+  flushing. Every mutation is written through a 150 ms debounce, so a rename, a page
+  move or a filter applied just before the app was closed was silently discarded.
+  `close()` now writes the current snapshot (library **and** settings) before
+  cancelling. It blocks the caller by design: one small file write on the way out
+  against losing the edit.
+- **`ui/camera/ScannerCameraScreen.kt`** — *Discard* only popped the screen. Every
+  page captured in that session had already been written to `files/pages` (that is
+  what makes the shutter feel instant) and nothing pointed at those files, so each
+  abandoned scan left full-resolution JPEGs on disk permanently. It now calls the
+  new `ScannerRepository.discardPages(...)`, which deletes them on the repository's
+  scope — not the screen's, which is already being disposed.
+- **`util/ImageStore.kt`, `data/ScannerRepository.kt`** — `ImageStore.sweepOrphans`
+  existed but was never called, so nothing ever cleaned up after a crash, a failed
+  import or a cancelled picker. It is now run once per launch, five seconds in, on
+  IO. It was also unsafe as written: it swept on `imageUri` alone, and an edited
+  page's `imageUri` names only the bake — the pristine capture (the source every
+  later re-edit is rendered from) would have been deleted. It now receives all three
+  names a page can occupy plus the model's own URIs, and skips anything modified in
+  the last ten minutes so a capture in flight is never swept. The decision is a pure
+  function, `isOrphanedPageFile(...)`, pinned by `OrphanSweepTest`.
+- **`ui/editor/CropAndFilterScreen.kt`** — leaving the editor with system back or the
+  close button dropped a corner the user had just dragged: `persistGeometry()` only
+  ran on a page switch, on Continue and before a bake. A `DisposableEffect` now
+  persists on dispose, comparing against the stored geometry first so leaving with
+  nothing to save does not bump `modifiedDate` and re-sort the library.
+
+### Scroll, at launch
+
+- **`util/PageImageLoader.kt`** — `prefetch` now takes at most **one** of the two
+  decode slots (`Semaphore(1)`, `tryAcquire`). Speculative rows could previously fill
+  both, and the tile the user was actually looking at waited behind work for rows
+  still off screen. Dropping a prefetch that cannot start immediately is free: the
+  tile asks for itself when it appears.
+- **`ui/dashboard/DashboardScreen.kt`** — the startup warm-up covers six rows
+  (`WARM_ROWS`, up from four) and starts three frames in (`WARM_START_DELAY_MS = 48`,
+  down from 180) instead of nearly two hundred milliseconds after the screen is
+  already usable.
+
+### Also
+
+- **`ui/detail/DocumentDetailScreen.kt`** — the page grid looked up
+  `document.pages.indexOfFirst { ... }` once per visible tile on every
+  recomposition; it uses `itemsIndexed` now. Quadratic in the one list a long scan
+  makes long.
+
+### Unchanged
+
+Filter output, bake path, PDF output, capture geometry, palette, typography and the
+`ThumbnailStore` on-disk format.
+
 ## 2026-10-25 (aj) — Arena.ai — Round 24: the tiles are there before the finger is
 
 Third report of the same complaint, so this round stops guessing about *which* part

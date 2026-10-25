@@ -91,6 +91,7 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai & Antigravity | ✅ merged & verified (Round 22) | `ui/dashboard/DashboardScreen.kt`, `ui/common/PageThumbnail.kt`, `util/PerfTrace.kt`, docs | Overdraw removed (transparent Scaffold, footer-only card background, placeholder-only cover fill) and one perf log line per scroll gesture. See §6m. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 23) | `ui/editor/CropAndFilterScreen.kt`, `data/ScannerRepository.kt`, docs | The batch border pass now auto-detects every page instead of making the user walk them; the strip marks the pages the detector was unsure about. Additive `setPageCorners`. Fixed `needsCheck` param in `BordersControls`. See §6n. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 24) | `ui/dashboard/DashboardScreen.kt`, `util/ThumbnailStore.kt`, `util/PerfTrace.kt`, `MainActivity.kt`, `app/build.gradle.kts`, docs | First-fling warm-up, two-way non-blocking prefetch, single-pass thumbnail decode at the tile size, per-frame stage attribution and non-debuggable `benchmark` build type. Fixed `visibleItemsInfo` layout branch and `COMMAND_ISSUE_DURATION`. See §6o. |
+| Arena.ai | 🚧 in review (Round 25) | `data/LibraryStore.kt`, `data/SettingsStore.kt`, `data/ScannerRepository.kt`, `util/ImageStore.kt`, `util/PageImageLoader.kt`, `ui/camera/ScannerCameraScreen.kt`, `ui/editor/CropAndFilterScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `app/src/test/.../OrphanSweepTest.kt`, docs | Data-loss fixes (atomic library writes, flush on close, discarded scans and orphan page files deleted, editor geometry saved on exit), a prefetch priority gate, and a wider/earlier startup warm-up. See §6p. |
 
 ## 5. File ownership map
 
@@ -664,6 +665,66 @@ debug-signed, same application id) is the honest comparison:
 ./gradlew assembleBenchmark
 adb install -r app/build/outputs/apk/benchmark/app-benchmark.apk
 ```
+
+## 6p. Storage safety, and the first fling (Arena, 2026-10-25, round 25)
+
+### Nothing to provision
+
+### The rules that now protect user data
+
+- **`LibraryStore.writeNow` / `SettingsStore.writeNow` rename over the target; they
+  never delete it first.** A delete-then-rename leaves an instant with no library on
+  disk, and a kill inside it silently starts the app from an empty library.
+- **`ScannerRepository.close()` flushes before it cancels its scope.** Every mutation
+  is persisted through a 150 ms debounce, so cancelling without a flush loses the
+  last edit. Do not "optimise" the blocking write away.
+- **A page's file can have three names** — `pages/<id>.jpg`,
+  `pages/<id>_edited.jpg`, `pages/<id>_edited.png`.
+  `ScannerRepository.referencedPageFiles()` returns all of them for every page of
+  every document (trash included) plus the model's own URIs. **Anything that builds
+  a "keep" set must go through it**; sweeping on `imageUri` alone deletes the
+  pristine capture of every edited page.
+- **`ImageStore.sweepOrphans` keeps anything modified in the last ten minutes**
+  (`ORPHAN_GRACE_MS`). The camera writes a page at the shutter press, before any
+  document references it. The decision is `isOrphanedPageFile(...)`, pinned by
+  `OrphanSweepTest`.
+- **Discarding a scan must delete its pages**: `repository.discardPages(pages)`. The
+  camera has already written them; nothing else will ever remove them.
+- **The editor persists geometry on dispose** (`DisposableEffect`), not only on a page
+  switch. It compares against the stored values first, so an exit with no edit does
+  not move `modifiedDate`.
+
+### Image loading priorities
+
+- `PageImageLoader.prefetch` is gated to **one** decode slot. Visible tiles always
+  have the other. Any future speculative loader must be gated the same way.
+- `prefetch` re-checks `peek` before spending a slot, and the row collector in
+  `DashboardScreen` skips hits itself — a `peek` hit must never cost a coroutine.
+
+### First fling after launch
+
+Order of events on a cold start, and what each step is allowed to cost:
+
+| when | work | thread |
+| :--- | :--- | :--- |
+| composition | first screen's tiles request covers | main, then decode (2 slots) |
+| +48 ms | `WARM_ROWS = 6` rows warmed into the memory cache | decode (1 slot) |
+| +1.2 s, idle | stored thumbnails built for pages that predate the store | IO |
+| +3 s, idle | ML Kit text backfill (pauses the moment a scroll starts) | IO |
+| +5 s | orphan page-file sweep | IO |
+
+None of it touches the main thread, and everything after the first row is cancellable
+the moment a gesture begins.
+
+### Still the biggest lever, and it needs a device
+
+A debuggable APK runs interpreted/JIT'd code; the first scroll after launch is the
+one that pays for compiling the hot path. `./gradlew assembleBenchmark` (see
+`app/build.gradle.kts`) is the honest comparison, and a real **baseline profile**
+(`androidx.baselineprofile` + a `:baselineprofile` module + a `BaselineProfileRule`
+that starts the dashboard and swipes the library, generated on a physical device,
+`baseline-prof.txt` committed) is the only thing that removes that cost instead of
+hiding it. It cannot be produced in this sandbox: it needs `adb` and real hardware.
 
 ## 7. Known-good state
 

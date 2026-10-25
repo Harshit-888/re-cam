@@ -25,7 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddAPhoto
@@ -245,8 +245,10 @@ fun DocumentDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                items(document.pages, key = { it.id }) { page ->
-                    val index = document.pages.indexOfFirst { it.id == page.id }
+                // `itemsIndexed`, not `indexOfFirst` per item: the old form scanned
+                // the page list once per visible tile on every recomposition, which
+                // is quadratic in the only list a long scan makes long.
+                itemsIndexed(document.pages, key = { _, page -> page.id }) { index, page ->
                     PageGridItem(
                         page = page,
                         canMoveBackward = index > 0,

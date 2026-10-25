@@ -427,12 +427,61 @@ object ImageStore {
         pages.forEach { deletePageFiles(context, it) }
     }
 
-    /** Removes page JPEGs that no document in [documents] references. */
-    fun sweepOrphans(context: Context, referencedPaths: Set<String>) {
+    /**
+     * Removes page files that no document references.
+     *
+     * Two rules make this safe to run automatically, and both are load-bearing:
+     *
+     * * [referencedPaths] must contain **all three** names a page can occupy —
+     *   `pages/<id>.jpg`, `<_edited.jpg>` and `<_edited.png>`. The model only ever
+     *   names the baked file once a page has been edited; sweeping on that alone
+     *   would delete every pristine capture in the library, which is the source
+     *   every later re-edit is rendered from.
+     * * Anything modified inside [ORPHAN_GRACE_MS] is left alone. The camera writes
+     *   a page the moment the shutter fires, before any document points at it, so a
+     *   sweep that ran during a capture would delete the page the user is about to
+     *   keep.
+     *
+     * @return how many files were deleted (for logs/tests).
+     */
+    fun sweepOrphans(
+        context: Context,
+        referencedPaths: Set<String>,
+        graceMs: Long = ORPHAN_GRACE_MS
+    ): Int {
+        var deleted = 0
         runCatching {
+            val now = System.currentTimeMillis()
             pagesDir(context).listFiles()?.forEach { file ->
-                if (file.absolutePath !in referencedPaths) file.delete()
+                val orphaned = isOrphanedPageFile(
+                    filePath = file.absolutePath,
+                    lastModified = file.lastModified(),
+                    referencedPaths = referencedPaths,
+                    now = now,
+                    graceMs = graceMs
+                )
+                if (orphaned && runCatching { file.delete() }.getOrDefault(false)) deleted++
             }
         }
+        return deleted
     }
+
+    /** Files younger than this may belong to a capture that has not been committed. */
+    internal const val ORPHAN_GRACE_MS = 10 * 60 * 1000L
 }
+
+/**
+ * Whether [filePath] may be deleted because nothing in the library needs it.
+ *
+ * Split out of [ImageStore.sweepOrphans] and kept pure so the two rules that make
+ * the sweep safe can be tested without a `Context`. Getting either wrong destroys
+ * user data: the first would delete the pristine capture of every edited page, the
+ * second would delete a page the camera has just written and is about to commit.
+ */
+internal fun isOrphanedPageFile(
+    filePath: String,
+    lastModified: Long,
+    referencedPaths: Set<String>,
+    now: Long,
+    graceMs: Long = ImageStore.ORPHAN_GRACE_MS
+): Boolean = filePath !in referencedPaths && lastModified <= now - graceMs

@@ -803,6 +803,13 @@ fun ScannerCameraScreen(
                 confirmButton = {
                     TextButton(onClick = {
                         showDiscardDialog = false
+                        // The pages were written to disk as they were captured
+                        // (that is what makes the shutter feel instant), so
+                        // discarding has to remove them. Nothing else will: no
+                        // document points at these files. The repository owns the
+                        // delete because this screen is being disposed.
+                        repository.discardPages(capturedPages.toList())
+                        capturedPages.clear()
                         onClose()
                     }) {
                         Text("Discard", color = MaterialTheme.colorScheme.error)

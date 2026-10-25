@@ -83,11 +83,19 @@ class LibraryStore(
             val target = libraryFile
             val temp = File(target.parentFile, "$FILE_NAME.tmp")
             temp.writeText(json.encodeToString(LibrarySnapshot.serializer(), snapshot))
-            if (target.exists()) target.delete()
+            // Rename *over* the target. On a normal filesystem that is atomic: the
+            // old library is readable right up to the instant the new one replaces
+            // it. This used to delete the target first, which left a window — a
+            // kill, a crash, the OS reclaiming the process — where the library was
+            // simply gone and the next launch started from an empty library.
             if (!temp.renameTo(target)) {
-                // Rename can fail across some filesystems; fall back to a copy.
-                target.writeText(temp.readText())
-                temp.delete()
+                // Some filesystems refuse to rename onto an existing file. Copy
+                // over the target's contents instead; still never delete first.
+                try {
+                    temp.copyTo(target, overwrite = true)
+                } finally {
+                    temp.delete()
+                }
             }
         } catch (_: Throwable) {
             // Losing a debounce write must never crash the UI. The next mutation

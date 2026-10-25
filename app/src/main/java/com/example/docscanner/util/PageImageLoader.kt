@@ -8,6 +8,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
 
 /**
@@ -67,6 +68,21 @@ object PageImageLoader {
      */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private val decodeDispatcher = Dispatchers.IO.limitedParallelism(2)
+
+    /**
+     * One decode at a time may be a *prefetch*.
+     *
+     * [decodeDispatcher] allows two, which is right — but prefetch work is
+     * speculative and the tiles on screen are not. Without this gate, a fling could
+     * fill both slots with rows that are still off screen, and the tile the user is
+     * looking at would queue behind them: the list would show grey for several
+     * frames while the decoder worked on something nobody could see. Prefetch now
+     * takes at most one slot; the other always belongs to whatever is visible.
+     *
+     * `tryAcquire` rather than `acquire`: a prefetch that cannot start right now is
+     * worth dropping, not queueing. The tile will ask for itself when it appears.
+     */
+    private val prefetchGate = Semaphore(1)
 
     /**
      * Loads in flight, keyed exactly like [cache].
@@ -161,6 +177,10 @@ object PageImageLoader {
      * either finds it in memory or joins this decode as a waiter.
      */
     suspend fun prefetch(context: Context, imageUri: String?, reqWidth: Int, reqHeight: Int) {
+        // Already resident, or another prefetch is running: either way there is
+        // nothing worth doing, and no slot worth spending.
+        if (peek(imageUri, reqWidth, reqHeight) != null) return
+        if (!prefetchGate.tryAcquire()) return
         try {
             load(context, imageUri, reqWidth, reqHeight)
         } catch (cancellation: kotlinx.coroutines.CancellationException) {
@@ -170,6 +190,8 @@ object PageImageLoader {
         } catch (_: Throwable) {
             // A prefetch failing is not an error anyone can act on: the tile will
             // ask for itself when it becomes visible.
+        } finally {
+            prefetchGate.release()
         }
     }
 

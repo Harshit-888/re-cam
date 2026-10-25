@@ -58,6 +58,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -529,6 +530,32 @@ fun CropAndFilterScreen(
             it.copy(corners = corners, rotationDegrees = rotation)
         }
         borderedPages[activePageId] = true
+    }
+
+    // Leaving the screen must not throw away a corner the user dragged.
+    //
+    // `persistGeometry` runs on a page switch, on Continue and before a bake — but
+    // not on system back or the close button, which used to drop the drag silently
+    // (the pixels were never touched, so nothing looked wrong until the page was
+    // reopened). Compared against the stored geometry so an exit with nothing to
+    // save does not bump `modifiedDate` and re-sort the library.
+    DisposableEffect(docId) {
+        onDispose {
+            val stored = repository.getDocumentById(docId)
+                ?.pages
+                ?.find { it.id == activePageId }
+                ?: return@onDispose
+            if (stored.corners != corners || stored.rotationDegrees != rotation) {
+                // Written straight to the repository rather than through
+                // `persistGeometry`: that also marks the page as signed off in
+                // `borderedPages`, and this composable is being disposed — mutating
+                // the session's state map on the way out buys nothing and is the one
+                // write here that does not need to happen.
+                repository.updatePage(docId, activePageId) {
+                    it.copy(corners = corners, rotationDegrees = rotation)
+                }
+            }
+        }
     }
 
     fun goToPage(index: Int) {

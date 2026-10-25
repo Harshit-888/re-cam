@@ -347,8 +347,9 @@ fun DashboardScreen(
     // memory, and a decode takes tens of milliseconds. A settings row is never blank
     // because there is nothing to decode; this is the same promise for a photo.
     //
-    // Cheap by construction: eight covers at ~6 ms each on the decode threads, with
-    // a `peek` skip for anything already warm. It is deliberately *not* gated on
+    // Cheap by construction: twelve covers at ~6 ms each on the decode threads,
+    // with a `peek` skip for anything already warm (which is everything the first
+    // screen just loaded). It is deliberately *not* gated on
     // idleness — the whole point is to finish before the first fling starts — and it
     // is keyed on the library so a newly scanned document warms its own cover.
     LaunchedEffect(activeDocs, isGridView, coverSize, listCoverSize) {
@@ -718,7 +719,7 @@ private const val PREFETCH_ROWS = 2
  * screen and a half up front makes the first fling find pixels the same way every
  * later one does.
  */
-private const val WARM_ROWS = 4
+private const val WARM_ROWS = 6
 
 /**
  * How long the library gets to itself before background text recognition starts.
@@ -736,8 +737,15 @@ private const val OCR_START_DELAY_MS = 3000L
  */
 private const val THUMBNAIL_PRIME_DELAY_MS = 1200L
 
-/** How long the first screen gets before its neighbours are warmed into memory. */
-private const val WARM_START_DELAY_MS = 180L
+/**
+ * How long the first screen gets before its neighbours are warmed into memory.
+ *
+ * Three frames. The tiles that are already on screen have issued their own loads
+ * during the first composition, so this loop cannot preempt them however early it
+ * starts; it only has to wait long enough that the first frame is not competing
+ * with it for the decode threads.
+ */
+private const val WARM_START_DELAY_MS = 48L
 
 /** Pause between thumbnail-repair chunks, so the decoder cannot saturate a core. */
 private const val PRIME_CHUNK_PAUSE_MS = 350L
