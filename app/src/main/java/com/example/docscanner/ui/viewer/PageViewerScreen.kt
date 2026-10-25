@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronLeft
@@ -283,7 +282,7 @@ fun PageViewerScreen(
     if (showOcrSheet) {
         ModalBottomSheet(
             onDismissRequest = { showOcrSheet = false },
-            shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp)
+            shape = DocShapes.sheet
         ) {
             Column(
                 modifier = Modifier

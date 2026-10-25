@@ -48,7 +48,6 @@ import androidx.compose.material.icons.outlined.ViewList
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -967,11 +966,11 @@ fun CreateFolderDialog(
             }
         },
         confirmButton = {
-            Button(
-                onClick = { if (folderName.isNotBlank()) onConfirm(folderName, selectedColor) },
+            PillButton(
+                text = "Create",
                 enabled = folderName.isNotBlank(),
-                shape = DocShapes.pill
-            ) { Text("Create") }
+                onClick = { if (folderName.isNotBlank()) onConfirm(folderName, selectedColor) }
+            )
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }

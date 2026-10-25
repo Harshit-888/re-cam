@@ -31,6 +31,7 @@ import com.example.docscanner.theme.DocShapes
 import com.example.docscanner.theme.LocalDocAccents
 import com.example.docscanner.theme.pressScale
 import com.example.docscanner.ui.common.PageThumbnail
+import com.example.docscanner.ui.common.PillButton
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -57,7 +58,6 @@ import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.outlined.PhotoLibrary
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -513,10 +513,12 @@ fun ScannerCameraScreen(
                     )
                     if (!hasCameraPermission) {
                         Spacer(Modifier.height(14.dp))
-                        Button(
-                            onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
-                            shape = DocShapes.pill
-                        ) { Text("Grant permission") }
+                        PillButton(
+                            text = "Grant permission",
+                            container = accents.scan,
+                            content = accents.onScan,
+                            onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }
+                        )
                     }
                 }
             }

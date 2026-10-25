@@ -9,6 +9,7 @@ import androidx.compose.material3.ripple
 import com.example.docscanner.theme.DocShapes
 import com.example.docscanner.theme.pressScale
 import com.example.docscanner.ui.common.InfoPill
+import com.example.docscanner.ui.common.PillButton
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -39,7 +40,6 @@ import androidx.compose.material.icons.outlined.Draw
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -64,6 +64,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.docscanner.data.ScannerRepository
@@ -305,7 +306,14 @@ fun DocumentDetailScreen(
         var newNotes by remember { mutableStateOf(document.notes) }
         AlertDialog(
             onDismissRequest = { showRenameDialog = false },
-            title = { Text("Edit document") },
+            shape = DocShapes.dialog,
+            title = {
+                Text(
+                    "Edit document",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
             text = {
                 Column {
                     OutlinedTextField(
@@ -313,7 +321,7 @@ fun DocumentDetailScreen(
                         onValueChange = { newTitle = it },
                         label = { Text("Title") },
                         singleLine = true,
-                        shape = RoundedCornerShape(16.dp),
+                        shape = DocShapes.field,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(12.dp))
@@ -322,13 +330,14 @@ fun DocumentDetailScreen(
                         onValueChange = { newNotes = it },
                         label = { Text("Notes") },
                         minLines = 3,
-                        shape = RoundedCornerShape(16.dp),
+                        shape = DocShapes.field,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
             },
             confirmButton = {
-                Button(
+                PillButton(
+                    text = "Save",
                     onClick = {
                         if (newTitle.isNotBlank()) {
                             repository.updateDocumentTitle(docId, newTitle)
@@ -336,9 +345,7 @@ fun DocumentDetailScreen(
                         repository.setDocumentNotes(docId, newNotes)
                         showRenameDialog = false
                     }
-                ) {
-                    Text("Save")
-                }
+                )
             },
             dismissButton = {
                 TextButton(onClick = { showRenameDialog = false }) {
@@ -354,19 +361,27 @@ fun DocumentDetailScreen(
         }
         AlertDialog(
             onDismissRequest = { showWatermarkDialog = false },
-            title = { Text("Set Watermark Text") },
+            shape = DocShapes.dialog,
+            title = {
+                Text(
+                    "Set watermark",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
             text = {
                 OutlinedTextField(
                     value = watermarkText,
                     onValueChange = { watermarkText = it },
                     label = { Text("Watermark (e.g. COPY, CONFIDENTIAL)") },
                     singleLine = true,
-                    shape = RoundedCornerShape(16.dp),
+                    shape = DocShapes.field,
                     modifier = Modifier.fillMaxWidth()
                 )
             },
             confirmButton = {
-                Button(
+                PillButton(
+                    text = "Apply to all pages",
                     onClick = {
                         document.pages.forEach { page ->
                             repository.updatePage(docId, page.id) {
@@ -375,9 +390,7 @@ fun DocumentDetailScreen(
                         }
                         showWatermarkDialog = false
                     }
-                ) {
-                    Text("Apply to All Pages")
-                }
+                )
             },
             dismissButton = {
                 TextButton(onClick = { showWatermarkDialog = false }) {
