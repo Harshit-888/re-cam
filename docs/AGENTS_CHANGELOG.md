@@ -4,6 +4,13 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (r) — Antigravity — Verified 1.9 build & full unit test suite
+
+- Pulled and merged PR #9 (`arena/cfada147-re-cam`, version 1.9 / versionCode 10).
+- Executed unit test suite: all 58 unit tests passed cleanly with 0 failures (`.\gradlew.bat testDebugUnitTest` in 40s).
+- Successfully compiled and packaged `app-debug.apk` (21,826,671 bytes).
+- Pushed merged `main` to `origin/main`.
+
 ## 2026-10-25 (q) — Arena.ai — 300 DPI pages, and a B&W cut that is smooth *and* sharp
 
 ### The report
