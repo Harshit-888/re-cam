@@ -38,12 +38,14 @@ android {
         //     ./gradlew assembleBenchmark
         //     adb install -r app/build/outputs/apk/benchmark/app-benchmark.apk
         create("benchmark") {
-            initWith(getByName("release"))
+            // Qualified deliberately: inside this block the receiver is the build
+            // type, not the container.
+            initWith(android.buildTypes.getByName("release"))
             isDebuggable = false
             matchingFallbacks += listOf("release")
             // `findByName`, not `getByName`: this must never be able to break
             // `assembleDebug` on a machine without a debug keystore configured yet.
-            signingConfig = signingConfigs.findByName("debug")
+            signingConfig = android.signingConfigs.findByName("debug")
         }
     }
     compileOptions {
