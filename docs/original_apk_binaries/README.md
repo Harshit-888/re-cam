@@ -9,6 +9,8 @@ These ground-truth binaries were extracted directly from the original production
 | [`classes2.dex`](classes2.dex) | 9,215,892 bytes | `base.apk` | Secondary Dalvik executable code (contains pipeline models and utilities). |
 | [`classes3.dex`](classes3.dex) | 7,067,980 bytes | `base.apk` | Third Dalvik split. |
 | [`classes4.dex`](classes4.dex) | 7,052,964 bytes | `base.apk` | Fourth Dalvik split. |
+| [`split_config.arm64_v8a.apk`](split_config.arm64_v8a.apk) | 50,915,184 bytes | Google Play Split Delivery | Complete ARM64 native split APK (contains `libimageproc.so`, `libopencv_java4.so`, etc.). |
+| [`split_config.xxhdpi.apk`](split_config.xxhdpi.apk) | 150,183 bytes | Google Play Split Delivery | Complete XXHDPI resource split APK. |
 
 ### Tooling & Inspection Notes for Arena.ai
 - **Native Disassembly**: Disassembly, dynamic symbols, and C decompilations are documented in [`docs/ORIGINAL_APP_FILTER_SPEC.md`](../ORIGINAL_APP_FILTER_SPEC.md).
