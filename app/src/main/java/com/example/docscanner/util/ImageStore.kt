@@ -403,9 +403,19 @@ object ImageStore {
 
     /** Deletes both the pristine and edited files for a page. */
     fun deletePageFiles(context: Context, page: ScannedPage) {
+        // Resolve the covers while the files still exist: their keys are derived
+        // from the file's size and mtime, so once it is gone the name is unknown.
+        val thumbKeys = listOfNotNull(
+            ThumbnailStore.key(context, pageFile(context, page.id).absolutePath),
+            ThumbnailStore.key(context, editedFile(context, page.id).absolutePath),
+            ThumbnailStore.key(context, editedLosslessFile(context, page.id).absolutePath)
+        )
         runCatching { pageFile(context, page.id).delete() }
         runCatching { editedFile(context, page.id).delete() }
         runCatching { editedLosslessFile(context, page.id).delete() }
+        thumbKeys.forEach { key ->
+            runCatching { ThumbnailStore.file(context, key).delete() }
+        }
     }
 
     fun deleteDocumentFiles(context: Context, pages: List<ScannedPage>) {
