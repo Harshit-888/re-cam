@@ -4,6 +4,20 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (ak) — Antigravity — Rounds 21–24 build verification & compilation fixes
+
+Verified Rounds 21 through 24 locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. Resolved 3 compilation issues from uncompiled Arena commits:
+
+- `DashboardScreen.kt`:
+  - Resolved `Unresolved reference 'visibleItemsInfo'` in row prefetcher snapshotFlow. Evaluated `gridState.layoutInfo.visibleItemsInfo` and `listState.layoutInfo.visibleItemsInfo` in separate `if (isGridView)` branches to ensure proper smart-casting.
+- `CropAndFilterScreen.kt`:
+  - Added `needsCheck: (ScannedPage) -> Boolean` parameter to `BordersControls` and forwarded it from `CropAndFilterScreen`, resolving `Unresolved reference 'needsCheck'` at line 1201.
+- `PerfTrace.kt`:
+  - Replaced non-existent `FrameMetrics.COMMAND_DURATION` with `FrameMetrics.COMMAND_ISSUE_DURATION` at line 161.
+- Build status:
+  - All unit tests pass cleanly in 31s (`testDebugUnitTest`).
+  - `app-debug.apk` (65,384,497 bytes) assembled cleanly in 17s (`assembleDebug`).
+
 ## 2026-10-25 (aj) — Arena.ai — Round 24: the tiles are there before the finger is
 
 Third report of the same complaint, so this round stops guessing about *which* part

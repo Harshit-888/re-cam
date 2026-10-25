@@ -158,7 +158,7 @@ object PerfTrace {
                 gestureSyncNs += metrics.getMetric(FrameMetrics.SYNC_DURATION)
                 gestureLayoutNs += metrics.getMetric(FrameMetrics.LAYOUT_MEASURE_DURATION)
                 gestureDrawNs += metrics.getMetric(FrameMetrics.DRAW_DURATION)
-                gestureCommandNs += metrics.getMetric(FrameMetrics.COMMAND_DURATION)
+                gestureCommandNs += metrics.getMetric(FrameMetrics.COMMAND_ISSUE_DURATION)
                 // `gpu` needs HWUI timing, which only exists from 31 and is -1 when
                 // the device does not report it; counting a -1 would poison the
                 // average.

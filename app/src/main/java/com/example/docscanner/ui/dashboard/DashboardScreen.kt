@@ -313,9 +313,13 @@ fun DashboardScreen(
         val perRow = if (isGridView) GRID_COLUMNS else 1
         val size = if (isGridView) coverSize else listCoverSize
         snapshotFlow {
-            val info = if (isGridView) gridState.layoutInfo else listState.layoutInfo
-            val first = info.visibleItemsInfo.firstOrNull()?.index ?: -1
-            val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            val (first, last) = if (isGridView) {
+                val items = gridState.layoutInfo.visibleItemsInfo
+                (items.firstOrNull()?.index ?: -1) to (items.lastOrNull()?.index ?: -1)
+            } else {
+                val items = listState.layoutInfo.visibleItemsInfo
+                (items.firstOrNull()?.index ?: -1) to (items.lastOrNull()?.index ?: -1)
+            }
             // Quantised to whole rows: the window only moves when the user has
             // actually scrolled past a row.
             (first / perRow) to (last / perRow)
