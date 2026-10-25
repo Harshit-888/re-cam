@@ -4,6 +4,11 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (s) — Antigravity — Added original APK binaries for Arena.ai
+
+- Added `docs/original_apk_binaries/` containing `libimageproc.so` (138 KB), `classes.dex` (10 MB), `classes2.dex` (9.2 MB), `classes3.dex` (7.0 MB), and `classes4.dex` (7.0 MB) directly extracted from the original release splits (`base.apk` and `split_config.arm64_v8a.apk`).
+- Added index `docs/original_apk_binaries/README.md` for direct bytecode and symbol inspection.
+
 ## 2026-10-25 (r) — Antigravity — Verified 1.9 build & full unit test suite
 
 - Pulled and merged PR #9 (`arena/cfada147-re-cam`, version 1.9 / versionCode 10).
