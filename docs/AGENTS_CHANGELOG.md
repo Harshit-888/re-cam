@@ -4,6 +4,93 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (aa) — Arena.ai — Round 17: 4:3 viewfinder, border detection rebuilt, filters made fast
+
+Four reports: border detection "worse and not working at all", the filter applying
+too slowly, the camera not 4:3, and search over PDF text. The first three are here;
+the fourth needs a decision from the user (see the note at the end).
+
+### Camera — 4:3 everywhere
+
+`Preview` and `ImageCapture` now share one `ResolutionSelector` with
+`AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY`, and the viewfinder is hosted
+in a centred `fillMaxWidth().aspectRatio(3f / 4f)` box instead of `fillMaxSize()`.
+Before, the stream was displayed `FILL_CENTER` edge to edge on a 20:9 phone, so the
+frame the user composed was **not** the frame that got captured — the top and
+bottom of the shot were already cropped away before the shutter.
+
+`PreviewView` is `FIT_CENTER`, not `FILL_CENTER`: when a device refuses 4:3 the
+stream is letterboxed inside the 3:4 host rather than cropped, so the preview keeps
+telling the truth about the capture.
+
+### Border detection — rewritten (`util/DocumentDetector.kt`)
+
+The old detector scanned inward from each frame edge and took the **first**
+gradient above a global threshold. Five things were wrong with that, and together
+they explain "not working at all":
+
+1. It only accepted edges **strictly inside** the frame, so the most common shot —
+   the page filling the frame — produced no sides and fell through to "no crop".
+2. Its threshold came from the magnitude distribution of a photo full of text, so
+   text strokes cleared it easily and "first edge from the left" often landed on
+   text rather than paper.
+3. There was no notion of *which side of an edge the paper is on*, so a dark text
+   block looked exactly like a page boundary.
+4. RANSAC tolerance was 1.2 % of the frame (~4 px at working size) — loose enough
+   to accept a line of text as a side.
+5. `validate` rejected `ys[0] >= ys[2]`, so a genuinely full-frame page was thrown
+   away as invalid.
+
+The new pipeline works on a **background image**: grey → morphological closing on a
+half-width copy (erases ink, keeps paper) → bilinear upscale → box blur. Each side
+is then found by walking inward until the background tone crosses the midpoint
+between the paper and the surrounding tone, with a step test across a band wider
+than a text line so flat noise and slow shadows cannot manufacture an edge. The
+crossing is interpolated between adjacent samples, which is unbiased for a blurred
+step; the old "strongest gradient" idea is not, because a blur makes the difference
+flat for several pixels.
+
+Practical consequences:
+
+- **A side that is not found means "the page runs off the frame"** and is replaced
+  by the frame edge — the correct answer, not a failure.
+- A frame with no usable contrast returns `FULL_FRAME` with `confident = true`:
+  there is nothing to crop and nothing to adjust.
+- `extremePointQuad` is gone. It was the previous silent failure mode: it would
+  return a confident-looking quad containing a page corner and a text line.
+- The old constants (`MIN_SIDE_INLIERS`, `EDGE_FLOOR`, `RANSAC_TOLERANCE` and
+  friends) are gone or re-tuned; nothing outside this file referenced them.
+
+Measured on 47 synthetic pages (perspective, drop shadows, fingers, glare, low
+light, low contrast, white desk on white paper, a receipt, a 40° rotation, a page
+running off the frame) — max corner error against ground truth:
+
+| | within 2 % | p90 | worst |
+|---|---|---|---|
+| previous | 41 / 47 | 5.9 % | 37.4 % |
+| this | 46 / 47 | 0.95 % | 3.7 % |
+
+Every gross failure of the previous version was a crop **into the page** (up to 37 %
+of the frame), which is exactly what the user sees as "it cut my document".
+
+### Filters — the Grayscale median, 50× fewer operations
+
+`medianBlurGray(…, 9)` (Grayscale, and the reference the Rust kernel is checked
+against) re-sorted its 81-value window from scratch for every pixel: ~1600
+comparisons per pixel, ~12.6 **billion** on a 3200 px page. It now slides a 256-bin
+tone histogram and tracks the median position incrementally — a couple of dozen
+operations per pixel. The median of an odd-sized multiset is unique, so the output
+is **bit-identical**; the Rust parity check still passes unchanged.
+
+This kernel is deliberately no longer routed through Rust: a comparison-based
+median is O(k²) per pixel in any language, so the histogram wins even against
+native code. `NativeFilters.medianBlurGray` stays, and is still verified against
+the Kotlin implementation on first use.
+
+`DocumentFilters.apply` now logs one line when a filter takes ≥ 400 ms
+(`DocumentFilters: MAGIC_COLOR took 1830ms at 2400x3200`), which is the only
+measurement available on a real device.
+
 ## 2026-10-25 (z) — Arena.ai — Home screen: pinned title, "Doc Scanner", and the real scroll-jank fixes
 
 Reported: the home screen lagged badly, the title said "Library", and the app name

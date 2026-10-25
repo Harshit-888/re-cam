@@ -11,6 +11,8 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
@@ -39,6 +41,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -150,7 +153,11 @@ fun ScannerCameraScreen(
     }
 
     val previewView = remember {
-        PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
+        // FIT_CENTER, not FILL_CENTER: if a device refuses 4:3 and the stream comes
+        // back in some other shape, FIT_CENTER letterboxes it inside the 3:4 host
+        // so the user still sees exactly what will be captured. FILL_CENTER would
+        // crop the preview and hand back a wider photo than the one framed.
+        PreviewView(context).apply { scaleType = PreviewView.ScaleType.FIT_CENTER }
     }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var boundCamera by remember { mutableStateOf<Camera?>(null) }
@@ -176,11 +183,26 @@ fun ScannerCameraScreen(
                 {
                     try {
                         val resolved = providerFuture.get().also { provider = it }
-                        val preview = Preview.Builder().build().also {
-                            it.setSurfaceProvider(previewView.surfaceProvider)
-                        }
+                        // 4:3 for both use cases.
+                        //
+                        // The sensor's native shape is 4:3, so asking for it is also
+                        // the only way to avoid a crop: any other ratio is produced by
+                        // cutting the frame down, which throws away exactly the
+                        // border pixels the detector needs.
+                        val resolution = ResolutionSelector.Builder()
+                            .setAspectRatioStrategy(
+                                AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
+                            )
+                            .build()
+                        val preview = Preview.Builder()
+                            .setResolutionSelector(resolution)
+                            .build()
+                            .also {
+                                it.setSurfaceProvider(previewView.surfaceProvider)
+                            }
                         val capture = ImageCapture.Builder()
                             .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                            .setResolutionSelector(resolution)
                             .build()
 
                         resolved.unbindAll()
@@ -386,8 +408,14 @@ fun ScannerCameraScreen(
 
         if (hasCameraPermission) {
             Box(
+                // A 4:3 sensor shown in portrait is 3:4. The viewfinder is exactly
+                // that shape and centred, with the surrounding area black: showing
+                // the stream edge-to-edge on a 20:9 phone meant the frame the user
+                // composed was not the frame that got captured.
                 modifier = Modifier
-                    .fillMaxSize()
+                    .align(Alignment.Center)
+                    .fillMaxWidth()
+                    .aspectRatio(3f / 4f)
                     .pointerInput(maxZoomRatio) {
                         if (maxZoomRatio <= 1.0001f) return@pointerInput
                         detectTransformGestures(panZoomLock = true) { _, _, zoomChange, _ ->
@@ -405,7 +433,8 @@ fun ScannerCameraScreen(
             }
         }
 
-        // No scrim / guide frame: the preview is full-bleed.
+        // No scrim and no guide frame: what the user frames is what gets
+        // captured, so there is nothing to line up against.
         //
         // The old overlay drew a dark window with a pulsing dashed border. It was
         // decorative only (never part of the captured JPEG), and it actively hurt

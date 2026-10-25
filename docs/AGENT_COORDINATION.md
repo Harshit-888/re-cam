@@ -262,6 +262,32 @@ changes; `PageImageLoader.clear()` gained an optional `Context` parameter
 - `PageImageLoader` now maintains a disk thumbnail cache under `cacheDir/thumbs`
   for requests ≤ 1024 px. Anything larger (viewer, editor) deliberately bypasses
   it. If you add a screen that shows pages at ≥ 1024 px, expect a full decode.
+
+## 6h. Border detection + filter speed (claimed by Arena, 2026-10-25, round 17)
+
+Files: `util/DocumentDetector.kt` (rewritten internals, same public API),
+`util/DocumentFilters.kt`, `ui/camera/ScannerCameraScreen.kt`.
+
+- `DocumentDetector.detect()` / `detectQuad()` / `Detection(corners, confident)`
+  are unchanged. Everything else inside the object was replaced — if you were
+  relying on a private constant, it is gone.
+- **Do not** reintroduce a "first strong gradient from the frame edge" scan to this
+  file. That is the algorithm that produced confident crops through the middle of
+  a page. The invariant the current one depends on:
+  - sides are found on a *closed + blurred* background image, never on raw
+    gradients, because ink must not look like paper;
+  - a side with no candidate means the page runs off the frame → frame edge;
+  - an unchanged `confident = false` means "invite manual adjustment".
+- Camera: both `Preview` and `ImageCapture` are pinned to 4:3 and the viewfinder is
+  a 3:4 box. If you add a second preview surface or change the resolution
+  selector, keep the two use cases on the same `ResolutionSelector` — a preview in
+  a different aspect than the capture is what made framing unreliable.
+- `DocumentFilters.medianBlurGray` is the histogram implementation and is **not**
+  routed to Rust any more (it is faster than the native comparison-based median).
+  The Rust kernel is still parity-checked against it. If you touch either, run
+  `verifyNativeFilters()` coverage in the unit tests.
+- `DocumentFilters.apply` logs slow filters at `Log.i("DocumentFilters", …)`.
+
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-25 (`./gradlew assembleDebug testDebugUnitTest` passed).

@@ -30,8 +30,8 @@ import kotlin.math.sqrt
  * | Original | `qx3` colour branch | passthrough |
  * | Grayscale | `qx3` gray branch → `Imgproc.cvtColor(BGR2GRAY)` | Rec.601 luminance, **no** enhancement |
  * | Lighten | `tw3` → `enhancePhoto(blackPoint, whitePoint, colorMode)` | linear stretch between the estimated points |
- * | Magic Color | `lu3` → `enhanceDocument(level = 1)` | paper surface → saturated divide → ink curve → saturation → midtone sharpen |
- * | Clear B&W | `lu3` → `enhanceDocument(level = 2)` | paper surface → median → Otsu, refined locally (Sauvola) → soft edge ramp |
+ * | Magic Color | `lu3` → `enhanceDocument(level = 1)` | paper map → divide table → Laplacian-blended ink curve, per channel |
+ * | Clear B&W | `lu3` → `enhanceDocument(level = 2)` | paper map → divide table through curve A, then grayscale |
  *
  * Three things in the previous revision were simply **not in the original** and
  * are gone:
@@ -45,13 +45,16 @@ import kotlin.math.sqrt
  *
  * The two document filters delegate to native C++ (`libimageproc.so`). Its JNI
  * table and imports were recovered from the shipped ARM64 ELF (spec §6) and the
- * short routines were decompiled (§7), so the **step list** below is a
- * transcription: `cv::dilate` → `cv::erode` on the background estimate, a divide
- * by it, `cv::medianBlur` before `cv::LUT`-driven thresholding, `cv::Laplacian`
- * sharpening. What is *not* recovered is `ColorizingRadius::computeRadius`, the
- * one size-dependent radius behind the stripped PLT, so the reach is a model —
- * isolated in the "reconstruction" block below so calibration touches one place
- * and nothing else moves.
+ * processing routines were decompiled (§13), so the step lists below are a
+ * transcription rather than a reconstruction: a block-pooled paper map, a
+ * 256 × 256 divide table built from the response curve, and — for level 1 only —
+ * a `medianBlur(3)` + `Laplacian` edge strength that blends the two ink curves.
+ * There is no `cv::threshold` anywhere in `enhanceDocument`; the binarisation of
+ * Clear B&W falls out of the divide table itself.
+ *
+ * What the disassembly does **not** settle is listed in spec §13.10 (which of the
+ * two curves is the flat-area end of level 1's blend, and a few table details);
+ * those readings are marked INFERRED wherever they are used.
  *
  * Blocking CPU work — call from `Dispatchers.Default`/`IO`, never composition.
  */
@@ -106,6 +109,9 @@ object DocumentFilters {
 
     /** Longest edge used for the live editor preview. */
     const val PREVIEW_DIMENSION = 900
+
+    /** Filters slower than this are logged, so a slow device can be diagnosed. */
+    private const val SLOW_FILTER_MS = 400L
 
     // ==================================================================================
     // Transcribed verbatim from the original APK — do not "improve" these.
@@ -601,6 +607,7 @@ object DocumentFilters {
         if (type == FilterType.ORIGINAL || src.isRecycled) return src
         val (w, h, pixels) = rgbaOf(src, maxDimension) ?: return src
 
+        val startedAt = System.nanoTime()
         try {
             when (type) {
                 FilterType.LIGHTEN -> applyLinearStretch(pixels, estimate(src))
@@ -615,6 +622,12 @@ object DocumentFilters {
             // the unfiltered source there saves a page with no filter at all.
             if (error is OutOfMemoryError) throw error
             return src
+        }
+        // A single line, only when a filter is slow enough to be felt. This is the
+        // only measurement that exists on a real device, so it stays.
+        val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
+        if (elapsedMs >= SLOW_FILTER_MS) {
+            Log.i(TAG, "${type.name} took ${elapsedMs}ms at ${w}x$h")
         }
 
         return Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also {
@@ -682,48 +695,82 @@ object DocumentFilters {
      */
     internal fun medianBlurGray(pixels: IntArray, w: Int, h: Int, ksize: Int) {
         if (ksize < 3 || w < 3 || h < 3) return
-        // Rust when it is available *and* has been proven byte-identical to the
-        // reference below (see [nativeFiltersReady]); otherwise this is the same
-        // code the app shipped before the kernels existed.
-        if (nativeFiltersReady() && NativeFilters.medianBlurGray(pixels, w, h, ksize)) return
+        // Deliberately not routed through Rust. Both implementations return the
+        // median of the same multiset, so the output is identical either way, but a
+        // comparison-based median is O(k²) per pixel in *any* language while the
+        // histogram below is O(k). At 3200 px the difference is a filter that takes
+        // tens of seconds versus one that takes a fraction of one.
         medianBlurGrayReference(pixels, w, h, ksize)
     }
 
-    /** Pure-Kotlin median over the grey plane: the parity reference for Rust. */
+    /**
+     * Median over the grey plane, by sliding histogram.
+     *
+     * A 9 × 9 window is re-sorted from scratch per pixel by the reference
+     * implementation this replaced — 81 values, partially selection-sorted, i.e.
+     * about 1600 comparisons per pixel and 12 *billion* on a full page. Here the
+     * window's tone histogram is updated as it slides (one column leaves, one
+     * enters) and the median position is tracked incrementally, so a pixel costs
+     * a couple of dozen operations.
+     *
+     * The result is bit-identical to the selection median — the median of an
+     * odd-sized multiset is unique — which is why this doubles as the parity
+     * reference for the Rust kernel (`NativeFilters.medianBlurGray` is still
+     * checked against it on first use).
+     *
+     * Edge handling matches the reference: coordinates are clamped, so the pixels
+     * at the border are counted as many times as the window asks for them.
+     */
     private fun medianBlurGrayReference(pixels: IntArray, w: Int, h: Int, ksize: Int) {
         if (ksize < 3 || w < 3 || h < 3) return
         val radius = ksize / 2
         val source = IntArray(w * h) { greyOf(pixels[it]) }
+        val total = ksize * ksize
+        val middle = total / 2
         bands(h) { from, to ->
-            // Per-band scratch: the bands run concurrently, so a shared window would
-            // be a data race that only shows up on multi-core devices.
-            val window = IntArray(ksize * ksize)
+            // Per-band scratch: the bands run concurrently, so a shared histogram
+            // would be a data race that only shows up on multi-core devices.
+            val window = IntArray(256)
             for (y in from until to) {
+                window.fill(0)
+                // Histogram of the window centred on x = 0.
+                for (dy in -radius..radius) {
+                    val row = (y + dy).coerceIn(0, h - 1) * w
+                    for (dx in -radius..radius) {
+                        window[source[row + dx.coerceIn(0, w - 1)]]++
+                    }
+                }
+                var median = 128
+                // `below` is the number of window pixels strictly darker than the
+                // current median bin; the invariant below <= middle < below + window[median]
+                // is what makes the median readable straight off the histogram.
+                var below = 0
+                for (bin in 0 until median) below += window[bin]
                 for (x in 0 until w) {
-                    var n = 0
-                    for (dy in -radius..radius) {
-                        val yy = (y + dy).coerceIn(0, h - 1)
-                        val row = yy * w
-                        for (dx in -radius..radius) {
-                            window[n++] = source[row + (x + dx).coerceIn(0, w - 1)]
+                    if (x > 0) {
+                        val leavingColumn = (x - 1 - radius).coerceIn(0, w - 1)
+                        val enteringColumn = (x + radius).coerceIn(0, w - 1)
+                        for (dy in -radius..radius) {
+                            val row = (y + dy).coerceIn(0, h - 1) * w
+                            val leaving = source[row + leavingColumn]
+                            window[leaving]--
+                            if (leaving < median) below--
+                            val entering = source[row + enteringColumn]
+                            window[entering]++
+                            if (entering < median) below++
                         }
                     }
-                    val middle = n / 2
-                    // Partial selection: only the median position has to be correct.
-                    for (k in 0..middle) {
-                        var minIndex = k
-                        for (j in k + 1 until n) {
-                            if (window[j] < window[minIndex]) minIndex = j
-                        }
-                        if (minIndex != k) {
-                            val swap = window[k]
-                            window[k] = window[minIndex]
-                            window[minIndex] = swap
-                        }
+                    while (median < 255 && below + window[median] <= middle) {
+                        below += window[median]
+                        median++
                     }
-                    val v = window[middle]
+                    while (median > 0 && below > middle) {
+                        median--
+                        below -= window[median]
+                    }
                     val p = pixels[y * w + x]
-                    pixels[y * w + x] = (p and ALPHA_MASK) or (v shl 16) or (v shl 8) or v
+                    pixels[y * w + x] =
+                        (p and ALPHA_MASK) or (median shl 16) or (median shl 8) or median
                 }
             }
         }

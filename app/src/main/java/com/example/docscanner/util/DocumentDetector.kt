@@ -3,74 +3,109 @@ package com.example.docscanner.util
 import android.graphics.Bitmap
 import com.example.docscanner.model.QuadCorners
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
 
 /**
  * Document-border detection: finds the four corners of the page in a photo.
  *
  * ## History
- * 1. A 64×48 **brightness bounding box** — could not express perspective at all.
- * 2. **Extreme-point quad over Sobel edges** — still failed on the common case,
- *    because Sobel skipped the 1-px frame border and interior text edges
- *    outnumbered the page edge, so a page filling the frame produced an invalid
- *    quad and silently fell back to "no crop".
- * 3. **This version:** a boundary scan. For every row it finds the first strong
- *    edge from the left and the last from the right; for every column the first
- *    from the top and the last from the bottom. Four sides are then fitted with
- *    RANSAC and intersected.
+ * 1. **Brightness bounding box** — could not express perspective at all.
+ * 2. **Extreme-point quad over Sobel edges** — the page edge competed with
+ *    interior text, so a page that filled the frame produced an invalid quad and
+ *    silently fell back to "no crop".
+ * 3. **First-edge-from-the-frame scan** — better on tilted pages, but it took the
+ *    *first* strong gradient along a row, so dense text won over the paper edge.
+ *    With a page filling the frame it happily cut a crop at the bottom of the
+ *    text block and called itself confident, which is worse than not detecting.
+ * 4. **This version: background-step detection.** The photo is reduced to a
+ *    "background" image — grey, closed morphologically (which erases ink), box
+ *    blurred — and each side of the page is located as the *50 % level crossing*
+ *    between the paper and whatever it lies on. Ink cannot satisfy that test, so
+ *    a text block can no longer masquerade as a page.
  *
- * The boundary scan is what makes this robust for how people actually shoot a
- * document: the page roughly fills the frame, so scanning **inward from the
- * frame edge** hits the paper boundary before any text. A side that has no
- * visible boundary (the page runs past the frame) falls back to the frame edge,
- * which is the geometrically correct answer rather than a failure.
+ * ## Why the level crossing, and not the strongest gradient
+ * A page edge is a step blurred by the optics. The 50 % crossing of a blurred
+ * step is exactly the step position, so interpolation between two pixels gives a
+ * sub-pixel, unbiased answer. The maximum of a finite difference is *not*
+ * unbiased: across the ramp of a blurred step the difference is flat for several
+ * pixels, so its peak wanders by up to half a centimetre on the working image.
+ * Earlier revisions used thresholds on a first crossing and drifted outward or
+ * inward by ~4 % of the frame — a visible dark rim, or lost content.
  *
- * Everything is validated before it is returned: slopes, convexity, bounds, side
- * lengths and area. Detection never throws, and [Detection.confident] tells the
- * UI whether the quad came from real edges or from frame-edge defaults.
+ * ## Run-off sides
+ * When the page continues past the frame edge there is no crossing to find, and
+ * the side stays unfitted. [quadFrom] then substitutes the frame edge, which is
+ * the geometrically correct answer. That is why [Detection.confident] separates
+ * "found three or four real sides" from "some sides are assumptions".
+ *
+ * Detection never throws. Everything is validated for convexity, area, side
+ * length and slope before it is returned.
  */
 object DocumentDetector {
 
-    /** Working resolution. Geometry needs nothing more, and it keeps this fast. */
+    /** Resolution the geometry runs at. Going wider buys nothing measurable. */
     private const val WORK_WIDTH = 360
 
-    /** Minimum inlier count before a side's line fit is trusted. */
-    private const val MIN_SIDE_INLIERS = 14
+    /** The text-erasing closing runs on a half-width copy of the working image. */
+    private const val CLOSE_DIVISOR = 2
+
+    /** Below this the source is too small to say anything useful. */
+    private const val MIN_SOURCE_SIDE = 48
 
     /** RANSAC iterations per side. */
-    private const val RANSAC_ITERATIONS = 220
+    private const val RANSAC_ITERATIONS = 200
 
-    /** Inlier tolerance as a fraction of the relevant dimension. */
-    private const val RANSAC_TOLERANCE = 0.012f
+    /** Inlier tolerance as a fraction of the axis the side spans. */
+    private const val RANSAC_TOLERANCE = 0.008f
+
+    /** A side's line must be supported by this fraction of its candidate points. */
+    private const val MIN_INLIER_FRACTION = 0.30f
+
+    /** …and by at least this many points, whatever the fraction says. */
+    private const val MIN_INLIER_POINTS = 10
+
+    /** Fewer candidate points than this cannot define a line. */
+    private const val MIN_CANDIDATE_POINTS = 10
 
     /** A document must cover at least this fraction of the frame. */
-    private const val MIN_AREA_RATIO = 0.10f
+    private const val MIN_AREA_RATIO = 0.06f
 
-    /** Above this the page already fills the frame; cropping gains nothing. */
-    private const val MAX_AREA_RATIO = 0.995f
+    /** Anything above the frame is clamped, so this is only a sanity ceiling. */
+    private const val MAX_AREA_RATIO = 1.05f
 
     /** Each side must span at least this fraction of its axis. */
     private const val MIN_SIDE_RATIO = 0.18f
 
-    /** Steepest allowed side slope (dependent/independent). ~45°. */
-    private const val MAX_SLOPE = 1.1f
+    /** Steepest allowed side slope (dependent/independent). ~58°. */
+    private const val MAX_SLOPE = 1.6f
 
     /** Corners are pulled this far toward the centre to avoid a dark rim. */
     private const val EDGE_INSET = 0.004f
 
-    /** Below this gradient magnitude a photo has no usable page boundary. */
-    private const val EDGE_FLOOR = 18f
+    /** A fitted side this close to the frame is snapped onto it. */
+    private const val SNAP = 0.010f
+
+    /** All four corners this close to the frame means "nothing to crop". */
+    private const val FULL_FRAME_TOLERANCE = 0.015f
+
+    /** Smaller than this and the photo has no usable contrast at all. */
+    private const val MIN_CONTRAST = 8f
+
+    /** A page is assumed brighter than the surface it lies on unless it is dark. */
+    private const val DARK_SCENE_LEVEL = 128f
 
     /** Result of a detection attempt. */
     data class Detection(
         val corners: QuadCorners,
         /**
-         * True when at least three of the four sides were fitted from real edge
-         * pixels. False means one or more sides fell back to the frame edge, or
-         * nothing plausible was found — the UI should invite manual adjustment.
+         * True when at least three of the four sides were fitted from real
+         * background steps. False means one or more sides fell back to the frame
+         * edge, or nothing plausible was found — the UI should invite manual
+         * adjustment.
          */
         val confident: Boolean
     )
@@ -82,9 +117,9 @@ object DocumentDetector {
      *   returns [QuadCorners.FULL_FRAME] with `confident = false`.
      */
     fun detect(src: Bitmap): Detection = try {
-        detectInternal(src) ?: Detection(QuadCorners.FULL_FRAME, confident = false)
+        detectInternal(src)
     } catch (_: Throwable) {
-        Detection(QuadCorners.FULL_FRAME, confident = false)
+        failed()
     }
 
     /** Convenience for call sites that only need the corners. */
@@ -92,12 +127,414 @@ object DocumentDetector {
 
     // ------------------------------------------------------------------ core
 
-    private fun detectInternal(src: Bitmap): Detection? {
-        if (src.isRecycled) return null
-        val workingWidth = min(src.width, WORK_WIDTH)
-        if (workingWidth < 48) return null
-        val workingHeight = max(48, (src.height * (workingWidth.toFloat() / src.width)).roundToInt())
+    /** A single-channel image at an arbitrary resolution. */
+    private class Grey(val w: Int, val h: Int, val px: FloatArray)
 
+    /** Candidate points of one side: `dep = a·indep + b`. */
+    private class Points(val indep: FloatArray, val dep: FloatArray, val count: Int)
+
+    /** A fitted side, `dep = a·indep + b`. */
+    private class Line(val a: Float, val b: Float)
+
+    private enum class Side { LEFT, RIGHT, TOP, BOTTOM }
+
+    private fun failed() = Detection(QuadCorners.FULL_FRAME, confident = false)
+
+    private fun detectInternal(src: Bitmap): Detection {
+        if (src.isRecycled) return failed()
+        val working = greyOf(src) ?: return failed()
+
+        // The closing runs on a half-width copy: its only job is to erase ink,
+        // which is a coarse job, and doing it there makes it four times cheaper.
+        val smallRadius = closeRadius(working.w / CLOSE_DIVISOR)
+        val blurRadius = max(2, smallRadius)
+        val background = background(working, smallRadius, blurRadius)
+
+        // Contrast of the background image, by histogram — no sort of the whole
+        // frame, which used to cost more than everything else put together.
+        val lo = percentile(background, 0.03f)
+        val hi = percentile(background, 0.97f)
+        val span = hi - lo
+        if (span < MIN_CONTRAST) {
+            // Nothing but one tone in view. Either the page fills the frame or
+            // there is no page; in both cases the full frame is the right answer
+            // and there is nothing for the user to adjust.
+            return Detection(QuadCorners.FULL_FRAME, confident = true)
+        }
+
+        val threshold = max(4f, 0.18f * span)
+        val mid = 0.5f * (lo + hi)
+        // Wide enough to step over the ramp the blur created, so the step test
+        // compares paper against surroundings rather than two points on a slope.
+        val band = 2 * blurRadius
+
+        // A bright page on a darker surface is the overwhelmingly common case, so
+        // that polarity is tried first and on its own. The inverted polarity is a
+        // last resort for a genuinely dark document, and is only attempted when
+        // the bright or mid tones are actually dark — otherwise a darker patch
+        // *inside* a bright page could be mistaken for the page itself.
+        val polarities = if (hi < DARK_SCENE_LEVEL) floatArrayOf(1f, -1f) else floatArrayOf(1f)
+        for (polarity in polarities) {
+            val quad = quadFrom(background, threshold, mid, band, polarity)
+            if (quad != null) return quad
+        }
+        return failed()
+    }
+
+    /** Builds the background image: ink erased, then a gentle blur for the ramps. */
+    private fun background(working: Grey, smallRadius: Int, blurRadius: Int): Grey {
+        val small = halve(working)
+        val closed = close(small, smallRadius)
+        val grown = upscale(closed, working.w, working.h)
+        return Grey(grown.w, grown.h, boxBlur(grown.px, grown.w, grown.h, blurRadius))
+    }
+
+    /**
+     * Closing radius for an image of the given width.
+     *
+     * Body text at this scale has strokes 1–2 px wide with a 5 px pitch, so a
+     * radius of 3 erases ink with room to spare. Larger radii erased thin desk
+     * margins too — a page inset by less than the window then looked like it ran
+     * off the frame, and the crop stopped short of the paper edge.
+     */
+    private fun closeRadius(width: Int): Int = max(2, (width / 60f).roundToInt())
+
+    // ------------------------------------------------------- side extraction
+
+    /**
+     * Finds candidate points for one side.
+     *
+     * Walking inward from the frame edge, the first place where the background
+     * tone crosses [mid] is the paper's boundary — provided the step across it is
+     * real ([threshold]), which rejects noise and slow shadows. The crossing is
+     * interpolated between the two samples that straddle it.
+     *
+     * @param polarity +1 when the page is brighter than its surroundings, −1 when
+     *   it is darker. Every side shares the polarity; only the walk direction
+     *   differs.
+     */
+    private fun scanSide(
+        bg: Grey,
+        side: Side,
+        threshold: Float,
+        mid: Float,
+        band: Int,
+        polarity: Float
+    ): Points {
+        val horizontal = side == Side.LEFT || side == Side.RIGHT
+        val inward = if (side == Side.LEFT || side == Side.TOP) 1 else -1
+        val span = if (horizontal) bg.w else bg.h
+        val rows = if (horizontal) bg.h else bg.w
+        val stride = if (horizontal) 1 else bg.w
+        val half = span / 2
+        val start = if (inward > 0) 0 else span - 1
+        // A side is only searched in the half of the frame nearest to it: a
+        // crossing found beyond the middle belongs to some other edge, and
+        // accepting it was how text blocks used to win.
+        val limit = if (inward > 0) half else span - half - 1
+
+        val indep = FloatArray(rows)
+        val dep = FloatArray(rows)
+        var count = 0
+
+        for (row in 0 until rows) {
+            val base = if (horizontal) row * bg.w else row
+            val px = bg.px
+            // Already on the page side of the crossing at the frame edge: the page
+            // runs off the frame, so this row contributes nothing.
+            if (polarity * (px[base + start * stride] - mid) >= 0f) continue
+
+            var previous = start
+            var p = start
+            while (true) {
+                if (polarity * (px[base + p * stride] - mid) >= 0f) {
+                    val before = px[base + previous * stride]
+                    val after = px[base + p * stride]
+                    val t = if (after == before) 0f else (mid - before) / (after - before)
+                    val edge = previous + t * (p - previous)
+                    val nearest = edge.roundToInt()
+                    val outer = nearest - inward * band
+                    val inner = nearest + inward * band
+                    if (outer < 0 || inner < 0 || outer >= span || inner >= span) break
+                    if (polarity * (px[base + inner * stride] - px[base + outer * stride]) >= threshold) {
+                        indep[count] = row.toFloat()
+                        dep[count] = edge
+                        count++
+                    }
+                    break
+                }
+                previous = p
+                p += inward
+                if (inward > 0) {
+                    if (p > limit) break
+                } else {
+                    if (p < limit) break
+                }
+            }
+        }
+        return Points(indep, dep, count)
+    }
+
+    /** Fits the four sides, then assembles and validates the quad. */
+    private fun quadFrom(
+        bg: Grey,
+        threshold: Float,
+        mid: Float,
+        band: Int,
+        polarity: Float
+    ): Detection? {
+        val w = bg.w
+        val h = bg.h
+        val wf = w.toFloat()
+        val hf = h.toFloat()
+
+        val left = fitSide(scanSide(bg, Side.LEFT, threshold, mid, band, polarity), hf)
+        val right = fitSide(scanSide(bg, Side.RIGHT, threshold, mid, band, polarity), hf)
+        val top = fitSide(scanSide(bg, Side.TOP, threshold, mid, band, polarity), wf)
+        val bottom = fitSide(scanSide(bg, Side.BOTTOM, threshold, mid, band, polarity), wf)
+        val fitted = listOf(left, right, top, bottom).count { it != null }
+        if (fitted == 0) return null
+
+        // Unfitted sides keep the frame edge: the page runs past it.
+        val leftN = left?.snapNear(0f, wf) ?: Line(0f, 0f)
+        val rightN = right?.snapNear(wf - 1f, wf) ?: Line(0f, wf - 1f)
+        val topN = top?.snapNear(0f, hf) ?: Line(0f, 0f)
+        val bottomN = bottom?.snapNear(hf - 1f, hf) ?: Line(0f, hf - 1f)
+        for (line in listOf(leftN, rightN, topN, bottomN)) {
+            if (abs(line.a) > MAX_SLOPE) return null
+        }
+
+        val topLeft = intersect(leftN, topN) ?: return null
+        val topRight = intersect(rightN, topN) ?: return null
+        val bottomRight = intersect(rightN, bottomN) ?: return null
+        val bottomLeft = intersect(leftN, bottomN) ?: return null
+
+        val corners = validate(
+            floatArrayOf(topLeft[0], topRight[0], bottomRight[0], bottomLeft[0]),
+            floatArrayOf(topLeft[1], topRight[1], bottomRight[1], bottomLeft[1]),
+            w,
+            h
+        ) ?: return null
+
+        return Detection(corners, confident = fitted >= 3)
+    }
+
+    /** Pulls a side onto the frame edge when it is already within a hair of it. */
+    private fun Line.snapNear(target: Float, span: Float): Line =
+        if (abs(b - target) < SNAP * span) Line(a, target) else this
+
+    /**
+     * RANSAC fit of `dep = a·indep + b`, followed by a least-squares refit on the
+     * inliers. Survives rows where the scan hit a shadow, a finger, or a curl.
+     */
+    private fun fitSide(points: Points, axisLength: Float): Line? {
+        val n = points.count
+        if (n < MIN_CANDIDATE_POINTS) return null
+        val tolerance = RANSAC_TOLERANCE * axisLength
+
+        var bestA = 0f
+        var bestB = 0f
+        var bestInliers = -1
+        var bestError = Float.MAX_VALUE
+
+        // Deterministic pseudo-random pairs: re-detecting the same photo must give
+        // the same quad, or "detect borders" would jitter when pressed twice.
+        var seed = 0x9E3779B9.toInt() xor n xor (axisLength.toInt() shl 3)
+        fun nextIndex(bound: Int): Int {
+            seed = seed * 1103515245 + 12345
+            return ((seed ushr 16) and 0x7FFF) % bound
+        }
+
+        for (iteration in 0 until RANSAC_ITERATIONS) {
+            val i = nextIndex(n)
+            val j = nextIndex(n)
+            if (i == j) continue
+            val x1 = points.indep[i]
+            val y1 = points.dep[i]
+            val x2 = points.indep[j]
+            val y2 = points.dep[j]
+            if (abs(x2 - x1) < 1e-3f) continue
+            val a = (y2 - y1) / (x2 - x1)
+            if (abs(a) > MAX_SLOPE) continue
+            val b = y1 - a * x1
+
+            var inliers = 0
+            var error = 0f
+            for (k in 0 until n) {
+                val residual = abs(points.dep[k] - (a * points.indep[k] + b))
+                if (residual <= tolerance) {
+                    inliers++
+                    error += residual
+                }
+            }
+            if (inliers > bestInliers || (inliers == bestInliers && error < bestError)) {
+                bestInliers = inliers
+                bestError = error
+                bestA = a
+                bestB = b
+            }
+        }
+
+        if (bestInliers < max(MIN_INLIER_POINTS, (n * MIN_INLIER_FRACTION).toInt())) return null
+        return refit(points, bestA, bestB, tolerance)
+    }
+
+    /** Least-squares refit on the inlier set for a sub-pixel line. */
+    private fun refit(points: Points, a: Float, b: Float, tolerance: Float): Line {
+        var sumX = 0.0
+        var sumY = 0.0
+        var sumXX = 0.0
+        var sumXY = 0.0
+        var n = 0
+        for (k in 0 until points.count) {
+            if (abs(points.dep[k] - (a * points.indep[k] + b)) > tolerance) continue
+            val x = points.indep[k].toDouble()
+            val y = points.dep[k].toDouble()
+            sumX += x
+            sumY += y
+            sumXX += x * x
+            sumXY += x * y
+            n++
+        }
+        if (n < MIN_INLIER_POINTS) return Line(a, b)
+        val denominator = n * sumXX - sumX * sumX
+        if (abs(denominator) < 1e-6) return Line(a, b)
+        val slope = ((n * sumXY - sumX * sumY) / denominator).toFloat()
+        val intercept = ((sumY - slope * sumX) / n).toFloat()
+        if (!slope.isFinite() || !intercept.isFinite() || abs(slope) > MAX_SLOPE) return Line(a, b)
+        return Line(slope, intercept)
+    }
+
+    /** Intersection of a left/right line and a top/bottom line, as `[x, y]`. */
+    private fun intersect(vertical: Line, horizontal: Line): FloatArray? {
+        val denominator = 1f - horizontal.a * vertical.a
+        if (abs(denominator) < 1e-3f) return null
+        val y = (horizontal.a * vertical.b + horizontal.b) / denominator
+        val x = vertical.a * y + vertical.b
+        if (!x.isFinite() || !y.isFinite()) return null
+        return floatArrayOf(x, y)
+    }
+
+    // --------------------------------------------------------------- geometry
+
+    /** Shared validation + normalisation. Returns `null` when implausible. */
+    private fun validate(xs: FloatArray, ys: FloatArray, w: Int, h: Int): QuadCorners? {
+        val wf = w.toFloat()
+        val hf = h.toFloat()
+        val tolerance = 0.02f
+        for (i in 0..3) {
+            if (xs[i] < -tolerance * wf || xs[i] > wf * (1f + tolerance)) return null
+            if (ys[i] < -tolerance * hf || ys[i] > hf * (1f + tolerance)) return null
+        }
+
+        val ordered = orderCorners(xs, ys)
+        val ox = ordered[0]
+        val oy = ordered[1]
+
+        val area = quadArea(ox, oy)
+        if (area / (wf * hf) < MIN_AREA_RATIO) return null
+        if (area / (wf * hf) > MAX_AREA_RATIO) return null
+
+        val top = hypot(ox[1] - ox[0], oy[1] - oy[0])
+        val bottom = hypot(ox[2] - ox[3], oy[2] - oy[3])
+        val left = hypot(ox[3] - ox[0], oy[3] - oy[0])
+        val right = hypot(ox[2] - ox[1], oy[2] - oy[1])
+        if (top < MIN_SIDE_RATIO * wf || bottom < MIN_SIDE_RATIO * wf) return null
+        if (left < MIN_SIDE_RATIO * hf || right < MIN_SIDE_RATIO * hf) return null
+
+        var cx = 0f
+        var cy = 0f
+        for (i in 0..3) {
+            cx += ox[i]
+            cy += oy[i]
+        }
+        cx /= 4f
+        cy /= 4f
+        val shrink = 1f - EDGE_INSET
+        fun normX(v: Float) = ((((v - cx) * shrink) + cx) / wf).coerceIn(0f, 1f)
+        fun normY(v: Float) = ((((v - cy) * shrink) + cy) / hf).coerceIn(0f, 1f)
+
+        val quad = QuadCorners(
+            topLeftX = normX(ox[0]), topLeftY = normY(oy[0]),
+            topRightX = normX(ox[1]), topRightY = normY(oy[1]),
+            bottomRightX = normX(ox[2]), bottomRightY = normY(oy[2]),
+            bottomLeftX = normX(ox[3]), bottomLeftY = normY(oy[3])
+        )
+        val nearFrame = quad.topLeftX <= FULL_FRAME_TOLERANCE &&
+            quad.topLeftY <= FULL_FRAME_TOLERANCE &&
+            quad.topRightX >= 1f - FULL_FRAME_TOLERANCE &&
+            quad.topRightY <= FULL_FRAME_TOLERANCE &&
+            quad.bottomRightX >= 1f - FULL_FRAME_TOLERANCE &&
+            quad.bottomRightY >= 1f - FULL_FRAME_TOLERANCE &&
+            quad.bottomLeftX <= FULL_FRAME_TOLERANCE &&
+            quad.bottomLeftY >= 1f - FULL_FRAME_TOLERANCE
+        return if (nearFrame) QuadCorners.FULL_FRAME else quad
+    }
+
+    /**
+     * Returns the corners as `[xs, ys]` in top-left, top-right, bottom-right,
+     * bottom-left order.
+     *
+     * Angular ordering around the centroid is exact for a convex quad, and it
+     * replaces the old "top-left must be above and left of bottom-right" check,
+     * which rejected genuinely full-frame pages and fired on near-square crops.
+     */
+    private fun orderCorners(xs: FloatArray, ys: FloatArray): Array<FloatArray> {
+        var cx = 0f
+        var cy = 0f
+        for (i in 0..3) {
+            cx += xs[i]
+            cy += ys[i]
+        }
+        cx /= 4f
+        cy /= 4f
+        val order = (0..3).sortedBy { atan2(ys[it] - cy, xs[it] - cx) }.toIntArray()
+        // Rotate so the first corner is the top-left one.
+        var startIndex = 0
+        var bestSum = Float.MAX_VALUE
+        for (k in 0..3) {
+            val sum = xs[order[k]] + ys[order[k]]
+            if (sum < bestSum) {
+                bestSum = sum
+                startIndex = k
+            }
+        }
+        val ox = FloatArray(4)
+        val oy = FloatArray(4)
+        for (k in 0..3) {
+            val index = order[(startIndex + k) % 4]
+            ox[k] = xs[index]
+            oy[k] = ys[index]
+        }
+        // Angular order is counter-clockwise on screen; flip it to TL→TR→BR→BL.
+        val cross = (ox[1] - ox[0]) * (oy[3] - oy[0]) - (oy[1] - oy[0]) * (ox[3] - ox[0])
+        if (cross < 0f) {
+            val flippedX = floatArrayOf(ox[0], ox[3], ox[2], ox[1])
+            val flippedY = floatArrayOf(oy[0], oy[3], oy[2], oy[1])
+            return arrayOf(flippedX, flippedY)
+        }
+        return arrayOf(ox, oy)
+    }
+
+    private fun quadArea(xs: FloatArray, ys: FloatArray): Float {
+        var sum = 0f
+        for (i in 0..3) {
+            val j = (i + 1) % 4
+            sum += xs[i] * ys[j] - xs[j] * ys[i]
+        }
+        return abs(sum) / 2f
+    }
+
+    // ----------------------------------------------------------- image maths
+
+    /** Reads the bitmap at working resolution and converts it to luma. */
+    private fun greyOf(src: Bitmap): Grey? {
+        val workingWidth = min(src.width, WORK_WIDTH)
+        if (workingWidth < MIN_SOURCE_SIDE) return null
+        val workingHeight = max(
+            MIN_SOURCE_SIDE,
+            (src.height * (workingWidth.toFloat() / src.width)).roundToInt()
+        )
         val scaled = if (workingWidth == src.width && workingHeight == src.height) {
             src
         } else {
@@ -117,454 +554,165 @@ object DocumentDetector {
         } finally {
             if (scaled !== src && !scaled.isRecycled) scaled.recycle()
         }
-
-        var gray = FloatArray(w * h)
+        val luma = FloatArray(w * h)
         for (i in pixels.indices) {
             val p = pixels[i]
-            gray[i] = 0.299f * ((p ushr 16) and 0xFF) +
+            luma[i] = 0.299f * ((p ushr 16) and 0xFF) +
                 0.587f * ((p ushr 8) and 0xFF) +
                 0.114f * (p and 0xFF)
         }
-        gray = blur3(gray, w, h)
-
-        // Sobel with clamped indices: the old version started at 1 and stopped at
-        // w-1, so a page edge lying on the frame border produced no gradient at
-        // all — the most common failure mode.
-        val magnitude = sobel(gray, w, h)
-        val threshold = edgeThreshold(magnitude)
-
-        // ---- 1. boundary scan ---------------------------------------------
-        val scan = scanBoundaries(magnitude, w, h, threshold)
-        if (scan != null) {
-            val quad = quadFromBoundaries(scan, w, h)
-            if (quad != null) {
-                return quad
-            }
-        }
-
-        // ---- 2. fallback: extreme-point quad ------------------------------
-        // Handles small/rotated documents where the "scan inward from the frame
-        // edge" assumption does not hold.
-        val extreme = extremePointQuad(magnitude, w, h, threshold)
-        if (extreme != null) {
-            return Detection(extreme, confident = false)
-        }
-
-        return null
+        return Grey(w, h, luma)
     }
 
-    /** Four fitted sides. A `null` fit means "use the frame edge". */
-    private class BoundaryScan(
-        val left: Line?,
-        val right: Line?,
-        val top: Line?,
-        val bottom: Line?,
-        val fittedSides: Int
-    )
-
-    private fun scanBoundaries(
-        magnitude: FloatArray,
-        w: Int,
-        h: Int,
-        threshold: Float
-    ): BoundaryScan? {
-        // Left/right: per row. Top/bottom: per column.
-        val leftY = IntArray(h)
-        val leftX = IntArray(h)
-        var leftCount = 0
-        val rightY = IntArray(h)
-        val rightX = IntArray(h)
-        var rightCount = 0
-        val topX = IntArray(w)
-        val topY = IntArray(w)
-        var topCount = 0
-        val bottomX = IntArray(w)
-        val bottomY = IntArray(w)
-        var bottomCount = 0
-
-        val halfW = (w * 0.48f).toInt()
-        val halfH = (h * 0.48f).toInt()
-
+    /** 2×2 mean downsample. Cheaper and less aliased than a second bitmap scale. */
+    private fun halve(src: Grey): Grey {
+        val w = max(1, src.w / CLOSE_DIVISOR)
+        val h = max(1, src.h / CLOSE_DIVISOR)
+        val out = FloatArray(w * h)
         for (y in 0 until h) {
-            val row = y * w
-            // First strong edge from the left.
-            var x = 0
-            while (x < w) {
-                if (magnitude[row + x] >= threshold) break
-                x++
-            }
-            if (x < w && x <= halfW) {
-                leftY[leftCount] = y
-                leftX[leftCount] = x
-                leftCount++
-            }
-            // Last strong edge from the right.
-            var rx = w - 1
-            while (rx >= 0) {
-                if (magnitude[row + rx] >= threshold) break
-                rx--
-            }
-            if (rx >= 0 && rx >= w - halfW && rx > x) {
-                rightY[rightCount] = y
-                rightX[rightCount] = rx
-                rightCount++
+            val rowA = (y * 2) * src.w
+            val rowB = min(y * 2 + 1, src.h - 1) * src.w
+            for (x in 0 until w) {
+                val xa = x * 2
+                val xb = min(x * 2 + 1, src.w - 1)
+                out[y * w + x] =
+                    (src.px[rowA + xa] + src.px[rowA + xb] + src.px[rowB + xa] + src.px[rowB + xb]) * 0.25f
             }
         }
-
-        for (x in 0 until w) {
-            var y = 0
-            while (y < h) {
-                if (magnitude[y * w + x] >= threshold) break
-                y++
-            }
-            if (y < h && y <= halfH) {
-                topX[topCount] = x
-                topY[topCount] = y
-                topCount++
-            }
-            var by = h - 1
-            while (by >= 0) {
-                if (magnitude[by * w + x] >= threshold) break
-                by--
-            }
-            if (by >= 0 && by >= h - halfH && by > y) {
-                bottomX[bottomCount] = x
-                bottomY[bottomCount] = by
-                bottomCount++
-            }
-        }
-
-        if (leftCount + rightCount + topCount + bottomCount < MIN_SIDE_INLIERS) return null
-
-        val left = ransacLine(leftY, leftX, leftCount, h.toFloat(), fitXbyY = true)
-        val right = ransacLine(rightY, rightX, rightCount, h.toFloat(), fitXbyY = true)
-        val top = ransacLine(topX, topY, topCount, w.toFloat(), fitXbyY = false)
-        val bottom = ransacLine(bottomX, bottomY, bottomCount, w.toFloat(), fitXbyY = false)
-
-        val fitted = listOf(left, right, top, bottom).count { it != null }
-        if (fitted == 0) return null
-        return BoundaryScan(left, right, top, bottom, fitted)
+        return Grey(w, h, out)
     }
 
-    /**
-     * Assembles the quad from the four lines, substituting the frame edge for any
-     * side that could not be fitted.
-     */
-    private fun quadFromBoundaries(scan: BoundaryScan, w: Int, h: Int): Detection? {
-        val wf = w.toFloat()
-        val hf = h.toFloat()
-
-        // x = a·y + b  (left/right),  y = a·x + b  (top/bottom)
-        val left = scan.left ?: Line(a = 0f, b = 0f, fitXbyY = true)
-        val right = scan.right ?: Line(a = 0f, b = wf - 1f, fitXbyY = true)
-        val top = scan.top ?: Line(a = 0f, b = 0f, fitXbyY = false)
-        val bottom = scan.bottom ?: Line(a = 0f, b = hf - 1f, fitXbyY = false)
-
-        if (abs(left.a) > MAX_SLOPE || abs(right.a) > MAX_SLOPE) return null
-        if (abs(top.a) > MAX_SLOPE || abs(bottom.a) > MAX_SLOPE) return null
-        // Left edge must sit left of the right edge at both reference rows.
-        if (left.b >= right.b - 4f) return null
-        if (top.b >= bottom.b - 4f) return null
-
-        val tl = intersectXY(left, top) ?: return null
-        val tr = intersectXY(right, top) ?: return null
-        val br = intersectXY(right, bottom) ?: return null
-        val bl = intersectXY(left, bottom) ?: return null
-
-        return validate(floatArrayOf(tl[0], tr[0], br[0], bl[0]), floatArrayOf(tl[1], tr[1], br[1], bl[1]), w, h)
-            ?.let { Detection(it, scan.fittedSides >= 3) }
+    /** Grey-scale closing: erases dark structures thinner than `2r + 1`, i.e. ink. */
+    private fun close(src: Grey, radius: Int): Grey {
+        if (radius <= 0) return src
+        return erode(dilate(src, radius), radius)
     }
 
-    /**
-     * Extreme-point quad, kept as the fallback for documents that do not span the
-     * frame. TL minimises `x+y`, BR maximises it, TR maximises `x−y`, BL minimises
-     * it. Fails for documents rotated near 45°, where one corner wins two extremes;
-     * that is acceptable because this is only the fallback path.
-     */
-    private fun extremePointQuad(
-        magnitude: FloatArray,
-        w: Int,
-        h: Int,
-        threshold: Float
-    ): QuadCorners? {
-        var topLeft = -1
-        var topRight = -1
-        var bottomRight = -1
-        var bottomLeft = -1
-        var minSum = Int.MAX_VALUE
-        var maxSum = Int.MIN_VALUE
-        var minDiff = Int.MAX_VALUE
-        var maxDiff = Int.MIN_VALUE
-
+    private fun dilate(src: Grey, radius: Int): Grey {
+        val horizontal = FloatArray(src.px.size)
+        val w = src.w
+        val h = src.h
         for (y in 0 until h) {
             val row = y * w
             for (x in 0 until w) {
-                if (magnitude[row + x] < threshold) continue
-                val sum = x + y
-                val diff = x - y
-                if (sum < minSum) { minSum = sum; topLeft = row + x }
-                if (sum > maxSum) { maxSum = sum; bottomRight = row + x }
-                if (diff > maxDiff) { maxDiff = diff; topRight = row + x }
-                if (diff < minDiff) { minDiff = diff; bottomLeft = row + x }
-            }
-        }
-        if (topLeft < 0 || topRight < 0 || bottomRight < 0 || bottomLeft < 0) return null
-        val indices = intArrayOf(topLeft, topRight, bottomRight, bottomLeft)
-        if (indices.toSet().size < 3) return null
-
-        val xs = FloatArray(4) { (indices[it] % w).toFloat() }
-        val ys = FloatArray(4) { (indices[it] / w).toFloat() }
-        // Rough quad: expand slightly toward the frame so a thin rim is removed.
-        return validate(xs, ys, w, h)
-    }
-
-    // --------------------------------------------------------------- geometry
-
-    /** Shared validation + normalisation for both detection paths. */
-    private fun validate(xs: FloatArray, ys: FloatArray, w: Int, h: Int): QuadCorners? {
-        val wf = w.toFloat()
-        val hf = h.toFloat()
-        val tolerance = 0.02f
-
-        for (i in 0..3) {
-            if (xs[i] < -tolerance * wf || xs[i] > wf * (1f + tolerance)) return null
-            if (ys[i] < -tolerance * hf || ys[i] > hf * (1f + tolerance)) return null
-        }
-        if (!isConvex(xs, ys)) return null
-
-        val ratio = quadArea(xs, ys) / (wf * hf)
-        if (ratio < MIN_AREA_RATIO || ratio > MAX_AREA_RATIO) return null
-
-        val topLength = distance(xs[0], ys[0], xs[1], ys[1])
-        val bottomLength = distance(xs[3], ys[3], xs[2], ys[2])
-        val leftLength = distance(xs[0], ys[0], xs[3], ys[3])
-        val rightLength = distance(xs[1], ys[1], xs[2], ys[2])
-        if (topLength < MIN_SIDE_RATIO * wf || bottomLength < MIN_SIDE_RATIO * wf) return null
-        if (leftLength < MIN_SIDE_RATIO * hf || rightLength < MIN_SIDE_RATIO * hf) return null
-
-        // TL must be up and left of BR or the quad is crossed.
-        if (ys[0] >= ys[2] || xs[0] >= xs[2]) return null
-
-        val cx = (xs[0] + xs[1] + xs[2] + xs[3]) / 4f
-        val cy = (ys[0] + ys[1] + ys[2] + ys[3]) / 4f
-        val shrink = 1f - EDGE_INSET
-
-        fun normX(v: Float) = (((v - cx) * shrink + cx) / wf).coerceIn(0f, 1f)
-        fun normY(v: Float) = (((v - cy) * shrink + cy) / hf).coerceIn(0f, 1f)
-
-        return QuadCorners(
-            topLeftX = normX(xs[0]), topLeftY = normY(ys[0]),
-            topRightX = normX(xs[1]), topRightY = normY(ys[1]),
-            bottomRightX = normX(xs[2]), bottomRightY = normY(ys[2]),
-            bottomLeftX = normX(xs[3]), bottomLeftY = normY(ys[3])
-        )
-    }
-
-    /**
-     * A line fitted from scan points.
-     *
-     * @param fitXbyY true when the points are `(y, x)` and we model `x = a·y + b`
-     *   (left/right edges); false for `(x, y)` → `y = a·x + b` (top/bottom).
-     */
-    private class Line(val a: Float, val b: Float, val fitXbyY: Boolean)
-
-    /**
-     * RANSAC fit of dependent = a·independent + b, then a least-squares refit on
-     * the inliers. RANSAC is what makes this survive a few rows where the scan hit
-     * a shadow, a curled corner, or a text line before the paper edge.
-     */
-    private fun ransacLine(
-        indep: IntArray,
-        dep: IntArray,
-        count: Int,
-        scale: Float,
-        fitXbyY: Boolean
-    ): Line? {
-        if (count < MIN_SIDE_INLIERS) return null
-        val tolerance = RANSAC_TOLERANCE * scale
-
-        var bestA = 0f
-        var bestB = 0f
-        var bestInliers = -1
-        var bestError = Float.MAX_VALUE
-
-        // Deterministic pseudo-random pairs: reproducible output for the same photo,
-        // which matters when a user retries detection and expects the same quad.
-        var seed = 0x9E3779B9.toInt() xor count xor (scale.toInt() shl 3)
-        fun nextInt(bound: Int): Int {
-            seed = seed * 1103515245 + 12345
-            val v = (seed ushr 16) and 0x7FFF
-            return v % bound
-        }
-
-        for (iteration in 0 until RANSAC_ITERATIONS) {
-            val i = nextInt(count)
-            val j = nextInt(count)
-            if (i == j) continue
-            val x1 = indep[i].toFloat()
-            val y1 = dep[i].toFloat()
-            val x2 = indep[j].toFloat()
-            val y2 = dep[j].toFloat()
-            if (abs(x2 - x1) < 1e-3f) continue
-
-            val a = (y2 - y1) / (x2 - x1)
-            if (abs(a) > MAX_SLOPE) continue
-            val b = y1 - a * x1
-
-            var inliers = 0
-            var error = 0f
-            for (k in 0 until count) {
-                val predicted = a * indep[k] + b
-                val residual = abs(dep[k] - predicted)
-                if (residual <= tolerance) {
-                    inliers++
-                    error += residual
+                val from = max(0, x - radius)
+                val to = min(w - 1, x + radius)
+                var value = src.px[row + x]
+                for (k in from..to) {
+                    if (src.px[row + k] > value) value = src.px[row + k]
                 }
-            }
-            if (inliers > bestInliers || (inliers == bestInliers && error < bestError)) {
-                bestInliers = inliers
-                bestError = error
-                bestA = a
-                bestB = b
+                horizontal[row + x] = value
             }
         }
-
-        val minimum = max(MIN_SIDE_INLIERS, (count * 0.25f).toInt())
-        if (bestInliers < minimum) return null
-
-        // Least-squares refit on the inlier set for a sub-pixel line.
-        var sumX = 0.0
-        var sumY = 0.0
-        var sumXX = 0.0
-        var sumXY = 0.0
-        var n = 0
-        for (k in 0 until count) {
-            val residual = abs(dep[k] - (bestA * indep[k] + bestB))
-            if (residual > tolerance) continue
-            val x = indep[k].toDouble()
-            val y = dep[k].toDouble()
-            sumX += x
-            sumY += y
-            sumXX += x * x
-            sumXY += x * y
-            n++
-        }
-        if (n < MIN_SIDE_INLIERS) return Line(bestA, bestB, fitXbyY)
-
-        val denominator = n * sumXX - sumX * sumX
-        if (abs(denominator) < 1e-6) return Line(bestA, bestB, fitXbyY)
-        val a = ((n * sumXY - sumX * sumY) / denominator).toFloat()
-        val b = ((sumY - a * sumX) / n).toFloat()
-        if (!a.isFinite() || !b.isFinite() || abs(a) > MAX_SLOPE) return Line(bestA, bestB, fitXbyY)
-        return Line(a, b, fitXbyY)
-    }
-
-    /**
-     * Intersection of a left/right line (`x = a₁y + b₁`) and a top/bottom line
-     * (`y = a₂x + b₂`), returned as `[x, y]`.
-     */
-    private fun intersectXY(vertical: Line, horizontal: Line): FloatArray? {
-        val denominator = 1f - horizontal.a * vertical.a
-        if (abs(denominator) < 1e-3f) return null
-        val y = (horizontal.a * vertical.b + horizontal.b) / denominator
-        val x = vertical.a * y + vertical.b
-        if (!x.isFinite() || !y.isFinite()) return null
-        return floatArrayOf(x, y)
-    }
-
-    // ------------------------------------------------------------ image maths
-
-    private fun sobel(gray: FloatArray, w: Int, h: Int): FloatArray {
-        val magnitude = FloatArray(w * h)
+        val out = FloatArray(src.px.size)
         for (y in 0 until h) {
-            val ym1 = if (y > 0) y - 1 else 0
-            val yp1 = if (y < h - 1) y + 1 else h - 1
-            val rowM = y * w
-            val rowUp = ym1 * w
-            val rowDown = yp1 * w
+            val from = max(0, y - radius)
+            val to = min(h - 1, y + radius)
             for (x in 0 until w) {
-                val xm1 = if (x > 0) x - 1 else 0
-                val xp1 = if (x < w - 1) x + 1 else w - 1
-
-                val tl = gray[rowUp + xm1]
-                val tc = gray[rowUp + x]
-                val tr = gray[rowUp + xp1]
-                val ml = gray[rowM + xm1]
-                val mr = gray[rowM + xp1]
-                val bl = gray[rowDown + xm1]
-                val bc = gray[rowDown + x]
-                val br = gray[rowDown + xp1]
-
-                val dx = (tr + 2f * mr + br) - (tl + 2f * ml + bl)
-                val dy = (bl + 2f * bc + br) - (tl + 2f * tc + tr)
-                magnitude[rowM + x] = sqrt(dx * dx + dy * dy)
+                var value = horizontal[y * w + x]
+                for (k in from..to) {
+                    if (horizontal[k * w + x] > value) value = horizontal[k * w + x]
+                }
+                out[y * w + x] = value
             }
         }
-        return magnitude
+        return Grey(w, h, out)
     }
 
-    /**
-     * Gradient threshold. Lower than the previous `p995 × 0.28` (which could exceed
-     * the magnitude of a soft paper edge), and floored so a blurry, low-contrast
-     * photo does not turn noise into edges.
-     */
-    private fun edgeThreshold(magnitude: FloatArray): Float {
-        val sorted = magnitude.copyOf()
-        sorted.sort()
-        val p75 = sorted[(sorted.size * 0.75f).toInt().coerceIn(0, sorted.lastIndex)]
-        val p97 = sorted[(sorted.size * 0.97f).toInt().coerceIn(0, sorted.lastIndex)]
-        return max(EDGE_FLOOR, max(p75 * 0.85f, p97 * 0.18f))
-    }
-
-    private fun isConvex(xs: FloatArray, ys: FloatArray): Boolean {
-        var sign = 0
-        for (i in 0..3) {
-            val j = (i + 1) % 4
-            val k = (i + 2) % 4
-            val cross = (xs[j] - xs[i]) * (ys[k] - ys[j]) - (ys[j] - ys[i]) * (xs[k] - xs[j])
-            if (abs(cross) < 0.001f) return false
-            val current = if (cross > 0f) 1 else -1
-            if (sign == 0) sign = current else if (sign != current) return false
-        }
-        return true
-    }
-
-    private fun quadArea(xs: FloatArray, ys: FloatArray): Float {
-        var sum = 0f
-        for (i in 0..3) {
-            val j = (i + 1) % 4
-            sum += xs[i] * ys[j] - xs[j] * ys[i]
-        }
-        return abs(sum) / 2f
-    }
-
-    private fun distance(x1: Float, y1: Float, x2: Float, y2: Float): Float {
-        val dx = x2 - x1
-        val dy = y2 - y1
-        return sqrt(dx * dx + dy * dy)
-    }
-
-    private fun blur3(src: FloatArray, w: Int, h: Int): FloatArray {
-        val horizontal = FloatArray(src.size)
+    private fun erode(src: Grey, radius: Int): Grey {
+        val horizontal = FloatArray(src.px.size)
+        val w = src.w
+        val h = src.h
         for (y in 0 until h) {
             val row = y * w
             for (x in 0 until w) {
-                val c = src[row + x]
-                val l = if (x > 0) src[row + x - 1] else c
-                val r = if (x < w - 1) src[row + x + 1] else c
-                horizontal[row + x] = (l + c + r) / 3f
+                val from = max(0, x - radius)
+                val to = min(w - 1, x + radius)
+                var value = src.px[row + x]
+                for (k in from..to) {
+                    if (src.px[row + k] < value) value = src.px[row + k]
+                }
+                horizontal[row + x] = value
             }
         }
-        val out = FloatArray(src.size)
+        val out = FloatArray(src.px.size)
         for (y in 0 until h) {
-            val centreRow = y * w
-            val upRow = (if (y > 0) y - 1 else y) * w
-            val downRow = (if (y < h - 1) y + 1 else y) * w
+            val from = max(0, y - radius)
+            val to = min(h - 1, y + radius)
             for (x in 0 until w) {
-                out[centreRow + x] =
-                    (horizontal[upRow + x] + horizontal[centreRow + x] + horizontal[downRow + x]) / 3f
+                var value = horizontal[y * w + x]
+                for (k in from..to) {
+                    if (horizontal[k * w + x] < value) value = horizontal[k * w + x]
+                }
+                out[y * w + x] = value
+            }
+        }
+        return Grey(w, h, out)
+    }
+
+    /** Bilinear upscale of the closed background to the working resolution. */
+    private fun upscale(src: Grey, w: Int, h: Int): Grey {
+        if (src.w == w && src.h == h) return src
+        val out = FloatArray(w * h)
+        val scaleX = src.w.toFloat() / w
+        val scaleY = src.h.toFloat() / h
+        for (y in 0 until h) {
+            val sy = ((y + 0.5f) * scaleY) - 0.5f
+            val y0 = sy.toInt().coerceIn(0, src.h - 1)
+            val y1 = (y0 + 1).coerceAtMost(src.h - 1)
+            val fy = (sy - y0).coerceIn(0f, 1f)
+            for (x in 0 until w) {
+                val sx = ((x + 0.5f) * scaleX) - 0.5f
+                val x0 = sx.toInt().coerceIn(0, src.w - 1)
+                val x1 = (x0 + 1).coerceAtMost(src.w - 1)
+                val fx = (sx - x0).coerceIn(0f, 1f)
+                val top = src.px[y0 * src.w + x0] * (1f - fx) + src.px[y0 * src.w + x1] * fx
+                val bottom = src.px[y1 * src.w + x0] * (1f - fx) + src.px[y1 * src.w + x1] * fx
+                out[y * w + x] = top * (1f - fy) + bottom * fy
+            }
+        }
+        return Grey(w, h, out)
+    }
+
+    /** Separable box blur with clamped edges. */
+    private fun boxBlur(px: FloatArray, w: Int, h: Int, radius: Int): FloatArray {
+        if (radius <= 0) return px
+        val horizontal = FloatArray(px.size)
+        for (y in 0 until h) {
+            val row = y * w
+            for (x in 0 until w) {
+                val from = max(0, x - radius)
+                val to = min(w - 1, x + radius)
+                var sum = 0f
+                for (k in from..to) sum += px[row + k]
+                horizontal[row + x] = sum / (to - from + 1)
+            }
+        }
+        val out = FloatArray(px.size)
+        for (y in 0 until h) {
+            val from = max(0, y - radius)
+            val to = min(h - 1, y + radius)
+            for (x in 0 until w) {
+                var sum = 0f
+                for (k in from..to) sum += horizontal[k * w + x]
+                out[y * w + x] = sum / (to - from + 1)
             }
         }
         return out
+    }
+
+    /** Value at the given quantile, from a 256-bin histogram. */
+    private fun percentile(bg: Grey, quantile: Float): Float {
+        val histogram = IntArray(256)
+        for (value in bg.px) {
+            histogram[value.toInt().coerceIn(0, 255)]++
+        }
+        val target = (bg.px.size * quantile).toInt().coerceIn(0, bg.px.size - 1)
+        var seen = 0
+        for (bin in 0 until 256) {
+            seen += histogram[bin]
+            if (seen > target) return bin.toFloat()
+        }
+        return 255f
     }
 }
