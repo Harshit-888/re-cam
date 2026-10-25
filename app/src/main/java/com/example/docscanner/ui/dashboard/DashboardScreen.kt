@@ -65,6 +65,7 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -99,6 +100,7 @@ import com.example.docscanner.ui.common.PageThumbnail
 import com.example.docscanner.ui.common.PillButton
 import com.example.docscanner.ui.common.SectionLabel
 import com.example.docscanner.util.DocumentNaming
+import com.example.docscanner.util.DocumentSearch
 import com.example.docscanner.util.ImageStore
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -131,6 +133,11 @@ fun DashboardScreen(
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // Recognise text for pages that predate search (bounded to one batch per app
+    // start). Indexing is what makes a scan's words findable at all — the PDFs this
+    // app writes contain no text layer.
+    LaunchedEffect(Unit) { repository.backfillTextInBackground() }
 
     // Settings → Scan → "Use in-app camera" off: scanning goes straight to the
     // system photo picker and each picked image becomes a page. Same import path
@@ -173,24 +180,39 @@ fun DashboardScreen(
     var showSortMenu by remember { mutableStateOf(false) }
     var moveDocId by remember { mutableStateOf<String?>(null) }
 
-    val activeDocs = remember(documents, searchQuery, selectedFolderId, sortOption) {
-        documents
-            .filterNot { it.isTrash }
-            .filter { doc ->
-                val matchesFolder = selectedFolderId == null || doc.folderId == selectedFolderId
-                val matchesSearch = searchQuery.isBlank() ||
-                    doc.title.contains(searchQuery, ignoreCase = true) ||
-                    doc.tags.any { it.contains(searchQuery, ignoreCase = true) } ||
-                    doc.pages.any { it.ocrText.contains(searchQuery, ignoreCase = true) }
-                matchesFolder && matchesSearch
-            }
-            .sortedWith { a, b ->
-                when (sortOption) {
-                    DocumentSortOption.MODIFIED_NEWEST -> b.modifiedDate.compareTo(a.modifiedDate)
-                    DocumentSortOption.MODIFIED_OLDEST -> a.modifiedDate.compareTo(b.modifiedDate)
-                    DocumentSortOption.CREATED_NEWEST -> b.createdDate.compareTo(a.createdDate)
-                    DocumentSortOption.TITLE_AZ -> a.title.compareTo(b.title, ignoreCase = true)
-                    DocumentSortOption.TITLE_ZA -> b.title.compareTo(a.title, ignoreCase = true)
+    // The index is rebuilt when the library changes, never when the query does: a
+    // keystroke is now an index lookup instead of a scan of every page's text.
+    val searchIndex = remember(documents) { DocumentSearch.Index(documents) }
+    val searchHits = remember(searchIndex, searchQuery) {
+        if (searchQuery.isBlank()) emptyList() else searchIndex.search(searchQuery)
+    }
+    val snippetsByDocument = remember(searchHits) {
+        searchHits.mapNotNull { hit -> hit.snippet?.let { hit.document.id to it } }.toMap()
+    }
+
+    val activeDocs = remember(documents, searchHits, searchQuery, selectedFolderId, sortOption) {
+        val inFolder = if (searchQuery.isBlank()) {
+            documents.filterNot { it.isTrash }
+        } else {
+            // Relevance order is the point of a search; the sort control does not
+            // get to re-alphabetise the results.
+            searchHits.map { it.document }
+        }
+        inFolder
+            .filter { doc -> selectedFolderId == null || doc.folderId == selectedFolderId }
+            .let { docs ->
+                if (searchQuery.isNotBlank()) {
+                    docs
+                } else {
+                    docs.sortedWith { a, b ->
+                        when (sortOption) {
+                            DocumentSortOption.MODIFIED_NEWEST -> b.modifiedDate.compareTo(a.modifiedDate)
+                            DocumentSortOption.MODIFIED_OLDEST -> a.modifiedDate.compareTo(b.modifiedDate)
+                            DocumentSortOption.CREATED_NEWEST -> b.createdDate.compareTo(a.createdDate)
+                            DocumentSortOption.TITLE_AZ -> a.title.compareTo(b.title, ignoreCase = true)
+                            DocumentSortOption.TITLE_ZA -> b.title.compareTo(a.title, ignoreCase = true)
+                        }
+                    }
                 }
             }
     }
@@ -351,6 +373,7 @@ fun DashboardScreen(
                         // item that appears, so the list never settles.
                         DocumentGridCard(
                             document = doc,
+                            snippet = snippetsByDocument[doc.id],
                             onClick = { onNavigateToDetail(doc.id) },
                             onDelete = { repository.moveToTrash(doc.id) },
                             onMoveToFolder = { moveDocId = doc.id }
@@ -370,6 +393,7 @@ fun DashboardScreen(
                     ) { doc ->
                         DocumentListCard(
                             document = doc,
+                            snippet = snippetsByDocument[doc.id],
                             onClick = { onNavigateToDetail(doc.id) },
                             onDelete = { repository.moveToTrash(doc.id) },
                             onMoveToFolder = { moveDocId = doc.id }
@@ -598,7 +622,8 @@ fun DocumentGridCard(
     document: Document,
     onClick: () -> Unit,
     onDelete: () -> Unit,
-    onMoveToFolder: () -> Unit
+    onMoveToFolder: () -> Unit,
+    snippet: String? = null
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val dateFormat = remember { SimpleDateFormat("MMM d", Locale.getDefault()) }
@@ -668,12 +693,24 @@ fun DocumentGridCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(Modifier.height(3.dp))
-                Text(
-                    dateFormat.format(Date(document.modifiedDate)),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1
-                )
+                if (snippet == null) {
+                    Text(
+                        dateFormat.format(Date(document.modifiedDate)),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                } else {
+                    // Why this document matched: the sentence around the hit. Without
+                    // it a search result is just a thumbnail the user has to re-open.
+                    Text(
+                        snippet,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }
@@ -685,7 +722,8 @@ fun DocumentListCard(
     document: Document,
     onClick: () -> Unit,
     onDelete: () -> Unit,
-    onMoveToFolder: () -> Unit
+    onMoveToFolder: () -> Unit,
+    snippet: String? = null
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val dateFormat = remember { SimpleDateFormat("MMM d, yyyy · h:mm a", Locale.getDefault()) }
@@ -750,6 +788,16 @@ fun DocumentListCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (snippet != null) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        snippet,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
 
             Box {

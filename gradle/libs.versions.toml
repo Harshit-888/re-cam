@@ -15,6 +15,7 @@ nav3Core = "1.0.1"
 cameraX = "1.4.2"
 kotlinxSerializationJson = "1.9.0"
 lifecycleViewmodelNav3 = "2.10.0"
+mlkitTextRecognition = "16.0.1"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
@@ -44,6 +45,11 @@ androidx-camera-core = { module = "androidx.camera:camera-core", version.ref = "
 androidx-camera-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "cameraX" }
 androidx-camera-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "cameraX" }
 androidx-camera-view = { module = "androidx.camera:camera-view", version.ref = "cameraX" }
+
+# ML Kit text recognition, bundled Latin model. Bundled (not the Play-Services
+# variant) on purpose: scanning must work offline, and a missing Play Services
+# update must never be the reason a page cannot be searched.
+mlkit-text-recognition = { module = "com.google.mlkit:text-recognition", version.ref = "mlkitTextRecognition" }
 
 # Explicit: LibraryStore serialises the library to JSON itself
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }

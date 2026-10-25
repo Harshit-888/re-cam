@@ -7,6 +7,7 @@ import com.example.docscanner.model.Folder
 import com.example.docscanner.model.LibrarySnapshot
 import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.util.ImageStore
+import com.example.docscanner.util.OcrEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -34,6 +35,9 @@ import java.util.UUID
  * deliberate: it means the first composition already sees the restored library
  * instead of flashing an empty state.
  */
+/** How many pages one background text-recognition pass may handle. */
+private const val OCR_BACKFILL_BATCH = 24
+
 class ScannerRepository(context: Context) {
 
     private val appContext = context.applicationContext
@@ -233,8 +237,75 @@ class ScannerRepository(context: Context) {
         }
     }
 
+    /**
+     * Stores recognised page text.
+     *
+     * Deliberately not routed through [updatePage]: that bumps `modifiedDate`, and
+     * background indexing would then reorder the library while the user is looking
+     * at it. Text recognition is metadata about a page, not an edit to it.
+     */
     fun setPageOcrText(docId: String, pageId: String, text: String) {
-        updatePage(docId, pageId) { it.copy(ocrText = text) }
+        _documents.update { docs ->
+            docs.map { doc ->
+                if (doc.id != docId) {
+                    doc
+                } else {
+                    doc.copy(
+                        pages = doc.pages.map { page ->
+                            if (page.id == pageId) page.copy(ocrText = text) else page
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Recognises the text of every page of [docId] that does not have it yet.
+     *
+     * Fire-and-forget on the repository's own scope: a capture must never wait for
+     * recognition, and the work has to outlive the camera screen that started it.
+     * Search is the only consumer, so a failure here costs nothing but a missing
+     * result.
+     */
+    fun indexTextInBackground(docId: String) {
+        val pending = _documents.value
+            .firstOrNull { it.id == docId }
+            ?.pages
+            ?.filter { it.ocrText.isBlank() && it.imageUri.isNotBlank() }
+            ?: return
+        if (pending.isEmpty()) return
+        scope.launch {
+            for (page in pending) {
+                val text = OcrEngine.readPage(page.imageUri) ?: continue
+                setPageOcrText(docId, page.id, text)
+            }
+        }
+    }
+
+    /**
+     * Recognises text for pages that predate the feature, or that failed last run.
+     *
+     * Bounded to one batch per app start: a large library must not turn launching
+     * the app into a long CPU burn. Pages still without text remain searchable by
+     * title and tags.
+     */
+    fun backfillTextInBackground(limit: Int = OCR_BACKFILL_BATCH) {
+        val pending = _documents.value
+            .filterNot { it.isTrash }
+            .flatMap { doc ->
+                doc.pages
+                    .filter { it.ocrText.isBlank() && it.imageUri.isNotBlank() }
+                    .map { doc.id to it }
+            }
+            .take(limit)
+        if (pending.isEmpty()) return
+        scope.launch {
+            for ((docId, page) in pending) {
+                val text = OcrEngine.readPage(page.imageUri) ?: continue
+                setPageOcrText(docId, page.id, text)
+            }
+        }
     }
 
     // ------------------------------------------------------------- trash

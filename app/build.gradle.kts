@@ -141,6 +141,10 @@ dependencies {
   implementation(libs.androidx.camera.lifecycle)
   implementation(libs.androidx.camera.view)
 
+  // On-device text recognition: turns a saved page into searchable text.
+  // See util/OcrEngine.kt and docs/AGENT_COORDINATION.md §6i.
+  implementation(libs.mlkit.text.recognition)
+
   // JSON persistence for the document library
   implementation(libs.kotlinx.serialization.json)
 

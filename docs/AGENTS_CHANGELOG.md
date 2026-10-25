@@ -4,6 +4,69 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (ab) — Arena.ai — Round 18: pages read their own text, and search ranks it
+
+### New dependency (the only one)
+
+`com.google.mlkit:text-recognition:16.0.1` — **bundled** on-device text
+recognition, pinned in `gradle/libs.versions.toml` as
+`mlkit-text-recognition`. Bundled rather than the Play-Services variant so that
+recognition works offline and cannot be broken by a Play Services update; the
+model travels in the APK, which grows by a few MB. No model file is committed —
+see `docs/AGENT_COORDINATION.md` §6i for what the environment must provision.
+
+### Why recognition exists at all
+
+The PDFs this app writes contain **no text layer** — pages are images — and
+`ScannedPage.ocrText` had never been written by anything: `setPageOcrText` existed
+with no callers. "Search inside my PDF content" therefore had nothing to search.
+
+- `util/OcrEngine.kt`: recognises one page, on device, best-effort. Decodes at
+  ≤ 2400 px (a 3200 px page costs ~40 MB to decode and buys no accuracy), and
+  returns `null` — never throws — when a page has no text or the recogniser fails.
+  The Play Services `Task` is bridged with `suspendCancellableCoroutine`, so no
+  extra coroutine-play-services dependency.
+- `ScannerRepository.indexTextInBackground(docId)` runs after a scan is committed,
+  on the repository's own scope, so it outlives the camera screen and nothing the
+  user does waits for it.
+- `ScannerRepository.backfillTextInBackground()` handles pages that predate the
+  feature, capped at `OCR_BACKFILL_BATCH = 24` pages per app start. Unbounded, this
+  would turn launching the app on a big library into a CPU burn.
+
+### A real bug fixed on the way
+
+`setPageOcrText` used to delegate to `updatePage`, which bumps `modifiedDate`.
+Background indexing would therefore have reordered the library under the user, one
+page at a time. It now writes `ocrText` only: recognised text is metadata about a
+page, not an edit to it.
+
+### Search (`util/DocumentSearch.kt`)
+
+The home screen compared every page's text with `contains` **per keystroke** — a
+full re-scan of the library per character, and it could only answer yes/no.
+
+`DocumentSearch.Index` is built once per library change: tokenised title, tags and
+page text into an inverted index, scored with BM25 (term-frequency saturation,
+length normalisation, IDF), with title and tag matches weighted above body text and
+a phrase bonus for the whole query appearing verbatim. Results come back ranked,
+each with the passage that matched — shown under the document's title instead of
+its date, so a result explains itself.
+
+Search results ignore the sort control while a query is active: relevance is the
+ordering the user asked for. Tokenising is Unicode-aware, not `[^a-z0-9]`, because a
+scan can be in any script.
+
+Tests: `app/src/test/.../util/DocumentSearchTest.kt` covers title-over-body ranking,
+term frequency, phrase bonus, snippets and clipping, tag matches, title-only
+matches, empty queries and non-Latin tokenising.
+
+### Still open
+
+Semantic matching — finding "billing" when the page says "invoice" — needs an
+embedding model. It is declared, with its exact file and destination, in
+`docs/AGENT_COORDINATION.md` §6i item 3, and is not wired into the app yet: an
+unverified inference path is precisely how wrong output ships.
+
 ## 2026-10-25 (aa) — Arena.ai — Round 17: 4:3 viewfinder, border detection rebuilt, filters made fast
 
 Four reports: border detection "worse and not working at all", the filter applying

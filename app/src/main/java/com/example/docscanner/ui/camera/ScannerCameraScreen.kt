@@ -320,6 +320,9 @@ fun ScannerCameraScreen(
                 capturedPages.toList()
             ).id
         }
+        // Recognise the text in the background: search only works on pages whose
+        // words have been read, and nothing should make the user wait for that.
+        repository.indexTextInBackground(docId)
         onFinishScan(docId)
     }
 

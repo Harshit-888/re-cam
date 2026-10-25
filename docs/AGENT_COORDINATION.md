@@ -288,6 +288,92 @@ Files: `util/DocumentDetector.kt` (rewritten internals, same public API),
   `verifyNativeFilters()` coverage in the unit tests.
 - `DocumentFilters.apply` logs slow filters at `Log.i("DocumentFilters", …)`.
 
+## 6i. What Antigravity must provision (Arena, 2026-10-25, round 18)
+
+Search over a scan's own words is implemented: pages are recognised on device
+right after they are saved (`util/OcrEngine.kt`, `ScannerRepository.indexTextInBackground`),
+and the home screen ranks results from an inverted index (`util/DocumentSearch.kt`).
+Everything below is what the *environment* needs — no code changes.
+
+### 1. Rust toolchain — native filter kernels (optional, but wanted)
+
+`app/build.gradle.kts` already wires `:app:buildRustKernels` and skips it silently
+when the toolchain is absent, so a machine without Rust still builds a complete,
+correct app (the filters then run the Kotlin reference). To get the kernels:
+
+```bash
+rustup toolchain install stable --profile minimal
+rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+cargo install cargo-ndk --locked
+sdkmanager "ndk;27.0.12077973"
+export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.0.12077973"
+```
+
+Then `./gradlew :app:assembleDebug` — `preBuild` depends on the Rust task — and
+check the artifacts exist:
+
+```bash
+ls -l app/src/main/jniLibs/*/libdocscanner_native.so
+```
+
+Success criteria, in logcat after applying a filter once:
+
+```
+adb logcat -s DocumentFilters NativeFilters
+I DocumentFilters: Rust kernels verified byte-identical to the Kotlin reference
+```
+
+If it says "unavailable or mismatched", the app silently keeps using Kotlin. That
+is a *correct* app, not a broken one, but it means the `.so` was not loaded (wrong
+ABI, missing NDK) or a kernel drifted. **Never** "fix" a mismatch by loosening the
+comparison — the byte-for-byte check is the entire safety argument.
+
+**Do not commit** `app/src/main/jniLibs/`: it is generated and git-ignored.
+
+### 2. ML Kit text recognition — nothing to do
+
+Added as a Gradle dependency (`com.google.mlkit:text-recognition:16.0.1`, bundled
+Latin model, pinned in `gradle/libs.versions.toml`). The first build downloads a
+few MB from Google Maven; the model ships **inside the APK**, so recognition works
+offline and never depends on a Play Services update. Expect the APK to grow by
+roughly that amount — do not swap this for the Play-Services variant to save size,
+it would make search fail offline.
+
+Verification: scan a page with text, wait a second, open the viewer's text sheet —
+the recognised text is there; searching one of those words on the home screen
+returns the document with the matching sentence under its title.
+
+### 3. Semantic search model — NEXT INCREMENT, download when asked
+
+Not wired yet, deliberately: inference cannot be verified in the Arena sandbox, and
+an unverified model path is exactly how wrong output ships. When the next round
+implements the re-rank it needs one asset:
+
+- file: `app/src/main/assets/models/universal_sentence_encoder.tflite`
+- source: MediaPipe TextEmbedder — Universal Sentence Encoder (float32):
+  `https://storage.googleapis.com/mediapipe-models/text_embedder/universal_sentence_encoder/float32/latest/universal_sentence_encoder.tflite`
+  (confirm the URL on the MediaPipe model page; it should be a ~6 MB `.tflite` —
+  if the size is wildly different, stop and ask instead of guessing)
+- record `sha256sum` of the downloaded file in this section before it is used
+- `app/src/main/assets/models/` is git-ignored: the asset is *produced*, never
+  committed (AGENTS.md §2.5)
+- the build will also need `androidResources { noCompress += "tflite" }` so the
+  file can be memory-mapped, plus a MediaPipe Tasks Text dependency. Both land in
+  the same change that uses them, not before — an unused dependency is a liability.
+
+### 4. Behaviour notes for the next agent
+
+- `ScannerRepository.setPageOcrText` no longer bumps `modifiedDate`. It used to go
+  through `updatePage`, so background recognition reordered the library while the
+  user watched it.
+- Recognition is bounded to one batch of 24 pages per app start
+  (`OCR_BACKFILL_BATCH`). Keep that bound: an unbounded sweep turns launching the
+  app on a large library into a CPU burn.
+- `DocumentSearch.Index` is rebuilt when `documents` changes, never when the query
+  changes. Reuse it the same way if another screen gets a search field.
+- Search results are ordered by relevance, so the sort control is ignored while a
+  query is active. That is intentional.
+
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-25 (`./gradlew assembleDebug testDebugUnitTest` passed).
