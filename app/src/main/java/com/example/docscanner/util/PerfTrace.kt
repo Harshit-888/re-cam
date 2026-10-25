@@ -54,6 +54,34 @@ object PerfTrace {
     private val thumbDecodes = AtomicInteger()
     private val pageDecodes = AtomicInteger()
 
+    // ---- per-gesture scroll accounting ------------------------------------
+    // The window below reports *all* frames, most of which happen while the
+    // screen is idle. A scroll is the only thing being complained about, so it
+    // gets its own tally, printed once when the finger lifts: one line per
+    // gesture, with the numbers that decide whether there is a problem at all.
+    @Volatile
+    private var scrolling = false
+    private var gestureFrames = 0
+    private var gestureJank = 0
+    private var gestureWorstNs = 0L
+    private var gestureTotalNs = 0L
+
+    /** Told by the list when a scroll gesture starts and ends. */
+    fun setScrolling(value: Boolean) {
+        if (!installed) return
+        if (value == scrolling) return
+        if (value) {
+            gestureFrames = 0
+            gestureJank = 0
+            gestureWorstNs = 0L
+            gestureTotalNs = 0L
+            scrolling = true
+        } else {
+            scrolling = false
+            reportGesture()
+        }
+    }
+
     /** Starts the frame monitor. No-op on release builds, and idempotent. */
     fun install(context: Context) {
         if (installed) return
@@ -92,11 +120,39 @@ object PerfTrace {
         val previous = lastFrameNanos
         lastFrameNanos = frameTimeNanos
         if (previous == 0L) return
-        frameTimes[filled++] = frameTimeNanos - previous
+        val delta = frameTimeNanos - previous
+        frameTimes[filled++] = delta
         if (filled == WINDOW) {
             filled = 0
             report()
         }
+        if (scrolling) {
+            gestureFrames++
+            gestureTotalNs += delta
+            if (delta > gestureWorstNs) gestureWorstNs = delta
+            // 24 ms is the threshold the Android runtime itself uses for a
+            // "slow frame" on a 60 Hz display.
+            if (delta > 24_000_000L) gestureJank++
+        }
+    }
+
+    /**
+     * One line per gesture. On a 60 Hz phone, `avg` should be ≈16.7 ms and `jank`
+     * should be 0; anything else is the thing to fix, and it says how much.
+     */
+    private fun reportGesture() {
+        if (gestureFrames == 0) return
+        val average = gestureTotalNs / gestureFrames
+        val verdict = if (gestureJank == 0) "smooth" else "JANK"
+        Log.i(
+            TAG,
+            "$verdict scroll frames=$gestureFrames slow=$gestureJank " +
+                "avg=${ms(average)} worst=${ms(gestureWorstNs)} " +
+                // Read, never reset: the two-second window report owns the reset,
+                // so a gesture line must not steal its counts.
+                "cacheHits=${cacheHits.get()} thumbs=${thumbDecodes.get()} " +
+                "pageDecodes=${pageDecodes.get()}"
+        )
     }
 
     private fun report() {

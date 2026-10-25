@@ -4,6 +4,48 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (ah) — Arena.ai — Round 22: overdraw, and a scroll line worth pasting
+
+Same complaint, next layer down. Round 21 made a card cost what a settings row
+costs; this round removes the per-frame *fill rate* a photo grid pays and a text
+list never does, and turns the frame monitor into one line per gesture.
+
+### Overdraw removed (nothing changed visually)
+
+| Where | Was | Now |
+| :--- | :--- | :--- |
+| `ui/dashboard/DashboardScreen.kt` — `Scaffold` | `containerColor = surface` painted a **full-screen opaque rect** on top of the theme root `Surface` in `MainActivity`, which had already painted the same colour | `containerColor = Color.Transparent`. Two full-screen rects per frame on a 1080 x 2400 display is ~5.2 MPx of fill; this halves it. `surface` and `background` are the same value in both palettes, so the pixels do not change. |
+| `DocumentGridCard` | card painted `surfaceContainerLow` across its whole area, then drew a ~0.5 MPx thumbnail **on top of it** | the card colour is painted by the footer only — the one part of a card a photo does not cover. One fewer full-tile fill per card, eight-ish cards per frame of a fling. |
+| `DocumentGridCard` / `DocumentListCard` cover box | `background(surfaceContainerHighest)` under the photo | `PageThumbnail` gained a `placeholder: Color` that is drawn **only while there is no image**. Same colour where the photo has not decoded, nothing underneath it afterwards. |
+
+### `util/PerfTrace.kt` — one line per scroll gesture
+
+`setScrolling(Boolean)`, wired from the dashboard's own `isScrollInProgress`:
+the monitor now tallies frames *of the gesture* and prints when the finger lifts.
+
+```
+I DocScannerPerf: JANK scroll frames=214 slow=3 avg=17.4ms worst=41.2ms cacheHits=96 thumbs=8 pageDecodes=0
+```
+
+`slow` counts frames over 24 ms (the runtime's own threshold on a 60 Hz display).
+That single line is the whole diagnosis: `slow=0` means the list is fine and the
+perception is something else; a non-zero `pageDecodes` means a page has no stored
+thumbnail; a big `worst` with zero decodes means it is not images at all.
+
+### Unchanged
+
+No data, filter, geometry, typography or colour changes — with one deliberate
+exception: nothing. Every edit above paints the same pixels in fewer passes.
+
+### The next lever needs the phone, not another commit
+
+If this is still not enough, the remaining win is **AOT compilation of Compose**:
+a baseline profile via the `androidx.baselineprofile` Gradle plugin plus a
+macrobenchmark module (generated on a real device, then committed as
+`baseline-prof.txt`). That is worth 20-40 % of first-run frame time on Android 7+
+and cannot be produced in this sandbox — it needs `adb` and a connected handset.
+Recorded in `docs/AGENT_COORDINATION.md` §6m for Antigravity.
+
 ## 2026-10-25 (ag) — Arena.ai — Round 21: the library scrolls like the settings list
 
 The user's benchmark was explicit: *"as smooth as the settings page scrolling."*

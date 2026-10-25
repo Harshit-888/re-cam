@@ -110,6 +110,7 @@ import com.example.docscanner.util.DocumentNaming
 import com.example.docscanner.util.DocumentSearch
 import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.PageImageLoader
+import com.example.docscanner.util.PerfTrace
 import com.example.docscanner.util.ThumbnailStore
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -346,6 +347,15 @@ fun DashboardScreen(
         )
     }
 
+    // Tell the debug frame monitor when a gesture starts and ends, so it can print
+    // one line per scroll instead of a rolling window that averages the idle time
+    // in. No-op in release builds.
+    LaunchedEffect(gridState, listState) {
+        snapshotFlow { gridState.isScrollInProgress || listState.isScrollInProgress }
+            .distinctUntilChanged()
+            .collect { scrolling -> PerfTrace.setScrolling(scrolling) }
+    }
+
     // Pages saved before thumbnails existed still have to be decoded in full the
     // first time they appear. Build their thumbnails in the gaps instead: the work
     // only runs while the list is *idle*, and `collectLatest` cancels it the moment
@@ -385,7 +395,14 @@ fun DashboardScreen(
     // scrolling screen can do — and it slid the app name back down whenever the
     // list was pulled up. The title now simply stays where it is.
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.surface,
+        // Transparent, deliberately: `Scaffold` is itself a full-screen `Surface`,
+        // and the theme root in `MainActivity` already painted this exact colour
+        // behind it. Two opaque full-screen rects per frame is 2 x 2.6 MPx of
+        // overdraw on a 1080 x 2400 display — about 1-2 ms of fill rate on a
+        // mid-range GPU, every frame of every scroll, for a colour nobody sees.
+        // `surface` and `background` are the same value in both palettes, so this
+        // changes nothing visually; the root Surface still paints the screen.
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 title = {
@@ -901,21 +918,26 @@ fun DocumentGridCard(
     var showMenu by remember { mutableStateOf(false) }
     val interactions = remember { MutableInteractionSource() }
 
-    // A `Box`, not a `Surface`, and no press-scale.
+    // A `Box`, not a `Surface`, no press-scale, and no background under the photo.
     //
-    // Both are fine on a settings row and not fine in a grid of a hundred of them:
-    // `Surface` composes a handful of nodes (semantics, clip, background, elevation
-    // shadow) that all have to be created for every tile that scrolls in, and
-    // `Modifier.pressScale` is a `composed` factory — the pattern Compose's own docs
-    // warn about inside lazy lists — which adds a nested composition and a running
-    // animation per item. Neither buys anything visible on a photo tile: the ripple
-    // already says "pressed". This is what made the library heavier to scroll than
-    // the settings page, which is a plain list of text rows.
+    // `Surface` composes semantics, clip, background and elevation nodes for every
+    // tile that scrolls in, and `Modifier.pressScale` is a `composed` factory — the
+    // pattern Compose's own docs warn about inside lazy lists — which adds a nested
+    // composition and a running animation per item. Neither buys anything visible
+    // on a photo tile: the ripple already says "pressed".
+    //
+    // Nor is the card filled behind its own cover. The card colour is painted by
+    // the footer, the only part of the card a photo does not already cover; filling
+    // the whole card and then drawing a half-megapixel thumbnail on top is one
+    // extra full-tile fill per card, eight-ish of them per frame of a fling. Where
+    // the photo has not decoded yet, `PageThumbnail`'s `placeholder` paints exactly
+    // the colour that used to be underneath it, so nothing looks different.
+    val coverColor = MaterialTheme.colorScheme.surfaceContainerHighest
+    val cover = document.pages.firstOrNull()
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .clip(DocShapes.card)
-            .background(MaterialTheme.colorScheme.surfaceContainerLow)
             .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
     ) {
         Column {
@@ -923,18 +945,18 @@ fun DocumentGridCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(COVER_ASPECT)
-                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
             ) {
-                val cover = document.pages.firstOrNull()
                 if (cover != null) {
                     PageThumbnail(
                         page = cover,
                         modifier = Modifier.fillMaxSize(),
                         reqWidth = coverSize.width,
                         reqHeight = coverSize.height,
-                        fallbackIconSize = 44.dp
+                        fallbackIconSize = 44.dp,
+                        placeholder = coverColor
                     )
                 } else {
+                    Box(Modifier.fillMaxSize().background(coverColor))
                     Icon(
                         Icons.Default.Description,
                         contentDescription = null,
@@ -964,7 +986,11 @@ fun DocumentGridCard(
                 }
             }
 
-            Column(Modifier.padding(start = 14.dp, end = 8.dp, top = 10.dp, bottom = 12.dp)) {
+            Column(
+                Modifier
+                    .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                    .padding(start = 14.dp, end = 8.dp, top = 10.dp, bottom = 12.dp)
+            ) {
                 Text(
                     document.title,
                     style = MaterialTheme.typography.titleSmall,
@@ -1027,8 +1053,7 @@ fun DocumentListCard(
             Box(
                 modifier = Modifier
                     .size(width = LIST_COVER_WIDTH, height = LIST_COVER_HEIGHT)
-                    .clip(DocShapes.thumbnail)
-                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                    .clip(DocShapes.thumbnail),
                 contentAlignment = Alignment.Center
             ) {
                 val cover = document.pages.firstOrNull()
@@ -1038,7 +1063,8 @@ fun DocumentListCard(
                         modifier = Modifier.fillMaxSize(),
                         reqWidth = listCoverSize.width,
                         reqHeight = listCoverSize.height,
-                        fallbackIconSize = 22.dp
+                        fallbackIconSize = 22.dp,
+                        placeholder = MaterialTheme.colorScheme.surfaceContainerHighest
                     )
                 } else {
                     Icon(

@@ -88,6 +88,7 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai & Antigravity | ✅ merged & verified (Round 19) | `model/Models.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/common/PageThumbnail.kt`, `util/PageImageLoader.kt`, `ui/camera/ScannerCameraScreen.kt`, docs | Home-screen smoothness (immutable models so cards skip, dates formatted once, search debounced off-thread, single-flight thumb loader) and redesigned camera chrome. Fixed SearchBarField TextFieldDefaults.colors invocation. All unit tests pass, `app-debug.apk` built (65.5 MB). |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 20) | `util/ThumbnailStore.kt` (new), `util/PerfTrace.kt` (new), `util/ImageStore.kt`, `util/PageImageLoader.kt`, `ui/dashboard/DashboardScreen.kt`, `data/ScannerRepository.kt`, `MainActivity.kt`, docs | Dedicated 768px ThumbnailStore, background priming, ML Kit scroll-pause, and PerfTrace. Fixed DashboardScreen visibleItemsInfo smart-casting. All unit tests pass, `app-debug.apk` built (65.5 MB). |
 | Arena.ai | 🚧 in review (Round 21) | `ui/common/PageThumbnail.kt`, `ui/common/Expressive.kt`, `ui/dashboard/DashboardScreen.kt`, `util/PageImageLoader.kt`, `util/ThumbnailStore.kt`, docs | Library scroll raised to settings-list smoothness: no per-tile animations, no `Surface`/`composed` modifiers in lazy items, synchronous cache reads on the first frame, memoised thumbnail keys, row-quantised prefetch. See §6l. |
+| Arena.ai | 🚧 in review (Round 22) | `ui/dashboard/DashboardScreen.kt`, `ui/common/PageThumbnail.kt`, `util/PerfTrace.kt`, docs | Overdraw removed (transparent Scaffold, footer-only card background, placeholder-only cover fill) and one perf log line per scroll gesture. See §6m. |
 
 ## 5. File ownership map
 
@@ -507,6 +508,56 @@ No dependencies, no assets, no native changes, no APIs.
 If a change adds work — any work — to the *first frame of a tile*, it is a
 regression on this screen even if it looks nicer. The user's benchmark is the
 settings list, which does none.
+
+## 6m. Overdraw + scroll telemetry (Arena, 2026-10-25, round 22)
+
+### Nothing to provision, but one thing only Antigravity can do
+
+Everything in this round is code. The one remaining performance lever **cannot be
+built in Arena's sandbox** (no `adb`, no device):
+
+**A baseline profile.** Roughly 20-40 % of first-run frame time on Android 7+, and
+it AOT-compiles Compose itself rather than just app code.
+
+1. `androidx.baselineprofile` plugin (Gradle) + a `com.android.test` module named
+   `:baselineprofile` that depends on `:app`.
+2. A `MacrobenchmarkRule` with `BaselineProfileRule` generating
+   `GenerateBaselineProfile`, containing a `collectBaselineProfile` that starts
+   `DashboardNav` and scrolls the library (`UiAutomator`: swipe up a few times,
+   open a document, back).
+3. `./gradlew :app:generateBaselineProfile` with a **release-like physical device**
+   attached (emulators produce useless profiles).
+4. Commit `app/src/main/baseline-prof.txt` (or the generated
+   `:baselineprofile/src/main/baseline-prof.txt`) and keep `profileinstaller`
+   installed in `:app`.
+
+Please claim it in §4 before starting: it adds a Gradle module and a dependency.
+
+### What this round assumes (do not undo)
+
+1. **`Scaffold` on the dashboard is `Color.Transparent` on purpose.** The theme root
+   `Surface` in `MainActivity` paints the screen; a second opaque full-screen rect
+   is pure overdraw. If a screen ever stops painting its own background, give it
+   one — do not re-enable the Scaffold fill.
+2. **Card backgrounds belong to the footer, not the card.** `DocumentGridCard`
+   paints `surfaceContainerLow` on its text column only; the cover area is bare and
+   `PageThumbnail(placeholder = …)` supplies the grey until the photo exists.
+   Painting a card-wide background again re-introduces one full-tile fill per tile
+   per frame.
+3. **`PageThumbnail(placeholder = …)` is placeholder-only** — it is applied when
+   there is no image and nothing is drawn under the image.
+
+### Measuring a scroll
+
+`PerfTrace.setScrolling(...)` is wired to the dashboard's `isScrollInProgress`. On a
+debug build each gesture prints exactly one line:
+
+```
+I DocScannerPerf: JANK scroll frames=214 slow=3 avg=17.4ms worst=41.2ms cacheHits=96 thumbs=8 pageDecodes=0
+```
+
+Read it in this order: `slow` (frames > 24 ms) → `pageDecodes` → `worst`. Any future
+"the list is laggy" report should start with this line.
 
 ## 7. Known-good state
 
