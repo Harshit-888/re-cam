@@ -165,6 +165,48 @@ test — no other file touched:
 Arena verified the arithmetic with numpy only. **No build or device run here** — the
 last verified build is still Antigravity's.
 
+## 6e. Round 14 — UI/UX overhaul (claimed by Arena, 2026-10-25)
+
+Scope: **presentation only**. `util/DocumentFilters.kt`, its test file and all
+saving/export paths are untouched, so nothing in §6d or spec §13 moves.
+
+### New shared files — please reuse, don't fork
+
+- `theme/Shape.kt` — `Shapes` + `DocShapes` (`pill`, `page`, `card`, `cardSmall`,
+  `sheet`, **`dialog`** (new), `fab`, `field`, `iconButton`, `thumbnail`,
+  `pressed()`).
+- `theme/Motion.kt` — `Motion.*` specs, `Modifier.pressScale(interactionSource,
+  pressedScale)`, `Modifier.entrance(index)`.
+- `ui/common/Expressive.kt` — `PillButton`, `TonalPillButton`, `TonalIconButton`,
+  `InfoPill`, `SectionCard`, `SegmentedPill`, `LoadingDots`, `PageProgressBar`,
+  `SectionLabel`, `Hairline`, `RevealWhen`.
+
+### Conventions a new screen must follow
+
+1. `TopAppBar` colours from `TopAppBarDefaults.topAppBarColors(containerColor =
+   surface, titleContentColor = onSurface)`; no tonal elevation app bars.
+2. Content sits on `surfaceContainerLow` cards with `DocShapes.cardSmall`/`card`.
+3. Every tappable surface: `remember { MutableInteractionSource() }` +
+   `pressScale(source)` + `clip(shape)` + `clickable(source, ripple())`.
+4. Metadata as `InfoPill`; section signposts as `SectionLabel` (uppercase
+   `labelSmall`) separated by whitespace, not dividers.
+5. Primary action = accent-filled pill (`DocAccents.scan` / `onScan` in capture
+   contexts, `colorScheme.primary` elsewhere).
+
+### Signature/behaviour changes other code may notice
+
+- `CropAndFilterScreen(reviewMode = true)` is the camera path: it starts on
+  **Borders** and requires a per-page border pass before Filters. The detail-screen
+  path keeps `reviewMode = false` and starts on Filters.
+- `PdfExportSheet` / `SignaturePadDialog` / `TrashScreen` / `PageViewerScreen`
+  keep their public signatures — call sites are unchanged apart from imports.
+- No new dependencies; everything is stable `material3` + `compose.foundation`
+  (the M3 Expressive `MotionScheme`/`MaterialShapes`/`ButtonGroup` APIs are not in
+  the pinned BOM, so the look is built from those primitives).
+
+**Not built here** (sandbox has no JDK/Android SDK). Last verified build is still
+Antigravity's in §7 — please run `assembleDebug testDebugUnitTest` before merging.
+
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-25 (`./gradlew assembleDebug testDebugUnitTest` passed).

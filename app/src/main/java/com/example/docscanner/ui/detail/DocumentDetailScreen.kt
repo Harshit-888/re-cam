@@ -3,6 +3,12 @@ package com.example.docscanner.ui.detail
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.ripple
+import com.example.docscanner.theme.DocShapes
+import com.example.docscanner.theme.pressScale
+import com.example.docscanner.ui.common.InfoPill
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -34,10 +40,8 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,7 +64,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.docscanner.data.ScannerRepository
@@ -107,20 +110,12 @@ fun DocumentDetailScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text(
-                            text = document.title,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "${document.pages.size} pages • " +
-                                SimpleDateFormat("MMM d, yyyy", Locale.getDefault())
-                                    .format(Date(document.modifiedDate)),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Text(
+                        text = document.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
@@ -134,22 +129,24 @@ fun DocumentDetailScreen(
                     IconButton(onClick = { showPdfExportSheet = true }) {
                         Icon(Icons.Outlined.PictureAsPdf, contentDescription = "Export PDF")
                     }
-                }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
             )
         },
         bottomBar = {
             Surface(
-                tonalElevation = 8.dp,
-                shadowElevation = 12.dp,
-                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                shape = DocShapes.sheet,
+                shadowElevation = 14.dp
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        .padding(horizontal = 10.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // Four equal cells with the icon above the label. Side-by-side
@@ -157,25 +154,25 @@ fun DocumentDetailScreen(
                     // width at the last child, "Share" wrapped onto a second line and
                     // its pill grew taller than the other three actions.
                     DocumentActionButton(
-                        label = "Add Page",
+                        label = "Add page",
                         icon = Icons.Default.AddAPhoto,
                         onClick = { onAddPageCamera(docId) },
                         modifier = Modifier.weight(1f)
                     )
                     DocumentActionButton(
-                        label = "Signature",
+                        label = "Sign",
                         icon = Icons.Outlined.Draw,
                         onClick = { showSignatureDialog = true },
                         modifier = Modifier.weight(1f)
                     )
                     DocumentActionButton(
-                        label = "Watermark",
+                        label = "Mark",
                         icon = Icons.Outlined.BrandingWatermark,
                         onClick = { showWatermarkDialog = true },
                         modifier = Modifier.weight(1f)
                     )
                     DocumentActionButton(
-                        label = "Share",
+                        label = "Export",
                         icon = Icons.Default.Share,
                         onClick = { showPdfExportSheet = true },
                         primary = true,
@@ -190,26 +187,53 @@ fun DocumentDetailScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            // A row of facts about the document, then the pages themselves. The
+            // title lives in the app bar, so the body starts with substance.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                InfoPill(
+                    text = "${document.pages.size} ${if (document.pages.size == 1) "page" else "pages"}",
+                    container = MaterialTheme.colorScheme.primaryContainer,
+                    content = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                InfoPill(
+                    text = SimpleDateFormat("MMM d, yyyy", Locale.getDefault())
+                        .format(Date(document.modifiedDate))
+                )
+                if (document.pages.any { !it.watermarkText.isNullOrBlank() }) {
+                    InfoPill(
+                        text = "Watermarked",
+                        container = MaterialTheme.colorScheme.tertiaryContainer,
+                        content = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+            }
+
             if (document.notes.isNotBlank()) {
                 Surface(
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                    shape = DocShapes.cardSmall,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .padding(horizontal = 20.dp, vertical = 8.dp)
                 ) {
                     Text(
                         text = document.notes,
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        modifier = Modifier.padding(12.dp)
+                        modifier = Modifier.padding(16.dp)
                     )
                 }
             }
 
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
-                contentPadding = PaddingValues(16.dp),
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.fillMaxSize()
@@ -378,14 +402,15 @@ fun PageGridItem(
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
-    ElevatedCard(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer
-        ),
+    val interactions = remember { MutableInteractionSource() }
+    Surface(
+        shape = DocShapes.cardSmall,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onViewClick)
+            .pressScale(interactions, pressedScale = 0.97f)
+            .clip(DocShapes.cardSmall)
+            .clickable(interactionSource = interactions, indication = ripple(), onClick = onViewClick)
     ) {
         Column {
             Box(
@@ -403,53 +428,33 @@ fun PageGridItem(
                     reqHeight = 560
                 )
 
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                InfoPill(
+                    text = page.filterType.label,
+                    container = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.9f),
+                    content = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(8.dp)
-                ) {
-                    Text(
-                        text = page.filterType.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
+                )
 
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
+                InfoPill(
+                    text = "Page ${page.pageIndex + 1}",
+                    container = MaterialTheme.colorScheme.primaryContainer,
+                    content = MaterialTheme.colorScheme.onPrimaryContainer,
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(8.dp)
-                ) {
-                    Text(
-                        text = "Page ${page.pageIndex + 1}",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
-                }
+                )
 
                 if (!page.watermarkText.isNullOrBlank()) {
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f),
+                    InfoPill(
+                        text = "WATERMARK",
+                        container = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f),
+                        content = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(8.dp)
-                    ) {
-                        Text(
-                            text = "WATERMARK",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
+                    )
                 }
             }
 
@@ -513,7 +518,7 @@ fun PageGridItem(
 /**
  * One action in the document bottom bar: icon above label, fixed height.
  *
- * Both variants share the same height and padding so the primary Share button can
+ * Both variants share the same height and padding so the primary Export button can
  * never end up taller or shorter than the three text actions next to it, and the
  * label is single-line so a long word can never wrap and inflate the row.
  */
@@ -525,24 +530,28 @@ private fun DocumentActionButton(
     modifier: Modifier = Modifier,
     primary: Boolean = false
 ) {
-    val contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
-    if (primary) {
-        Button(
-            onClick = onClick,
-            shape = RoundedCornerShape(18.dp),
-            contentPadding = contentPadding,
-            modifier = modifier.height(ACTION_HEIGHT)
-        ) {
-            DocumentActionContent(label = label, icon = icon)
-        }
+    val interactions = remember { MutableInteractionSource() }
+    val container = if (primary) {
+        MaterialTheme.colorScheme.primary
     } else {
-        TextButton(
-            onClick = onClick,
-            contentPadding = contentPadding,
-            modifier = modifier.height(ACTION_HEIGHT)
-        ) {
-            DocumentActionContent(label = label, icon = icon)
-        }
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    }
+    val content = if (primary) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    Surface(
+        color = container,
+        contentColor = content,
+        shape = DocShapes.cardSmall,
+        modifier = modifier
+            .height(ACTION_HEIGHT)
+            .pressScale(interactions, pressedScale = 0.95f)
+            .clip(DocShapes.cardSmall)
+            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
+    ) {
+        DocumentActionContent(label = label, icon = icon)
     }
 }
 
@@ -550,14 +559,15 @@ private fun DocumentActionButton(
 private fun DocumentActionContent(label: String, icon: ImageVector) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = Arrangement.Center,
+        modifier = Modifier.fillMaxSize()
     ) {
         Icon(
             imageVector = icon,
             contentDescription = null,
             modifier = Modifier.size(20.dp)
         )
-        Spacer(modifier = Modifier.height(2.dp))
+        Spacer(modifier = Modifier.height(3.dp))
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,

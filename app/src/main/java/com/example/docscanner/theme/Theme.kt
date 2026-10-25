@@ -9,6 +9,8 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import com.example.docscanner.model.AccentColor
@@ -32,9 +34,23 @@ private val DarkColorScheme = darkColorScheme(
     onSurface = OnSurfaceDark,
     surfaceVariant = SurfaceVariantDark,
     onSurfaceVariant = OnSurfaceVariantDark,
+    surfaceContainerLowest = SurfaceContainerLowestDark,
+    surfaceContainerLow = SurfaceContainerLowDark,
     surfaceContainer = SurfaceContainerDark,
     surfaceContainerHigh = SurfaceContainerHighDark,
-    surfaceContainerHighest = SurfaceContainerHighestDark
+    surfaceContainerHighest = SurfaceContainerHighestDark,
+    surfaceDim = SurfaceDimDark,
+    surfaceBright = SurfaceBrightDark,
+    outline = OutlineDark,
+    outlineVariant = OutlineVariantDark,
+    inverseSurface = InverseSurfaceDark,
+    inverseOnSurface = InverseOnSurfaceDark,
+    inversePrimary = InversePrimaryDark,
+    scrim = ScrimDark,
+    error = ErrorDark,
+    onError = OnErrorDark,
+    errorContainer = ErrorContainerDark,
+    onErrorContainer = OnErrorContainerDark
 )
 
 private val LightColorScheme = lightColorScheme(
@@ -56,17 +72,52 @@ private val LightColorScheme = lightColorScheme(
     onSurface = OnSurfaceLight,
     surfaceVariant = SurfaceVariantLight,
     onSurfaceVariant = OnSurfaceVariantLight,
+    surfaceContainerLowest = SurfaceContainerLowestLight,
+    surfaceContainerLow = SurfaceContainerLowLight,
     surfaceContainer = SurfaceContainerLight,
     surfaceContainerHigh = SurfaceContainerHighLight,
-    surfaceContainerHighest = SurfaceContainerHighestLight
+    surfaceContainerHighest = SurfaceContainerHighestLight,
+    surfaceDim = SurfaceDimLight,
+    surfaceBright = SurfaceBrightLight,
+    outline = OutlineLight,
+    outlineVariant = OutlineVariantLight,
+    inverseSurface = InverseSurfaceLight,
+    inverseOnSurface = InverseOnSurfaceLight,
+    inversePrimary = InversePrimaryLight,
+    scrim = ScrimLight,
+    error = ErrorLight,
+    onError = OnErrorLight,
+    errorContainer = ErrorContainerLight,
+    onErrorContainer = OnErrorContainerLight
 )
+
+/**
+ * The two colours that are *not* part of the Material scheme but belong to this
+ * product: the capture accent (amber) and the corner-handle colour used over a
+ * photograph in the editor. Kept in one place so the camera and the editor agree.
+ */
+data class DocAccents(
+    val scan: Color,
+    val onScan: Color,
+    val handleFill: Color,
+    val handleRing: Color
+)
+
+val LocalDocAccents = staticCompositionLocalOf {
+    DocAccents(
+        scan = ScanAccentLight,
+        onScan = OnScanAccentLight,
+        handleFill = Color(0xFF0061A4),
+        handleRing = Color.White
+    )
+}
 
 @Composable
 fun DocScannerTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     /**
-     * Off by default: the Material 3 Expressive palette in `Color.kt` is this
-     * app's identity, and dynamic colour was silently overriding it on API 31+.
+     * Off by default: the palette in `Color.kt` is this app's identity, and dynamic
+     * colour was silently overriding it on API 31+.
      */
     dynamicColor: Boolean = false,
     /** Accent chosen in Settings → Theme → Color. */
@@ -82,11 +133,30 @@ fun DocScannerTheme(
         else -> LightColorScheme.withAccent(accent, dark = false)
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
-    )
+    val accents = if (darkTheme) {
+        DocAccents(
+            scan = ScanAccentDark,
+            onScan = OnScanAccentDark,
+            handleFill = colorScheme.primary,
+            handleRing = SurfaceContainerLowestDark
+        )
+    } else {
+        DocAccents(
+            scan = ScanAccentLight,
+            onScan = OnScanAccentLight,
+            handleFill = colorScheme.primary,
+            handleRing = Color.White
+        )
+    }
+
+    CompositionLocalProvider(LocalDocAccents provides accents) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = Typography,
+            shapes = Shapes,
+            content = content
+        )
+    }
 }
 
 /**

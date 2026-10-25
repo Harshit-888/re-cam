@@ -6,7 +6,9 @@ import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +20,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -34,11 +39,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -51,19 +54,33 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.docscanner.data.ScannerRepository
+import com.example.docscanner.theme.DocShapes
+import com.example.docscanner.theme.pressScale
+import com.example.docscanner.ui.common.PillButton
 import com.example.docscanner.ui.common.rememberPageImage
 import com.example.docscanner.util.PageRenderer
 import kotlinx.coroutines.launch
 
+/**
+ * Full-bleed page reader.
+ *
+ * A page viewer is a reading surface: opaque app bars steal vertical space from the
+ * thing the user came to look at. So the chrome floats over a dark backdrop — a glass
+ * back button, a title pill, three glass actions — and the page itself runs edge to
+ * edge with only enough inset to clear the glass.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PageViewerScreen(
@@ -98,148 +115,166 @@ fun PageViewerScreen(
         offset = Offset.Zero
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        "${document?.title ?: "Document"} (${safeIndex + 1}/${pages.size})",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    IconButton(
-                        onClick = {
-                            val page = currentPage ?: return@IconButton
-                            scope.launch {
-                                val baked = PageRenderer.bake(
-                                    context,
-                                    page.copy(
-                                        rotationDegrees =
-                                            (page.rotationDegrees + 90f) % 360f
-                                    )
-                                )
-                                if (baked != null) {
-                                    repository.updatePage(docId, page.id) { baked }
-                                    scale = 1f
-                                    offset = Offset.Zero
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(ViewerBackdrop)
+    ) {
+        // ---- the page ---------------------------------------------------------
+        when {
+            currentPage == null -> {
+                Text(
+                    "This document has no pages.",
+                    color = Color.White.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
+            pageImage == null -> {
+                CircularProgressIndicator(
+                    color = Color.White,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
+            else -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                scale = (scale * zoom).coerceIn(1f, 4f)
+                                offset = if (scale > 1f) {
+                                    Offset(offset.x + pan.x, offset.y + pan.y)
+                                } else {
+                                    Offset.Zero
                                 }
                             }
                         }
-                    ) {
-                        Icon(Icons.Default.RotateRight, contentDescription = "Rotate")
-                    }
-                    IconButton(
-                        onClick = { currentPage?.let { onNavigateToCrop(it.id) } }
-                    ) {
-                        Icon(Icons.Default.Crop, contentDescription = "Crop and filter")
-                    }
-                    IconButton(onClick = { showOcrSheet = true }) {
-                        Icon(Icons.Outlined.TextFields, contentDescription = "Recognised text")
+                        .graphicsLayer(
+                            scaleX = scale,
+                            scaleY = scale,
+                            translationX = offset.x,
+                            translationY = offset.y
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        bitmap = pageImage,
+                        contentDescription = "Page ${safeIndex + 1}",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 6.dp, vertical = 68.dp)
+                    )
+                }
+            }
+        }
+
+        // ---- floating top chrome ---------------------------------------------
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ViewerGlassButton(
+                icon = Icons.Default.ArrowBack,
+                contentDescription = "Back",
+                onClick = onNavigateBack
+            )
+            Spacer(Modifier.width(10.dp))
+            Surface(
+                shape = DocShapes.pill,
+                color = Color.Black.copy(alpha = 0.45f),
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = document?.title ?: "Document",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            ViewerGlassButton(
+                icon = Icons.Default.RotateRight,
+                contentDescription = "Rotate",
+                onClick = {
+                    val page = currentPage ?: return@ViewerGlassButton
+                    scope.launch {
+                        val baked = PageRenderer.bake(
+                            context,
+                            page.copy(rotationDegrees = (page.rotationDegrees + 90f) % 360f)
+                        )
+                        if (baked != null) {
+                            repository.updatePage(docId, page.id) { baked }
+                            scale = 1f
+                            offset = Offset.Zero
+                        }
                     }
                 }
             )
-        },
-        bottomBar = {
+            Spacer(Modifier.width(8.dp))
+            ViewerGlassButton(
+                icon = Icons.Default.Crop,
+                contentDescription = "Crop and filter",
+                onClick = { currentPage?.let { onNavigateToCrop(it.id) } }
+            )
+            Spacer(Modifier.width(8.dp))
+            ViewerGlassButton(
+                icon = Icons.Outlined.TextFields,
+                contentDescription = "Recognised text",
+                onClick = { showOcrSheet = true }
+            )
+        }
+
+        // ---- floating pager ---------------------------------------------------
+        if (pages.size > 1) {
             Surface(
-                tonalElevation = 8.dp,
-                color = MaterialTheme.colorScheme.surfaceContainer
+                shape = DocShapes.pill,
+                color = Color.Black.copy(alpha = 0.5f),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 18.dp)
             ) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .padding(horizontal = 24.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
                 ) {
-                    IconButton(
-                        onClick = { currentPageIndex = (safeIndex - 1).coerceAtLeast(0) },
-                        enabled = safeIndex > 0
+                    ViewerPageStep(
+                        icon = Icons.Default.ChevronLeft,
+                        description = "Previous page",
+                        enabled = safeIndex > 0,
+                        onClick = { currentPageIndex = (safeIndex - 1).coerceAtLeast(0) }
+                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(horizontal = 10.dp)
                     ) {
-                        Icon(Icons.Default.ChevronLeft, contentDescription = "Previous page")
-                    }
-
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            text = "Page ${safeIndex + 1} of ${pages.size}",
+                            "${safeIndex + 1} / ${pages.size}",
                             style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold
+                            color = Color.White
                         )
                         if (scale > 1.01f) {
                             Text(
-                                text = "${(scale * 100).toInt()}%",
+                                "${(scale * 100).toInt()}%",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
-
-                    IconButton(
-                        onClick = { currentPageIndex = (safeIndex + 1).coerceAtMost(pages.size - 1) },
-                        enabled = safeIndex < pages.size - 1
-                    ) {
-                        Icon(Icons.Default.ChevronRight, contentDescription = "Next page")
-                    }
-                }
-            }
-        }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .background(Color(0xFF141414)),
-            contentAlignment = Alignment.Center
-        ) {
-            when {
-                currentPage == null -> {
-                    Text(
-                        "This document has no pages.",
-                        color = Color.White.copy(alpha = 0.7f),
-                        style = MaterialTheme.typography.bodyMedium
+                    ViewerPageStep(
+                        icon = Icons.Default.ChevronRight,
+                        description = "Next page",
+                        enabled = safeIndex < pages.size - 1,
+                        onClick = { currentPageIndex = (safeIndex + 1).coerceAtMost(pages.size - 1) }
                     )
-                }
-                pageImage == null -> {
-                    CircularProgressIndicator(color = Color.White)
-                }
-                else -> {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .pointerInput(Unit) {
-                                detectTransformGestures { _, pan, zoom, _ ->
-                                    scale = (scale * zoom).coerceIn(1f, 4f)
-                                    offset = if (scale > 1f) {
-                                        Offset(offset.x + pan.x, offset.y + pan.y)
-                                    } else {
-                                        Offset.Zero
-                                    }
-                                }
-                            }
-                            .graphicsLayer(
-                                scaleX = scale,
-                                scaleY = scale,
-                                translationX = offset.x,
-                                translationY = offset.y
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Image(
-                            bitmap = pageImage,
-                            contentDescription = "Page ${safeIndex + 1}",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp)
-                        )
-                    }
                 }
             }
         }
@@ -248,31 +283,39 @@ fun PageViewerScreen(
     if (showOcrSheet) {
         ModalBottomSheet(
             onDismissRequest = { showOcrSheet = false },
-            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+            shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(24.dp)
+                    .navigationBarsPadding()
+                    .padding(start = 22.dp, end = 22.dp, bottom = 22.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        "Recognised Text",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Column {
+                        Text(
+                            "PAGE TEXT",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            "Recognised text",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                     IconButton(onClick = { showOcrSheet = false }) {
                         Icon(Icons.Default.Close, contentDescription = "Close")
                     }
                 }
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    shape = DocShapes.cardSmall,
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     val text = currentPage?.ocrText.orEmpty()
@@ -282,26 +325,86 @@ fun PageViewerScreen(
                                 "until then this field is empty."
                         },
                         style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(16.dp)
+                        color = if (text.isBlank()) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        modifier = Modifier.padding(18.dp)
                     )
                 }
-                Spacer(modifier = Modifier.height(12.dp))
-                TextButton(
-                    enabled = !currentPage?.ocrText.isNullOrBlank(),
-                    onClick = {
-                        val text = currentPage?.ocrText.orEmpty()
-                        val clipboard =
-                            context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("Page text", text))
-                        Toast.makeText(context, "Text copied", Toast.LENGTH_SHORT).show()
-                    }
-                ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = null)
-                    Spacer(modifier = Modifier.size(6.dp))
-                    Text("Copy to clipboard")
-                }
                 Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    PillButton(
+                        text = "Copy to clipboard",
+                        icon = Icons.Default.ContentCopy,
+                        enabled = !currentPage?.ocrText.isNullOrBlank(),
+                        onClick = {
+                            val text = currentPage?.ocrText.orEmpty()
+                            val clipboard =
+                                context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Page text", text))
+                            Toast.makeText(context, "Text copied", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                }
             }
         }
+    }
+}
+
+/** Dark, slightly warm backdrop: a page reads as paper against it. */
+private val ViewerBackdrop = Color(0xFF101215)
+
+@Composable
+private fun ViewerGlassButton(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit
+) {
+    val interactions = remember { MutableInteractionSource() }
+    Surface(
+        shape = CircleShape,
+        color = Color.Black.copy(alpha = 0.45f),
+        modifier = Modifier
+            .size(42.dp)
+            .pressScale(interactions)
+            .clip(CircleShape)
+            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                icon,
+                contentDescription = contentDescription,
+                tint = Color.White,
+                modifier = Modifier.size(19.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ViewerPageStep(
+    icon: ImageVector,
+    description: String,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(38.dp)
+            .clip(CircleShape)
+            .clickable(enabled = enabled, onClick = onClick)
+    ) {
+        Icon(
+            icon,
+            contentDescription = description,
+            tint = Color.White.copy(alpha = if (enabled) 1f else 0.3f),
+            modifier = Modifier.size(20.dp)
+        )
     }
 }

@@ -4,6 +4,68 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (v) — Arena.ai — Round 14: the whole app restyled (Material 3 Expressive)
+
+A UI/UX pass over **every screen** — no filter maths touched (`util/DocumentFilters.kt`
+and its test file are byte-identical to `6131924`, which is why the "filters are
+working great" verdict still holds).
+
+### Three new files (the shared vocabulary)
+
+| File | What it is |
+| --- | --- |
+| `theme/Shape.kt` | `Shapes` scale 8/12/18/26/34 plus `DocShapes` (a named shape per surface kind). |
+| `theme/Motion.kt` | `Motion.press/emphasized/standard`, `Modifier.pressScale(source, scale)`, `entrance(index)`. |
+| `ui/common/Expressive.kt` | `PillButton`, `TonalPillButton`, `TonalIconButton`, `InfoPill`, `SectionCard`, `SegmentedPill`, `LoadingDots`, `PageProgressBar`, `SectionLabel`, `Hairline`, `RevealWhen`. |
+
+**Rule for both agents:** new UI composes from these and from `DocShapes`; do not
+inline `RoundedCornerShape(12.dp)` or a bare `Button` again. That drift is what
+made the app look assembled rather than designed.
+
+### Theme
+
+- `theme/Color.kt` — 74 roles filled in (light + dark), including all four
+  `surfaceContainer*` steps, `surfaceDim/Bright`, `inverse*` and `scrim`, which
+  were previously undefined and silently fell back to Material defaults.
+- `theme/Type.kt` — rewritten scale with tightened tracking on display/headline
+  and a legible `labelSmall` for the uppercase eyebrows.
+- `theme/Theme.kt` — `dynamicColor` now **false by default** (dynamic colour was
+  overriding the app's identity on API 31+), accent override limited to the four
+  primary slots, plus `DocAccents`/`LocalDocAccents` for the amber capture accent
+  and the editor's corner-handle colours.
+- `DocShapes.dialog` **added** (round-all-corners 30 dp; `sheet` stays top-only).
+
+### Screen by screen
+
+| Screen | Change |
+| --- | --- |
+| Dashboard | Rewritten: quiet two-line app bar, folder pills with colour dots, grid/list toggle, sort sheet, `InfoPill` counts, `CaptureFab`. |
+| Camera | Glass chrome (`GlassButton`/`GlassPill`), accent page-count chip, `ShutterButton` with a spring inner ring, `GalleryTarget` showing the last page. Capture/permission/zoom logic untouched. |
+| Editor | Rewritten around **one** `SegmentedPill` for the two-stage contract. Borders stage shows the *uncropped* original; filters stage shows the warped + filtered page and bakes every page with a `current/total` overlay. |
+| Document detail | Minimal title-only app bar, `InfoPill` facts row, tinted notes card, 20 dp-grid page wall, floating `DocShapes.sheet` action bar (Add page / Sign / Mark / Export). |
+| Settings | Uppercase `labelSmall` eyebrows, `surfaceContainerLow` rows with chevrons and `Switch` instead of `Checkbox`, whitespace instead of dividers. |
+| PDF sheet | Icon tile header, `SegmentedPill` for paper/margins, footer-numbers card, hand-built CTA that carries both idle and busy states. |
+| Signature | `Dialog` (near-full-width) instead of `AlertDialog`, paper card with a faint signing baseline, ink swatches, weight slider, Clear/Apply pills. |
+| Recycle bin | Quiet app bar with a live count, circle empty state, cards with `InfoPill` page counts, per-row restore/delete, danger pill for Empty. |
+| Page viewer | Full-bleed dark canvas with floating glass chrome and a floating pager pill — a reader should not pay for two opaque app bars. |
+
+### Interaction change the user asked for
+
+Borders are now a **per-page pass that finishes before any filtering**: *Next page
+(n of N)* persists that page's corners and advances, the last page's button reads
+*Continue to filters*, and only then does *Apply to all N pages* bake. Tapping the
+segmented control to leave the border stage also persists the visible page's
+corners. Single-page entry points (from the detail screen) still land on Filters.
+
+### Other
+
+- `CropAndFilterScreen` reads capture quality **once** (`repository.settings` +
+  `collectAsState`) instead of three separate `currentSettings()` calls.
+- Removed an unused `android.graphics.Canvas` import from `util/PdfGenerator.kt`.
+- **No build or device run here** (no JDK/Android SDK in the sandbox). Verified
+  only by bracket balance + symbol/import scans. Antigravity's build remains the
+  last verified one.
+
 ## 2026-10-25 (u) — Antigravity — Verified native divide table fix & rebuilt APK
 
 - Merged commit `32234d4` from `arena/cf5b35a2-re-cam` into `main` and pushed to `origin/main`.

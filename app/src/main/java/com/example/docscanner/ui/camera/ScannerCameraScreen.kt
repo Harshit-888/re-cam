@@ -16,8 +16,21 @@ import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.material3.ripple
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import com.example.docscanner.theme.DocShapes
+import com.example.docscanner.theme.LocalDocAccents
+import com.example.docscanner.theme.pressScale
+import com.example.docscanner.ui.common.PageThumbnail
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -34,26 +47,20 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BurstMode
-import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Filter1
 import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Remove
-import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -113,6 +120,7 @@ fun ScannerCameraScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
+    val accents = LocalDocAccents.current
     val capturedPages = remember { mutableStateListOf<ScannedPage>() }
     // Settings are read through repository.currentSettings() at the moment of use
     // (not copied into composition state) so a change made on the Settings screen
@@ -404,99 +412,91 @@ fun ScannerCameraScreen(
         // paper edge, so there was no page boundary left in the photo for
         // DocumentDetector to find.
 
-        // Top bar.
+        // ---- chrome -----------------------------------------------------------
+        // Everything over the preview is "glass": translucent, high-contrast in
+        // both themes, and never white-on-white against a bright page.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(
-                onClick = onClose,
-                colors = IconButtonDefaults.iconButtonColors(
-                    containerColor = Color.Black.copy(alpha = 0.6f)
+            GlassButton(
+                icon = Icons.Default.Close,
+                contentDescription = "Close camera",
+                onClick = onClose
+            )
+
+            Spacer(Modifier.weight(1f))
+
+            GlassPill(
+                onClick = { isBatchMode = !isBatchMode },
+                highlight = isBatchMode
+            ) {
+                Icon(
+                    if (isBatchMode) Icons.Default.BurstMode else Icons.Default.Filter1,
+                    contentDescription = null,
+                    tint = if (isBatchMode) accents.scan else Color.White,
+                    modifier = Modifier.size(16.dp)
                 )
-            ) {
-                Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    if (isBatchMode) "Batch" else "Single",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge
+                )
             }
 
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = Color.Black.copy(alpha = 0.6f),
-                modifier = Modifier.clickable { isBatchMode = !isBatchMode }
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        if (isBatchMode) Icons.Default.BurstMode else Icons.Default.Filter1,
-                        contentDescription = null,
-                        tint = Color(0xFF4FD8EB),
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        if (isBatchMode) "Batch Mode" else "Single Mode",
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            IconButton(
+            GlassButton(
+                icon = when (flashMode) {
+                    FlashMode.ON -> Icons.Default.FlashOn
+                    FlashMode.OFF -> Icons.Default.FlashOff
+                    FlashMode.AUTO -> Icons.Default.FlashAuto
+                },
+                contentDescription = "Flash mode",
+                tint = if (flashMode == FlashMode.ON) accents.scan else Color.White,
                 onClick = {
                     flashMode = when (flashMode) {
                         FlashMode.AUTO -> FlashMode.ON
                         FlashMode.ON -> FlashMode.OFF
                         FlashMode.OFF -> FlashMode.AUTO
                     }
-                },
-                colors = IconButtonDefaults.iconButtonColors(
-                    containerColor = Color.Black.copy(alpha = 0.6f)
-                )
-            ) {
-                val (icon, tint) = when (flashMode) {
-                    FlashMode.ON -> Icons.Default.FlashOn to Color(0xFFFFD700)
-                    FlashMode.OFF -> Icons.Default.FlashOff to Color.White
-                    FlashMode.AUTO -> Icons.Default.FlashAuto to Color.White
                 }
-                Icon(icon, contentDescription = "Flash mode", tint = tint)
-            }
+            )
         }
 
-        // Page counter.
+        // Live count, right under the chrome — the one number the user needs while
+        // shooting a stack of pages.
         AnimatedVisibility(
             visible = capturedPages.isNotEmpty(),
-            enter = fadeIn(),
-            exit = fadeOut(),
+            enter = fadeIn() + slideInVertically { -it / 2 },
+            exit = fadeOut() + slideOutVertically { -it / 2 },
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 96.dp)
+                .statusBarsPadding()
+                .padding(top = 64.dp)
         ) {
             Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.primaryContainer,
-                shadowElevation = 6.dp
+                shape = DocShapes.pill,
+                color = accents.scan,
+                contentColor = accents.onScan,
+                shadowElevation = 8.dp
             ) {
                 Text(
-                    text = "${capturedPages.size} ${if (capturedPages.size == 1) "page" else "pages"} captured",
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
+                    text = "${capturedPages.size} ${if (capturedPages.size == 1) "page" else "pages"}",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                 )
             }
         }
 
-        // Permission / error messaging.
         if (!hasCameraPermission || statusMessage != null) {
             Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = Color.Black.copy(alpha = 0.75f),
+                shape = DocShapes.cardSmall,
+                color = Color.Black.copy(alpha = 0.78f),
                 modifier = Modifier
                     .align(Alignment.Center)
                     .padding(32.dp)
@@ -512,56 +512,52 @@ fun ScannerCameraScreen(
                         style = MaterialTheme.typography.bodyMedium
                     )
                     if (!hasCameraPermission) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
-                            Text("Grant permission")
-                        }
+                        Spacer(Modifier.height(14.dp))
+                        Button(
+                            onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
+                            shape = DocShapes.pill
+                        ) { Text("Grant permission") }
                     }
                 }
             }
         }
 
-        // Bottom controls.
+        // ---- bottom controls --------------------------------------------------
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(bottom = 24.dp),
+                .padding(bottom = 22.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Zoom: pinch on the preview, or use these for discoverability and
             // precision. Only shown when the device actually supports zoom.
             AnimatedVisibility(visible = maxZoomRatio > 1.01f) {
                 Surface(
-                    shape = RoundedCornerShape(22.dp),
+                    shape = DocShapes.pill,
                     color = Color.Black.copy(alpha = 0.55f),
-                    modifier = Modifier.padding(bottom = 14.dp)
+                    modifier = Modifier.padding(bottom = 16.dp)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
                     ) {
-                        IconButton(
-                            onClick = {
-                                zoomRatio = (zoomRatio - ZOOM_STEP).coerceAtLeast(1f)
-                            },
+                        ZoomIcon(
+                            icon = Icons.Default.Remove,
+                            description = "Zoom out",
                             enabled = zoomRatio > 1.001f,
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Remove,
-                                contentDescription = "Zoom out",
-                                tint = if (zoomRatio > 1.001f) Color.White else Color.White.copy(alpha = 0.35f)
-                            )
-                        }
+                            onClick = { zoomRatio = (zoomRatio - ZOOM_STEP).coerceAtLeast(1f) }
+                        )
                         Surface(
-                            shape = RoundedCornerShape(14.dp),
+                            shape = DocShapes.pill,
                             color = if (zoomRatio > 1.001f) {
                                 MaterialTheme.colorScheme.primary
                             } else {
                                 Color.White.copy(alpha = 0.12f)
                             },
-                            modifier = Modifier.clickable { zoomRatio = 1f }
+                            modifier = Modifier
+                                .padding(horizontal = 2.dp)
+                                .clickable { zoomRatio = 1f }
                         ) {
                             Text(
                                 text = String.format(Locale.US, "%.1f×", zoomRatio),
@@ -571,40 +567,18 @@ fun ScannerCameraScreen(
                                     Color.White
                                 },
                                 style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
                             )
                         }
-                        IconButton(
-                            onClick = {
-                                zoomRatio = (zoomRatio + ZOOM_STEP)
-                                    .coerceAtMost(maxZoomRatio)
-                            },
+                        ZoomIcon(
+                            icon = Icons.Default.Add,
+                            description = "Zoom in",
                             enabled = zoomRatio < maxZoomRatio - 0.001f,
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Add,
-                                contentDescription = "Zoom in",
-                                tint = if (zoomRatio < maxZoomRatio - 0.001f) {
-                                    Color.White
-                                } else {
-                                    Color.White.copy(alpha = 0.35f)
-                                }
-                            )
-                        }
-                        if (zoomRatio > 1.001f) {
-                            IconButton(
-                                onClick = { zoomRatio = 1f },
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.RestartAlt,
-                                    contentDescription = "Reset zoom",
-                                    tint = Color.White
-                                )
+                            onClick = {
+                                zoomRatio = (zoomRatio + ZOOM_STEP).coerceAtMost(maxZoomRatio)
                             }
-                        }
+                        )
                     }
                 }
             }
@@ -612,72 +586,233 @@ fun ScannerCameraScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 32.dp),
-                horizontalArrangement = Arrangement.SpaceAround,
+                    .padding(horizontal = 26.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(
+                // Gallery: the last capture when there is one, otherwise the import
+                // affordance. Tapping either opens the picker.
+                GalleryTarget(
+                    lastPage = capturedPages.lastOrNull(),
                     onClick = {
                         photoPickerLauncher.launch(
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                         )
-                    },
-                    modifier = Modifier
-                        .size(54.dp)
-                        .background(Color.White.copy(alpha = 0.2f), CircleShape)
-                ) {
-                    Icon(
-                        Icons.Outlined.PhotoLibrary,
-                        contentDescription = "Import from gallery",
-                        tint = Color.White,
-                        modifier = Modifier.size(28.dp)
-                    )
-                }
-
-                Box(
-                    modifier = Modifier
-                        .size(84.dp)
-                        .border(4.dp, Color.White, CircleShape)
-                        .padding(6.dp)
-                        .clip(CircleShape)
-                        .background(if (isCapturing) Color(0xFF4FD8EB) else Color.White)
-                        .clickable { capturePage() },
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (isCapturing) {
-                        CircularProgressIndicator(
-                            color = Color.Black,
-                            strokeWidth = 3.dp,
-                            modifier = Modifier.size(32.dp)
-                        )
-                    } else {
-                        Icon(
-                            Icons.Default.Camera,
-                            contentDescription = "Capture page",
-                            tint = Color.Black,
-                            modifier = Modifier.size(36.dp)
-                        )
                     }
-                }
+                )
+
+                ShutterButton(
+                    isCapturing = isCapturing,
+                    enabled = hasCameraPermission,
+                    onClick = { capturePage() }
+                )
 
                 if (capturedPages.isNotEmpty()) {
-                    FilledTonalButton(
-                        onClick = { commitScan() },
-                        shape = RoundedCornerShape(20.dp),
-                        colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
-                        )
-                    ) {
-                        Text(
-                            "Done (${capturedPages.size})",
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+                    DoneButton(count = capturedPages.size, onClick = { commitScan() })
                 } else {
-                    Spacer(modifier = Modifier.size(54.dp))
+                    Spacer(Modifier.size(64.dp))
                 }
             }
+        }
+    }
+}
+
+/** Translucent circular control that stays legible over any preview. */
+@Composable
+private fun GlassButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    tint: Color = Color.White
+) {
+    val interactions = remember { MutableInteractionSource() }
+    Surface(
+        shape = CircleShape,
+        color = Color.Black.copy(alpha = 0.42f),
+        modifier = Modifier
+            .size(44.dp)
+            .pressScale(interactions)
+            .clip(CircleShape)
+            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = contentDescription, tint = tint, modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
+@Composable
+private fun GlassPill(
+    onClick: () -> Unit,
+    highlight: Boolean,
+    content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit
+) {
+    val interactions = remember { MutableInteractionSource() }
+    Surface(
+        shape = DocShapes.pill,
+        color = if (highlight) Color.Black.copy(alpha = 0.55f) else Color.Black.copy(alpha = 0.38f),
+        modifier = Modifier
+            .height(40.dp)
+            .pressScale(interactions, pressedScale = 0.94f)
+            .clip(DocShapes.pill)
+            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 14.dp),
+            content = content
+        )
+    }
+}
+
+@Composable
+private fun ZoomIcon(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    description: String,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(36.dp)
+            .clip(DocShapes.pill)
+            .clickable(enabled = enabled, onClick = onClick)
+    ) {
+        Icon(
+            icon,
+            contentDescription = description,
+            tint = Color.White.copy(alpha = if (enabled) 1f else 0.35f),
+            modifier = Modifier.size(18.dp)
+        )
+    }
+}
+
+/**
+ * The capture button.
+ *
+ * Two rings with the accent colour between them: the outer ring is the target,
+ * the inner disc is the press. It compresses under the finger with a spring, which
+ * is the cheapest way to make a shutter feel mechanical rather than like a button.
+ */
+@Composable
+private fun ShutterButton(
+    isCapturing: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val accents = LocalDocAccents.current
+    val interactions = remember { MutableInteractionSource() }
+    val pressed by interactions.collectIsPressedAsState()
+    val innerScale by animateFloatAsState(
+        targetValue = when {
+            isCapturing -> 0.72f
+            pressed -> 0.86f
+            else -> 1f
+        },
+        animationSpec = spring(dampingRatio = 0.55f, stiffness = 700f),
+        label = "shutterInner"
+    )
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(84.dp)
+            .clip(CircleShape)
+            .clickable(
+                interactionSource = interactions,
+                indication = null,
+                enabled = enabled && !isCapturing,
+                onClick = onClick
+            )
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val ring = 3.5.dp.toPx()
+            drawCircle(color = Color.White.copy(alpha = 0.92f), radius = size.minDimension / 2f - ring / 2f, style = Stroke(ring))
+            drawCircle(
+                color = accents.scan,
+                radius = size.minDimension / 2f - ring * 2.6f,
+                style = Stroke(ring * 1.6f)
+            )
+        }
+        Box(
+            modifier = Modifier
+                .size(60.dp)
+                .graphicsLayer {
+                    scaleX = innerScale
+                    scaleY = innerScale
+                }
+                .clip(CircleShape)
+                .background(Color.White),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isCapturing) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    color = Color.Black,
+                    strokeWidth = 2.5.dp,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
+    }
+}
+
+/** Left-hand target: the last page captured, or the photo library. */
+@Composable
+private fun GalleryTarget(lastPage: ScannedPage?, onClick: () -> Unit) {
+    val interactions = remember { MutableInteractionSource() }
+    Surface(
+        shape = DocShapes.thumbnail,
+        color = Color.Black.copy(alpha = 0.42f),
+        modifier = Modifier
+            .size(52.dp)
+            .pressScale(interactions)
+            .clip(DocShapes.thumbnail)
+            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            if (lastPage != null) {
+                PageThumbnail(
+                    page = lastPage,
+                    reqWidth = 160,
+                    reqHeight = 200,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Icon(
+                    Icons.Outlined.PhotoLibrary,
+                    contentDescription = "Import from gallery",
+                    tint = Color.White,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
+    }
+}
+
+/** Finish the capture set and move on to the border pass. */
+@Composable
+private fun DoneButton(count: Int, onClick: () -> Unit) {
+    val accents = LocalDocAccents.current
+    val interactions = remember { MutableInteractionSource() }
+    Surface(
+        shape = DocShapes.pill,
+        color = accents.scan,
+        contentColor = accents.onScan,
+        shadowElevation = 8.dp,
+        modifier = Modifier
+            .height(48.dp)
+            .pressScale(interactions, pressedScale = 0.94f)
+            .clip(DocShapes.pill)
+            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 16.dp)
+        ) {
+            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Done ($count)", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
         }
     }
 }

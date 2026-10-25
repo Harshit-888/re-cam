@@ -18,21 +18,19 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.Done
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -56,6 +54,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.example.docscanner.theme.DocShapes
+import com.example.docscanner.ui.common.PillButton
+import com.example.docscanner.ui.common.TonalIconButton
+import com.example.docscanner.ui.common.TonalPillButton
 import com.example.docscanner.util.ImageStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -68,6 +72,10 @@ import kotlinx.coroutines.withContext
  * path is handed back to the caller, which composites it onto the page via
  * [com.example.docscanner.util.PageRenderer]. The previous revision returned an
  * opaque `"signature_<timestamp>"` token that nothing could ever draw.
+ *
+ * Presented as a near-full-width dialog rather than a bottom sheet: signing wants
+ * the largest comfortable writing area, and a sheet's drag-to-dismiss competes
+ * with the pen.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -113,36 +121,53 @@ fun SignaturePadDialog(
         return bitmap
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Add Digital Signature", fontWeight = FontWeight.Bold)
-                TextButton(
-                    onClick = {
-                        strokes.clear()
-                        currentStroke = emptyList()
+    Dialog(
+        onDismissRequest = { if (!isSaving) onDismiss() },
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = DocShapes.dialog,
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .padding(vertical = 24.dp)
+        ) {
+            Column(Modifier.padding(20.dp)) {
+                // ---- header -------------------------------------------------
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "SIGNATURE",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            "Add signature",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
-                ) {
-                    Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Clear")
+                    TonalIconButton(
+                        icon = Icons.Default.Close,
+                        contentDescription = "Close",
+                        onClick = { if (!isSaving) onDismiss() }
+                    )
                 }
-            }
-        },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
+
+                Spacer(Modifier.height(16.dp))
+
+                // ---- writing surface ---------------------------------------
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(200.dp)
-                        .clip(RoundedCornerShape(16.dp))
+                        .height(210.dp)
+                        .clip(DocShapes.cardSmall)
                         .background(Color.White)
-                        .border(2.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp))
+                        .border(
+                            1.dp,
+                            MaterialTheme.colorScheme.outlineVariant,
+                            DocShapes.cardSmall
+                        )
                 ) {
                     ComposeCanvas(
                         modifier = Modifier
@@ -176,6 +201,15 @@ fun SignaturePadDialog(
                             join = StrokeJoin.Round
                         )
 
+                        // A faint baseline: people sign on a line, and without one
+                        // signatures drift to the top-left corner of the pad.
+                        drawLine(
+                            color = Color(0x1F000000),
+                            start = Offset(size.width * 0.08f, size.height * 0.74f),
+                            end = Offset(size.width * 0.92f, size.height * 0.74f),
+                            strokeWidth = 2f
+                        )
+
                         fun drawSmooth(points: List<Offset>) {
                             if (points.size < 2) return
                             val path = ComposePath().apply {
@@ -200,91 +234,149 @@ fun SignaturePadDialog(
 
                     if (strokes.isEmpty() && currentStroke.isEmpty()) {
                         Text(
-                            text = "Sign here with your finger or stylus",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.LightGray,
+                            text = "Sign here",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = Color(0x33000000),
                             modifier = Modifier.align(Alignment.Center)
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(Modifier.height(18.dp))
 
+                // ---- ink + thickness ---------------------------------------
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Ink Color:", style = MaterialTheme.typography.labelMedium)
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Ink",
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.width(52.dp)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         inkColors.forEach { colorVal ->
-                            Box(
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(colorVal))
-                                    .border(
-                                        if (selectedInkColor == colorVal) 3.dp else 1.dp,
-                                        if (selectedInkColor == colorVal) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            Color.LightGray
-                                        },
-                                        CircleShape
-                                    )
-                                    .clickable { selectedInkColor = colorVal }
+                            val selected = selectedInkColor == colorVal
+                            InkSwatch(
+                                color = Color(colorVal),
+                                selected = selected,
+                                onClick = { selectedInkColor = colorVal }
                             )
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(Modifier.height(10.dp))
 
-                Text(
-                    "Stroke Thickness: ${strokeWidth.toInt()} pt",
-                    style = MaterialTheme.typography.labelSmall
-                )
-                Slider(
-                    value = strokeWidth,
-                    onValueChange = { strokeWidth = it },
-                    valueRange = 3f..14f,
-                    steps = 5
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                enabled = strokes.isNotEmpty() && !isSaving,
-                onClick = {
-                    val bitmap = rasterise()
-                    if (bitmap == null) {
-                        Toast.makeText(context, "Signature area not ready", Toast.LENGTH_SHORT).show()
-                        return@Button
-                    }
-                    isSaving = true
-                    scope.launch {
-                        val path = withContext(Dispatchers.IO) {
-                            ImageStore.saveSignature(context, bitmap)
-                        }
-                        bitmap.recycle()
-                        isSaving = false
-                        if (path != null) {
-                            onSignatureConfirmed(path)
-                        } else {
-                            Toast.makeText(context, "Could not save signature", Toast.LENGTH_SHORT).show()
-                        }
-                    }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Weight",
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.width(52.dp)
+                    )
+                    Slider(
+                        value = strokeWidth,
+                        onValueChange = { strokeWidth = it },
+                        valueRange = 3f..14f,
+                        steps = 5,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        "${strokeWidth.toInt()}",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.width(22.dp)
+                    )
                 }
-            ) {
-                Icon(Icons.Default.Done, contentDescription = null)
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Apply")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
+
+                Spacer(Modifier.height(18.dp))
+
+                // ---- actions -----------------------------------------------
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    TonalPillButton(
+                        text = "Clear",
+                        icon = Icons.Default.DeleteOutline,
+                        enabled = !isSaving,
+                        onClick = {
+                            strokes.clear()
+                            currentStroke = emptyList()
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                    PillButton(
+                        text = if (isSaving) "Saving…" else "Apply",
+                        icon = Icons.Default.Check,
+                        enabled = strokes.isNotEmpty() && !isSaving,
+                        onClick = {
+                            val bitmap = rasterise()
+                            if (bitmap == null) {
+                                Toast.makeText(
+                                    context,
+                                    "Signature area not ready",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                return@PillButton
+                            }
+                            isSaving = true
+                            scope.launch {
+                                val path = withContext(Dispatchers.IO) {
+                                    ImageStore.saveSignature(context, bitmap)
+                                }
+                                bitmap.recycle()
+                                isSaving = false
+                                if (path != null) {
+                                    onSignatureConfirmed(path)
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        "Could not save signature",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
         }
-    )
+    }
+}
+
+/** One ink colour: a filled disc with a ring when chosen. */
+@Composable
+private fun InkSwatch(
+    color: Color,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(34.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(if (selected) 26.dp else 24.dp)
+                .clip(CircleShape)
+                .background(color)
+                .border(
+                    width = if (selected) 3.dp else 1.dp,
+                    color = if (selected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.outlineVariant
+                    },
+                    shape = CircleShape
+                )
+        )
+    }
 }

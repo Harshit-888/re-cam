@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -27,10 +28,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.ripple
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -57,6 +60,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.docscanner.model.AccentColor
 import com.example.docscanner.model.AppSettings
+import com.example.docscanner.theme.DocShapes
+import com.example.docscanner.theme.pressScale
 import com.example.docscanner.model.ExportResolution
 import com.example.docscanner.model.ImageQuality
 import com.example.docscanner.model.ImageScale
@@ -389,23 +394,31 @@ private enum class SettingsDialog {
     DOCUMENT_NAME, EMAIL_TO, EMAIL_SUBJECT
 }
 
+/**
+ * Section eyebrow.
+ *
+ * Uppercase, tracked and quiet: it is a signpost between groups, not content. The
+ * old `titleSmall` in primary read like a heading and competed with the rows.
+ */
 @Composable
 private fun SectionHeader(text: String) {
     Text(
-        text = text,
-        style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.SemiBold,
+        text = text.uppercase(),
+        style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 6.dp)
+        modifier = Modifier.padding(start = 24.dp, end = 20.dp, top = 24.dp, bottom = 8.dp)
     )
 }
 
+/**
+ * Breathing room where a divider used to be.
+ *
+ * Grouping is carried by whitespace and the card shapes, so a hairline here would
+ * be a second, conflicting signal.
+ */
 @Composable
 private fun SectionDivider() {
-    HorizontalDivider(
-        modifier = Modifier.padding(top = 12.dp),
-        color = MaterialTheme.colorScheme.outlineVariant
-    )
+    Spacer(Modifier.height(6.dp))
 }
 
 @Composable
@@ -415,25 +428,54 @@ private fun SettingsRow(
     onClick: (() -> Unit)? = null,
     trailing: @Composable (() -> Unit)? = null
 ) {
-    Row(
+    val interactions = remember { MutableInteractionSource() }
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = DocShapes.cardSmall,
         modifier = Modifier
             .fillMaxWidth()
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = 20.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 20.dp, vertical = 3.dp)
+            .then(
+                if (onClick != null) {
+                    Modifier
+                        .pressScale(interactions, pressedScale = 0.985f)
+                        .clip(DocShapes.cardSmall)
+                        .clickable(
+                            interactionSource = interactions,
+                            indication = ripple(),
+                            onClick = onClick
+                        )
+                } else {
+                    Modifier
+                }
+            )
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(text = title, style = MaterialTheme.typography.bodyLarge)
-            if (!subtitle.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+        Row(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 15.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = title, style = MaterialTheme.typography.bodyLarge)
+                if (!subtitle.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (trailing != null) {
+                trailing()
+            } else if (onClick != null) {
+                Icon(
+                    Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
                 )
             }
         }
-        trailing?.invoke()
     }
 }
 
@@ -444,23 +486,35 @@ private fun CheckRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
-    Row(
+    val interactions = remember { MutableInteractionSource() }
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = DocShapes.cardSmall,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
-            .padding(start = 20.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 20.dp, vertical = 3.dp)
+            .pressScale(interactions, pressedScale = 0.985f)
+            .clip(DocShapes.cardSmall)
+            .clickable(
+                interactionSource = interactions,
+                indication = ripple()
+            ) { onCheckedChange(!checked) }
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(text = title, style = MaterialTheme.typography.bodyLarge)
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        Row(
+            modifier = Modifier.padding(start = 18.dp, end = 10.dp, top = 12.dp, bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = title, style = MaterialTheme.typography.bodyLarge)
+                Spacer(modifier = Modifier.height(3.dp))
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(checked = checked, onCheckedChange = onCheckedChange)
         }
-        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 

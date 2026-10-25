@@ -6,47 +6,118 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.DriveFileMove
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.Sort
+import androidx.compose.material.icons.outlined.ViewList
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.ripple
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.model.Document
 import com.example.docscanner.model.DocumentSortOption
 import com.example.docscanner.model.Folder
 import com.example.docscanner.model.ScannedPage
+import com.example.docscanner.theme.DocShapes
+import com.example.docscanner.theme.entrance
+import com.example.docscanner.theme.pressScale
+import com.example.docscanner.ui.common.InfoPill
 import com.example.docscanner.ui.common.PageThumbnail
+import com.example.docscanner.ui.common.PillButton
+import com.example.docscanner.ui.common.SectionLabel
 import com.example.docscanner.util.DocumentNaming
 import com.example.docscanner.util.ImageStore
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.*
 
+/**
+ * The library.
+ *
+ * The dashboard answers three questions in the order a returning user asks them:
+ * *what did I scan recently* (the grid), *where is that one document* (search and
+ * folders), and *can I scan something right now* (the capture action, always in
+ * reach). Everything else — sort, layout, trash — is deliberately quiet.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
@@ -73,7 +144,9 @@ fun DashboardScreen(
         val quality = settings.imageQuality
         scope.launch {
             val pages = withContext(Dispatchers.IO) {
-                uris.mapNotNull { uri -> importPickedImage(context, uri, quality.maxDimension, quality.jpegQuality) }
+                uris.mapNotNull { uri ->
+                    importPickedImage(context, uri, quality.maxDimension, quality.jpegQuality)
+                }
             }
             if (pages.isEmpty()) {
                 Toast.makeText(context, "Could not import the selected images", Toast.LENGTH_LONG).show()
@@ -94,24 +167,23 @@ fun DashboardScreen(
         }
     }
 
-    var searchQuery by remember { mutableStateOf("") }
-    var selectedFolderId by remember { mutableStateOf<String?>(null) }
-    var sortOption by remember { mutableStateOf(DocumentSortOption.MODIFIED_NEWEST) }
-    var isGridView by remember { mutableStateOf(true) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var selectedFolderId by rememberSaveable { mutableStateOf<String?>(null) }
+    var sortOption by rememberSaveable { mutableStateOf(DocumentSortOption.MODIFIED_NEWEST) }
+    var isGridView by rememberSaveable { mutableStateOf(true) }
     var showFolderDialog by remember { mutableStateOf(false) }
     var showSortMenu by remember { mutableStateOf(false) }
     var moveDocId by remember { mutableStateOf<String?>(null) }
 
-    // Filter active (non-trash) documents matching search and folder
     val activeDocs = remember(documents, searchQuery, selectedFolderId, sortOption) {
         documents
             .filterNot { it.isTrash }
             .filter { doc ->
                 val matchesFolder = selectedFolderId == null || doc.folderId == selectedFolderId
                 val matchesSearch = searchQuery.isBlank() ||
-                        doc.title.contains(searchQuery, ignoreCase = true) ||
-                        doc.tags.any { it.contains(searchQuery, ignoreCase = true) } ||
-                        doc.pages.any { it.ocrText.contains(searchQuery, ignoreCase = true) }
+                    doc.title.contains(searchQuery, ignoreCase = true) ||
+                    doc.tags.any { it.contains(searchQuery, ignoreCase = true) } ||
+                    doc.pages.any { it.ocrText.contains(searchQuery, ignoreCase = true) }
                 matchesFolder && matchesSearch
             }
             .sortedWith { a, b ->
@@ -126,22 +198,30 @@ fun DashboardScreen(
     }
 
     val trashCount = remember(documents) { documents.count { it.isTrash } }
+    val pageCount = remember(activeDocs) { activeDocs.sumOf { it.pages.size } }
+
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
     Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
-            TopAppBar(
+            LargeTopAppBar(
                 title = {
-                    Text(
-                        "DocScanner",
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.titleLarge
-                    )
+                    Column {
+                        Text(
+                            "Library",
+                            style = MaterialTheme.typography.headlineLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 },
+                navigationIcon = {},
                 actions = {
                     IconButton(onClick = { isGridView = !isGridView }) {
                         Icon(
                             if (isGridView) Icons.Outlined.ViewList else Icons.Outlined.GridView,
-                            contentDescription = "Toggle View"
+                            contentDescription = if (isGridView) "Show as list" else "Show as grid"
                         )
                     }
                     Box {
@@ -157,7 +237,9 @@ fun DashboardScreen(
                                     text = { Text(option.label) },
                                     trailingIcon = if (option == sortOption) {
                                         { Icon(Icons.Default.Check, contentDescription = null) }
-                                    } else null,
+                                    } else {
+                                        null
+                                    },
                                     onClick = {
                                         sortOption = option
                                         showSortMenu = false
@@ -167,7 +249,7 @@ fun DashboardScreen(
                         }
                     }
                     IconButton(onClick = onNavigateToSettings) {
-                        Icon(Icons.Outlined.Settings, contentDescription = "Settings")
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
                     IconButton(onClick = onNavigateToTrash) {
                         BadgedBox(
@@ -177,24 +259,21 @@ fun DashboardScreen(
                                 }
                             }
                         ) {
-                            Icon(Icons.Outlined.Delete, contentDescription = "Trash")
+                            Icon(Icons.Default.Delete, contentDescription = "Trash")
                         }
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+                scrollBehavior = scrollBehavior,
+                colors = TopAppBarDefaults.largeTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh
                 )
             )
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = startScan,
-                icon = { Icon(Icons.Default.CameraAlt, contentDescription = null) },
-                text = { Text("Scan Document", fontWeight = FontWeight.SemiBold) },
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                shape = RoundedCornerShape(20.dp)
-            )
+            // An extended FAB that reads as the app's one primary verb. The pill
+            // shape and the amber-free primary keep it distinct from the cards.
+            CaptureFab(onClick = startScan)
         }
     ) { innerPadding ->
         Column(
@@ -202,16 +281,15 @@ fun DashboardScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // Expressive Search Bar
             SearchBarField(
                 query = searchQuery,
                 onQueryChange = { searchQuery = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                    .padding(horizontal = 20.dp, vertical = 4.dp)
+                    .entrance(0)
             )
 
-            // Folder Filter Chips Carousel
             FolderFilterRow(
                 folders = folders,
                 selectedFolderId = selectedFolderId,
@@ -219,65 +297,78 @@ fun DashboardScreen(
                 onAddFolderClick = { showFolderDialog = true },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 8.dp)
+                    .padding(vertical = 10.dp)
+                    .entrance(1)
             )
 
-            // Document Count & Active Folder Status Header
+            // A row of facts, not a sentence: documents · pages · current sort.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                    .padding(horizontal = 20.dp)
+                    .entrance(2),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                InfoPill("${activeDocs.size} ${if (activeDocs.size == 1) "document" else "documents"}")
+                if (pageCount > 0) {
+                    InfoPill("$pageCount ${if (pageCount == 1) "page" else "pages"}")
+                }
+                Spacer(Modifier.weight(1f))
                 Text(
-                    text = "${activeDocs.size} documents",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = sortOption.label,
+                    sortOption.label,
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 
-            // Documents Content (Grid or List)
-            if (activeDocs.isEmpty()) {
-                EmptyStateView(
+            Spacer(Modifier.height(12.dp))
+
+            when {
+                activeDocs.isEmpty() -> EmptyStateView(
                     isSearch = searchQuery.isNotBlank(),
                     onStartScan = startScan
                 )
-            } else if (isGridView) {
-                LazyVerticalGrid(
+
+                isGridView -> LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
-                    contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 88.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 108.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    items(activeDocs, key = { it.id }) { doc ->
-                        DocumentGridCard(
-                            document = doc,
-                            onClick = { onNavigateToDetail(doc.id) },
-                            onDelete = { repository.moveToTrash(doc.id) },
-                            onMoveToFolder = { moveDocId = doc.id }
-                        )
+                    items(
+                        count = activeDocs.size,
+                        key = { index -> activeDocs[index].id }
+                    ) { index ->
+                        val doc = activeDocs[index]
+                        Box(Modifier.entrance(3)) {
+                            DocumentGridCard(
+                                document = doc,
+                                onClick = { onNavigateToDetail(doc.id) },
+                                onDelete = { repository.moveToTrash(doc.id) },
+                                onMoveToFolder = { moveDocId = doc.id }
+                            )
+                        }
                     }
                 }
-            } else {
-                LazyColumn(
-                    contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 88.dp),
+
+                else -> LazyColumn(
+                    contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 108.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(activeDocs, key = { it.id }) { doc ->
-                        DocumentListCard(
-                            document = doc,
-                            onClick = { onNavigateToDetail(doc.id) },
-                            onDelete = { repository.moveToTrash(doc.id) },
-                            onMoveToFolder = { moveDocId = doc.id }
-                        )
+                        Box(Modifier.entrance(3)) {
+                            DocumentListCard(
+                                document = doc,
+                                onClick = { onNavigateToDetail(doc.id) },
+                                onDelete = { repository.moveToTrash(doc.id) },
+                                onMoveToFolder = { moveDocId = doc.id }
+                            )
+                        }
                     }
                 }
             }
@@ -308,6 +399,35 @@ fun DashboardScreen(
     }
 }
 
+/** The one action the whole app is for, sized and shaped to be unmissable. */
+@Composable
+private fun CaptureFab(onClick: () -> Unit) {
+    val interactions = remember { MutableInteractionSource() }
+    Surface(
+        color = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary,
+        shape = DocShapes.fab,
+        shadowElevation = 12.dp,
+        modifier = Modifier
+            .pressScale(interactions, pressedScale = 0.94f)
+            .clip(DocShapes.fab)
+            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 22.dp, vertical = 16.dp)
+        ) {
+            Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "Scan",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+
 @Composable
 fun SearchBarField(
     query: String,
@@ -317,29 +437,50 @@ fun SearchBarField(
     TextField(
         value = query,
         onValueChange = onQueryChange,
-        placeholder = { Text("Search title, tags, or OCR text...") },
-        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+        placeholder = {
+            Text(
+                "Search documents",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        },
+        leadingIcon = {
+            Icon(
+                Icons.Default.Search,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp)
+            )
+        },
         trailingIcon = {
-            if (query.isNotEmpty()) {
+            AnimatedVisibility(visible = query.isNotEmpty()) {
                 IconButton(onClick = { onQueryChange("") }) {
-                    Icon(Icons.Default.Close, contentDescription = "Clear")
+                    Icon(Icons.Default.Close, contentDescription = "Clear search")
                 }
             }
         },
         singleLine = true,
-        shape = RoundedCornerShape(28.dp),
+        shape = DocShapes.pill,
+        textStyle = MaterialTheme.typography.bodyMedium,
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = {}),
         colors = TextFieldDefaults.colors(
             focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-            disabledIndicatorColor = Color.Transparent,
-            errorIndicatorColor = Color.Transparent,
+            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             focusedIndicatorColor = Color.Transparent,
-            unfocusedIndicatorColor = Color.Transparent
+            unfocusedIndicatorColor = Color.Transparent,
+            disabledIndicatorColor = Color.Transparent,
+            errorIndicatorColor = Color.Transparent
         ),
-        modifier = modifier
+        modifier = modifier.height(54.dp)
     )
 }
 
+/**
+ * Folder filter as pills with a sliding selection.
+ *
+ * A `FilterChip` shows selection with a tint; a pill that fills with colour and
+ * tightens under the finger shows it with *weight*, which survives being next to
+ * six other pills.
+ */
 @Composable
 fun FolderFilterRow(
     folders: List<Folder>,
@@ -349,44 +490,104 @@ fun FolderFilterRow(
     modifier: Modifier = Modifier
 ) {
     LazyRow(
-        contentPadding = PaddingValues(horizontal = 16.dp),
+        contentPadding = PaddingValues(horizontal = 20.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = modifier
     ) {
         item {
-            FilterChip(
+            FolderPill(
+                label = "All",
                 selected = selectedFolderId == null,
-                onClick = { onSelectFolder(null) },
-                label = { Text("All Documents") },
-                shape = RoundedCornerShape(16.dp)
+                onClick = { onSelectFolder(null) }
             )
         }
         items(folders, key = { it.id }) { folder ->
-            FilterChip(
+            FolderPill(
+                label = folder.name,
                 selected = selectedFolderId == folder.id,
-                onClick = { onSelectFolder(if (selectedFolderId == folder.id) null else folder.id) },
-                leadingIcon = {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .background(Color(folder.colorHex), CircleShape)
-                    )
-                },
-                label = { Text(folder.name) },
-                shape = RoundedCornerShape(16.dp)
+                color = Color(folder.colorHex),
+                onClick = {
+                    onSelectFolder(if (selectedFolderId == folder.id) null else folder.id)
+                }
             )
         }
         item {
-            AssistChip(
+            FolderPill(
+                label = "New folder",
+                selected = false,
+                leadingIcon = Icons.Default.Add,
                 onClick = onAddFolderClick,
-                leadingIcon = { Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                label = { Text("New Folder") },
-                shape = RoundedCornerShape(16.dp)
+                tonal = true
             )
         }
     }
 }
 
+@Composable
+private fun FolderPill(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    color: Color? = null,
+    leadingIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    tonal: Boolean = false
+) {
+    val interactions = remember { MutableInteractionSource() }
+    val container by androidx.compose.animation.animateColorAsState(
+        targetValue = when {
+            selected -> MaterialTheme.colorScheme.primary
+            tonal -> MaterialTheme.colorScheme.secondaryContainer
+            else -> MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        animationSpec = androidx.compose.animation.core.tween(220),
+        label = "folderPillColor"
+    )
+    val content by androidx.compose.animation.animateColorAsState(
+        targetValue = when {
+            selected -> MaterialTheme.colorScheme.onPrimary
+            tonal -> MaterialTheme.colorScheme.onSecondaryContainer
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        animationSpec = androidx.compose.animation.core.tween(220),
+        label = "folderPillContent"
+    )
+    Surface(
+        color = container,
+        contentColor = content,
+        shape = DocShapes.pill,
+        modifier = Modifier
+            .pressScale(interactions, pressedScale = 0.94f)
+            .clip(DocShapes.pill)
+            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp)
+        ) {
+            if (color != null) {
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(color)
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+            if (leadingIcon != null) {
+                Icon(leadingIcon, contentDescription = null, modifier = Modifier.size(15.dp))
+                Spacer(Modifier.width(6.dp))
+            }
+            Text(
+                label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/** Grid card: the page itself is the card, with the metadata in a quiet footer. */
 @Composable
 fun DocumentGridCard(
     document: Document,
@@ -395,119 +596,85 @@ fun DocumentGridCard(
     onMoveToFolder: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
-    val dateFormat = remember { SimpleDateFormat("MMM d, yyyy", Locale.getDefault()) }
+    val dateFormat = remember { SimpleDateFormat("MMM d", Locale.getDefault()) }
+    val interactions = remember { MutableInteractionSource() }
 
-    ElevatedCard(
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer
-        ),
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = DocShapes.card,
+        shadowElevation = 0.dp,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .pressScale(interactions, pressedScale = 0.975f)
+            .clip(DocShapes.card)
+            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
     ) {
         Column {
-            // Thumbnail container with page count badge
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(140.dp)
-                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
-                contentAlignment = Alignment.Center
+                    .aspectRatio(0.78f)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
             ) {
                 val cover = document.pages.firstOrNull()
                 if (cover != null) {
                     PageThumbnail(
                         page = cover,
                         modifier = Modifier.fillMaxSize(),
-                        reqWidth = 360,
-                        reqHeight = 480,
-                        fallbackIconSize = 56.dp
+                        reqWidth = 420,
+                        reqHeight = 540,
+                        fallbackIconSize = 44.dp
                     )
                 } else {
                     Icon(
                         Icons.Default.Description,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
-                        modifier = Modifier.size(56.dp)
+                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                        modifier = Modifier
+                            .size(44.dp)
+                            .align(Alignment.Center)
                     )
                 }
-
-                // Page count pill
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(8.dp)
-                ) {
-                    Text(
-                        text = "${document.pages.size} p.",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                if (document.pages.size > 1) {
+                    InfoPill(
+                        text = "${document.pages.size} pages",
+                        container = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.92f),
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(8.dp)
+                    )
+                }
+                Box(modifier = Modifier.align(Alignment.TopEnd)) {
+                    TonalMenuButton(onClick = { showMenu = true })
+                    DocumentMenu(
+                        expanded = showMenu,
+                        onDismiss = { showMenu = false },
+                        onMoveToFolder = onMoveToFolder,
+                        onDelete = onDelete
                     )
                 }
             }
 
-            Column(modifier = Modifier.padding(12.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = document.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Box {
-                        IconButton(
-                            onClick = { showMenu = true },
-                            modifier = Modifier.size(24.dp)
-                        ) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "Options")
-                        }
-                        DropdownMenu(
-                            expanded = showMenu,
-                            onDismissRequest = { showMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Move to folder…") },
-                                leadingIcon = { Icon(Icons.Default.DriveFileMove, contentDescription = null) },
-                                onClick = {
-                                    showMenu = false
-                                    onMoveToFolder()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Move to Trash") },
-                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
-                                onClick = {
-                                    showMenu = false
-                                    onDelete()
-                                }
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(4.dp))
-
+            Column(Modifier.padding(start = 14.dp, end = 8.dp, top = 10.dp, bottom = 12.dp)) {
                 Text(
-                    text = dateFormat.format(Date(document.modifiedDate)),
+                    document.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    dateFormat.format(Date(document.modifiedDate)),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
                 )
             }
         }
     }
 }
 
+/** List card: a compact row that keeps the thumbnail's shape language. */
 @Composable
 fun DocumentListCard(
     document: Document,
@@ -516,27 +683,28 @@ fun DocumentListCard(
     onMoveToFolder: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
-    val dateFormat = remember { SimpleDateFormat("MMM d, yyyy • h:mm a", Locale.getDefault()) }
+    val dateFormat = remember { SimpleDateFormat("MMM d, yyyy · h:mm a", Locale.getDefault()) }
+    val interactions = remember { MutableInteractionSource() }
 
-    ElevatedCard(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer
-        ),
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = DocShapes.cardSmall,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .pressScale(interactions, pressedScale = 0.98f)
+            .clip(DocShapes.cardSmall)
+            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(start = 10.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(60.dp)
-                    .clip(RoundedCornerShape(12.dp))
+                    .size(width = 52.dp, height = 66.dp)
+                    .clip(DocShapes.thumbnail)
                     .background(MaterialTheme.colorScheme.surfaceContainerHighest),
                 contentAlignment = Alignment.Center
             ) {
@@ -545,81 +713,109 @@ fun DocumentListCard(
                     PageThumbnail(
                         page = cover,
                         modifier = Modifier.fillMaxSize(),
-                        reqWidth = 180,
-                        reqHeight = 240,
-                        fallbackIconSize = 28.dp
+                        reqWidth = 160,
+                        reqHeight = 200,
+                        fallbackIconSize = 22.dp
                     )
                 } else {
                     Icon(
                         Icons.Default.Description,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(24.dp)
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.width(16.dp))
+            Spacer(Modifier.width(14.dp))
 
-            Column(modifier = Modifier.weight(1f)) {
+            Column(Modifier.weight(1f)) {
                 Text(
-                    text = document.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
+                    document.title,
+                    style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(modifier = Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "${document.pages.size} pages",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        text = " • ",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = dateFormat.format(Date(document.modifiedDate)),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "${document.pages.size} ${if (document.pages.size == 1) "page" else "pages"} · " +
+                        dateFormat.format(Date(document.modifiedDate)),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
 
             Box {
-                IconButton(onClick = { showMenu = true }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "Options")
-                }
-                DropdownMenu(
+                TonalMenuButton(onClick = { showMenu = true })
+                DocumentMenu(
                     expanded = showMenu,
-                    onDismissRequest = { showMenu = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Move to folder…") },
-                        leadingIcon = { Icon(Icons.Default.DriveFileMove, contentDescription = null) },
-                        onClick = {
-                            showMenu = false
-                            onMoveToFolder()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Move to Trash") },
-                        leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
-                        onClick = {
-                            showMenu = false
-                            onDelete()
-                        }
-                    )
-                }
+                    onDismiss = { showMenu = false },
+                    onMoveToFolder = onMoveToFolder,
+                    onDelete = onDelete
+                )
             }
         }
     }
 }
 
+/** Small round overflow affordance that does not shout on top of a thumbnail. */
+@Composable
+private fun TonalMenuButton(onClick: () -> Unit) {
+    Surface(
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.85f),
+        modifier = Modifier
+            .padding(6.dp)
+            .size(30.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                Icons.Default.MoreVert,
+                contentDescription = "Options",
+                modifier = Modifier.size(17.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun DocumentMenu(
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    onMoveToFolder: () -> Unit,
+    onDelete: () -> Unit
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        DropdownMenuItem(
+            text = { Text("Move to folder…") },
+            leadingIcon = { Icon(Icons.Default.DriveFileMove, contentDescription = null) },
+            onClick = {
+                onDismiss()
+                onMoveToFolder()
+            }
+        )
+        DropdownMenuItem(
+            text = { Text("Move to trash") },
+            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+            onClick = {
+                onDismiss()
+                onDelete()
+            }
+        )
+    }
+}
+
+/**
+ * Empty state with a drawn illustration.
+ *
+ * A single grey icon is the visual equivalent of a shrug. Three overlapping page
+ * shapes say "documents live here" in the app's own shape language, and cost
+ * nothing to ship — no asset, no density buckets, no download.
+ */
 @Composable
 fun EmptyStateView(
     isSearch: Boolean,
@@ -628,39 +824,91 @@ fun EmptyStateView(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(32.dp),
+            .padding(horizontal = 32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Icon(
-            if (isSearch) Icons.Default.SearchOff else Icons.Default.DocumentScanner,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
-            modifier = Modifier.size(72.dp)
-        )
-        Spacer(modifier = Modifier.height(16.dp))
+        EmptyPagesArt(isSearch = isSearch)
+        Spacer(Modifier.height(26.dp))
         Text(
-            text = if (isSearch) "No documents match your query" else "No documents yet",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold
+            if (isSearch) "Nothing matches that search" else "Your library is empty",
+            style = MaterialTheme.typography.headlineSmall,
+            textAlign = TextAlign.Center
         )
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(Modifier.height(8.dp))
         Text(
-            text = if (isSearch) "Try searching for a different keyword or clear filters." else "Tap Scan Document to capture your first page.",
+            if (isSearch) {
+                "Try a different word, or clear the filters above."
+            } else {
+                "Scan a page and it will appear here, ready to sign, export or share."
+            },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 24.dp)
+            textAlign = TextAlign.Center
         )
         if (!isSearch) {
-            Spacer(modifier = Modifier.height(24.dp))
-            Button(
-                onClick = onStartScan,
-                shape = RoundedCornerShape(20.dp)
-            ) {
-                Icon(Icons.Default.CameraAlt, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Start Scanning")
+            Spacer(Modifier.height(26.dp))
+            PillButton(
+                text = "Scan your first page",
+                icon = Icons.Default.CameraAlt,
+                onClick = onStartScan
+            )
+        }
+    }
+}
+
+/** Three stacked pages, drawn in theme colours. */
+@Composable
+private fun EmptyPagesArt(isSearch: Boolean) {
+    val primary = MaterialTheme.colorScheme.primary
+    val container = MaterialTheme.colorScheme.primaryContainer
+    val surface = MaterialTheme.colorScheme.surfaceContainerLowest
+    val outline = MaterialTheme.colorScheme.outlineVariant
+    Canvas(modifier = Modifier.size(width = 190.dp, height = 150.dp)) {
+        val pageW = size.width * 0.44f
+        val pageH = size.height * 0.74f
+        val radius = 12.dp.toPx()
+
+        fun page(center: Offset, angle: Float, fill: Color) {
+            rotate(degrees = angle, pivot = center) {
+                val topLeft = Offset(center.x - pageW / 2f, center.y - pageH / 2f)
+                val p = Path().apply {
+                    addRoundRect(
+                        androidx.compose.ui.geometry.RoundRect(
+                            left = topLeft.x,
+                            top = topLeft.y,
+                            right = topLeft.x + pageW,
+                            bottom = topLeft.y + pageH,
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius)
+                        )
+                    )
+                }
+                drawPath(p, color = fill)
+                drawPath(p, color = outline, style = Stroke(width = 1.5.dp.toPx()))
+                // Ruled lines, so it reads as text rather than a blank card.
+                val lines = 4
+                repeat(lines) { index ->
+                    val y = topLeft.y + pageH * (0.26f + index * 0.16f)
+                    drawLine(
+                        color = outline,
+                        start = Offset(topLeft.x + pageW * 0.16f, y),
+                        end = Offset(topLeft.x + pageW * (if (index == lines - 1) 0.55f else 0.84f), y),
+                        strokeWidth = 2.dp.toPx()
+                    )
+                }
             }
+        }
+
+        page(Offset(size.width * 0.34f, size.height * 0.52f), -12f, container.copy(alpha = 0.7f))
+        page(Offset(size.width * 0.66f, size.height * 0.52f), 12f, container.copy(alpha = 0.85f))
+        page(Offset(size.width * 0.5f, size.height * 0.5f), 0f, surface)
+
+        if (isSearch) {
+            drawCircle(
+                color = primary.copy(alpha = 0.9f),
+                radius = 7.dp.toPx(),
+                center = Offset(size.width * 0.78f, size.height * 0.24f)
+            )
         }
     }
 }
@@ -676,25 +924,26 @@ fun CreateFolderDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("New Folder") },
+        shape = DocShapes.card,
+        title = { Text("New folder", style = MaterialTheme.typography.headlineSmall) },
         text = {
             Column {
                 OutlinedTextField(
                     value = folderName,
                     onValueChange = { folderName = it },
-                    label = { Text("Folder Name") },
+                    label = { Text("Folder name") },
                     singleLine = true,
-                    shape = RoundedCornerShape(16.dp),
+                    shape = DocShapes.field,
                     modifier = Modifier.fillMaxWidth()
                 )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("Pick Folder Color:", style = MaterialTheme.typography.labelMedium)
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(Modifier.height(18.dp))
+                SectionLabel("Colour")
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     colors.forEach { colorVal ->
+                        val isSelected = selectedColor == colorVal
                         Box(
                             modifier = Modifier
                                 .size(36.dp)
@@ -704,7 +953,7 @@ fun CreateFolderDialog(
                                 .padding(4.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (selectedColor == colorVal) {
+                            if (isSelected) {
                                 Icon(
                                     Icons.Default.Check,
                                     contentDescription = null,
@@ -720,15 +969,12 @@ fun CreateFolderDialog(
         confirmButton = {
             Button(
                 onClick = { if (folderName.isNotBlank()) onConfirm(folderName, selectedColor) },
-                enabled = folderName.isNotBlank()
-            ) {
-                Text("Create")
-            }
+                enabled = folderName.isNotBlank(),
+                shape = DocShapes.pill
+            ) { Text("Create") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
+            TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
 }
@@ -746,7 +992,8 @@ fun MoveToFolderDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Move to folder") },
+        shape = DocShapes.card,
+        title = { Text("Move to folder", style = MaterialTheme.typography.headlineSmall) },
         text = {
             Column {
                 FolderOptionRow(
@@ -764,9 +1011,9 @@ fun MoveToFolderDialog(
                     )
                 }
                 if (folders.isEmpty()) {
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(Modifier.height(8.dp))
                     Text(
-                        "No folders yet. Create one with the New Folder chip.",
+                        "No folders yet. Create one with the New folder chip.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -789,8 +1036,9 @@ private fun FolderOptionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(DocShapes.pill)
             .clickable(onClick = onClick)
-            .padding(vertical = 10.dp, horizontal = 4.dp),
+            .padding(vertical = 12.dp, horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (colorHex != null) {
@@ -799,7 +1047,7 @@ private fun FolderOptionRow(
                     .size(12.dp)
                     .background(Color(colorHex), CircleShape)
             )
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(Modifier.width(12.dp))
         }
         Text(
             text = label,

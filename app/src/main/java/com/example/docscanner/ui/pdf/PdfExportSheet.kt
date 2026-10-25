@@ -3,30 +3,33 @@ package com.example.docscanner.ui.pdf
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,9 +37,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.example.docscanner.model.AppSettings
@@ -44,6 +50,12 @@ import com.example.docscanner.model.Document
 import com.example.docscanner.model.PaperSize
 import com.example.docscanner.model.PdfExportConfig
 import com.example.docscanner.model.PdfMargin
+import com.example.docscanner.theme.DocShapes
+import com.example.docscanner.theme.pressScale
+import com.example.docscanner.ui.common.InfoPill
+import com.example.docscanner.ui.common.LoadingDots
+import com.example.docscanner.ui.common.SectionLabel
+import com.example.docscanner.ui.common.SegmentedPill
 import com.example.docscanner.util.PageRenderer
 import com.example.docscanner.util.PdfGenerator
 import kotlinx.coroutines.Dispatchers
@@ -61,7 +73,7 @@ fun PdfExportSheet(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // Settings → PDF supplies the defaults; the chips below are a per-export
+    // Settings → PDF supplies the defaults; the controls below are a per-export
     // override that starts from them and is deliberately not persisted.
     var selectedPaperSize by remember { mutableStateOf(settings.pageSize) }
     var selectedMargin by remember { mutableStateOf(PdfMargin.STANDARD) }
@@ -70,98 +82,136 @@ fun PdfExportSheet(
 
     ModalBottomSheet(
         onDismissRequest = { if (!isGenerating) onDismiss() },
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = DocShapes.sheet
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 32.dp)
+                .navigationBarsPadding()
+                .padding(start = 20.dp, end = 20.dp, bottom = 26.dp)
         ) {
+            // ---- header -------------------------------------------------------
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Default.PictureAsPdf,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(28.dp)
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column {
-                    Text(
-                        "Export as PDF",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
+                Box(
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(DocShapes.iconButton)
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.PictureAsPdf,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(22.dp)
                     )
+                }
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
                     Text(
-                        "${document.title} • ${document.pages.size} pages",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        "${settings.resolution.label} · ${settings.pageOrientation.label} · ${settings.imageScale.label}",
-                        style = MaterialTheme.typography.bodySmall,
+                        "EXPORT",
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary
                     )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(20.dp))
-
-            Text("Paper size", style = MaterialTheme.typography.labelMedium)
-            Spacer(modifier = Modifier.height(8.dp))
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(PaperSize.entries.toList(), key = { it.name }) { size ->
-                    FilterChip(
-                        selected = selectedPaperSize == size,
-                        onClick = { selectedPaperSize = size },
-                        label = { Text(size.label) },
-                        shape = RoundedCornerShape(14.dp)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Text("Margins", style = MaterialTheme.typography.labelMedium)
-            Spacer(modifier = Modifier.height(8.dp))
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(PdfMargin.entries.toList(), key = { it.name }) { margin ->
-                    FilterChip(
-                        selected = selectedMargin == margin,
-                        onClick = { selectedMargin = margin },
-                        label = { Text(margin.label) },
-                        shape = RoundedCornerShape(14.dp)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text("Footer page numbers", style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        "e.g. 1 / ${document.pages.size} at the bottom centre",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        document.title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        InfoPill(
+                            "${document.pages.size} ${if (document.pages.size == 1) "page" else "pages"}",
+                            icon = Icons.Default.Description
+                        )
+                        InfoPill(settings.resolution.label)
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(22.dp))
+
+            // ---- paper --------------------------------------------------------
+            SectionLabel("Paper size")
+            SegmentedPill(
+                options = PaperSize.entries.map { it.label },
+                selectedIndex = PaperSize.entries.indexOf(selectedPaperSize),
+                onSelect = { selectedPaperSize = PaperSize.entries[it] },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(Modifier.height(18.dp))
+
+            // ---- margins ------------------------------------------------------
+            SectionLabel("Margins")
+            SegmentedPill(
+                options = PdfMargin.entries.map { it.label },
+                selectedIndex = PdfMargin.entries.indexOf(selectedMargin),
+                onSelect = { selectedMargin = PdfMargin.entries[it] },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(Modifier.height(18.dp))
+
+            // ---- output -------------------------------------------------------
+            SectionLabel("Output")
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                shape = DocShapes.cardSmall,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Footer page numbers",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            "1 / ${document.pages.size} at the bottom centre",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = includePageNumbers,
+                        onCheckedChange = { includePageNumbers = it }
                     )
                 }
-                Switch(
-                    checked = includePageNumbers,
-                    onCheckedChange = { includePageNumbers = it }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "${settings.pageOrientation.label} · ${settings.imageScale.label} image scale",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 8.dp)
+            )
+
+            if (document.pages.isEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "Add at least one page before exporting.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(start = 8.dp)
                 )
             }
 
-            Spacer(modifier = Modifier.height(28.dp))
+            Spacer(Modifier.height(22.dp))
 
-            Button(
+            ExportCta(
+                label = if (isGenerating) "Compiling pages…" else "Generate & share PDF",
+                busy = isGenerating,
                 enabled = !isGenerating && document.pages.isNotEmpty(),
                 onClick = {
-                    if (document.pages.isEmpty()) return@Button
+                    if (document.pages.isEmpty() || isGenerating) return@ExportCta
                     isGenerating = true
                     val config = PdfExportConfig(
                         paperSize = selectedPaperSize,
@@ -209,35 +259,62 @@ fun PdfExportSheet(
                                 ).show()
                             }
                     }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(54.dp),
-                shape = RoundedCornerShape(20.dp)
-            ) {
-                if (isGenerating) {
-                    CircularProgressIndicator(
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(24.dp),
-                        strokeWidth = 2.dp
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text("Compiling pages…", fontWeight = FontWeight.Bold)
-                } else {
-                    Icon(Icons.Default.Share, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Generate & Share PDF", fontWeight = FontWeight.Bold)
                 }
-            }
+            )
+        }
+    }
+}
 
-            if (document.pages.isEmpty()) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    "Add at least one page before exporting.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
-                )
+/**
+ * The sheet's one primary action.
+ *
+ * Built by hand rather than from [PillButton] because it carries two states —
+ * idle with a share glyph, busy with breathing dots — and a pill can only host a
+ * static label.
+ */
+@Composable
+private fun ExportCta(
+    label: String,
+    busy: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val interactions = remember { MutableInteractionSource() }
+    val enabledAlpha by animateFloatAsState(if (enabled) 1f else 0.45f, label = "ctaAlpha")
+    Surface(
+        color = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary,
+        shape = DocShapes.pill,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp)
+            .alpha(enabledAlpha)
+            .pressScale(interactions)
+            .clip(DocShapes.pill)
+            .clickable(
+                enabled = enabled,
+                interactionSource = interactions,
+                indication = ripple(),
+                onClick = onClick
+            )
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (busy) {
+                LoadingDots(color = MaterialTheme.colorScheme.onPrimary, dotSize = 7.dp)
+                Spacer(Modifier.width(10.dp))
+            } else {
+                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(19.dp))
+                Spacer(Modifier.width(9.dp))
             }
+            Text(
+                label,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }
