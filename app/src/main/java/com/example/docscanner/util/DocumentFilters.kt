@@ -1,6 +1,7 @@
 package com.example.docscanner.util
 
 import android.graphics.Bitmap
+import android.util.Log
 import com.example.docscanner.model.FilterType
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorService
@@ -681,6 +682,16 @@ object DocumentFilters {
      */
     internal fun medianBlurGray(pixels: IntArray, w: Int, h: Int, ksize: Int) {
         if (ksize < 3 || w < 3 || h < 3) return
+        // Rust when it is available *and* has been proven byte-identical to the
+        // reference below (see [nativeFiltersReady]); otherwise this is the same
+        // code the app shipped before the kernels existed.
+        if (nativeFiltersReady() && NativeFilters.medianBlurGray(pixels, w, h, ksize)) return
+        medianBlurGrayReference(pixels, w, h, ksize)
+    }
+
+    /** Pure-Kotlin median over the grey plane: the parity reference for Rust. */
+    private fun medianBlurGrayReference(pixels: IntArray, w: Int, h: Int, ksize: Int) {
+        if (ksize < 3 || w < 3 || h < 3) return
         val radius = ksize / 2
         val source = IntArray(w * h) { greyOf(pixels[it]) }
         bands(h) { from, to ->
@@ -1170,6 +1181,13 @@ object DocumentFilters {
      * pixel, which matters on a 2000 px page.
      */
     internal fun median3x3(src: FloatArray, w: Int, h: Int): FloatArray {
+        val out = FloatArray(src.size)
+        if (nativeFiltersReady() && NativeFilters.median3x3(src, out, w, h)) return out
+        return median3x3Reference(src, w, h)
+    }
+
+    /** Pure-Kotlin 3×3 median: the parity reference for the Rust kernel. */
+    private fun median3x3Reference(src: FloatArray, w: Int, h: Int): FloatArray {
         val out = FloatArray(src.size)
         val window = FloatArray(9)
         for (y in 0 until h) {
@@ -1667,6 +1685,13 @@ object DocumentFilters {
      */
     internal fun laplacian3x3(plane: FloatArray, w: Int, h: Int): FloatArray {
         val out = FloatArray(plane.size)
+        if (nativeFiltersReady() && NativeFilters.laplacian3x3(plane, out, w, h)) return out
+        return laplacian3x3Reference(plane, w, h)
+    }
+
+    /** Pure-Kotlin 3×3 Laplacian: the parity reference for the Rust kernel. */
+    private fun laplacian3x3Reference(plane: FloatArray, w: Int, h: Int): FloatArray {
+        val out = FloatArray(plane.size)
         bands(h) { from, to ->
             for (y in from until to) {
                 val row = y * w
@@ -1711,6 +1736,82 @@ object DocumentFilters {
             val INSTANCE: ToneTables by lazy { ToneTables() }
         }
     }
+
+    // ---- Rust kernels ------------------------------------------------------
+
+    /**
+     * Whether the Rust kernels may be used in this process.
+     *
+     * Computed once, on first use, by running each kernel and the Kotlin
+     * reference side by side on a synthetic page and comparing the results **byte
+     * for byte**. One differing byte and the native path stays off for the rest of
+     * the session: this app would rather be slower than different.
+     *
+     * The cost is a 96 x 64 pass through three kernels, i.e. microseconds, and it
+     * happens off the main thread because every caller here already runs on a
+     * background dispatcher.
+     */
+    private val nativeAvailable: Boolean by lazy { verifyNativeFilters() }
+
+    /** Test seam: true when the native path verified and will be used. */
+    internal fun nativeFiltersReady(): Boolean = nativeAvailable
+
+    private fun verifyNativeFilters(): Boolean {
+        if (!NativeFilters.isLoaded) return false
+        val verdict = runCatching {
+            val w = SYNTHETIC_W
+            val h = SYNTHETIC_H
+            val page = syntheticPage(w, h)
+
+            // 1. Grey median — the 9-tap pass behind Grayscale.
+            val referenceMedian = page.copyOf()
+            val nativeMedianGrey = page.copyOf()
+            medianBlurGrayReference(referenceMedian, w, h, 9)
+            if (!NativeFilters.medianBlurGray(nativeMedianGrey, w, h, 9)) return@runCatching false
+            if (!nativeMedianGrey.contentEquals(referenceMedian)) return@runCatching false
+
+            // 2. 3x3 median of the luma plane, then 3. its Laplacian: the exact
+            //    order level 1 uses them in, so an error in either shows up here.
+            val luma = FloatArray(w * h) { greyOf(page[it]).toFloat() }
+            val referenceSmoothed = median3x3Reference(luma, w, h)
+            val nativeSmoothed = FloatArray(w * h)
+            if (!NativeFilters.median3x3(luma, nativeSmoothed, w, h)) return@runCatching false
+            if (!nativeSmoothed.contentEquals(referenceSmoothed)) return@runCatching false
+
+            val referenceEdge = laplacian3x3Reference(referenceSmoothed, w, h)
+            val nativeEdge = FloatArray(w * h)
+            if (!NativeFilters.laplacian3x3(referenceSmoothed, nativeEdge, w, h)) {
+                return@runCatching false
+            }
+            nativeEdge.contentEquals(referenceEdge)
+        }.getOrDefault(false)
+
+        Log.i(
+            TAG,
+            if (verdict) {
+                "Rust kernels verified byte-identical to the Kotlin reference"
+            } else {
+                "Rust kernels unavailable or mismatched - using the Kotlin reference"
+            }
+        )
+        return verdict
+    }
+
+    /** Deterministic page: light gradient, hard dark bars, mild per-pixel noise. */
+    private fun syntheticPage(w: Int, h: Int): IntArray = IntArray(w * h) { index ->
+        val x = index % w
+        val y = index / w
+        val ground = 200 + (x * 40) / w
+        val inBar = y % 8 in 2..4 && x % 24 in 3..20
+        val base = if (inBar) 40 + (y * 3) % 25 else ground
+        val noise = (x * 31 + y * 17) % 7 - 3
+        val level = (base + noise).coerceIn(0, 255)
+        (0xFF shl 24) or (level shl 16) or (level shl 8) or level
+    }
+
+    private const val SYNTHETIC_W = 96
+    private const val SYNTHETIC_H = 64
+    private const val TAG = "DocumentFilters"
 
     private const val ALPHA_MASK = -0x1000000
 }

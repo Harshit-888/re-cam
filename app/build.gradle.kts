@@ -50,6 +50,56 @@ kotlin {
     jvmToolchain(17)
 }
 
+// ---------------------------------------------------------------------------
+// Rust pixel kernels (app/src/main/rust)
+// ---------------------------------------------------------------------------
+// Optional by design. `util/NativeFilters` and `DocumentFilters` are written so
+// that the app is complete and correct without this task ever running: if the
+// toolchain is missing, the .so is simply absent and every filter uses the Kotlin
+// reference implementation it always used.
+//
+// To build them you need the Android NDK plus:
+//     cargo install cargo-ndk
+//     rustup target add aarch64-linux-android x86_64-linux-android
+// and ANDROID_NDK_HOME pointing at an installed NDK.
+//
+// The output goes to src/main/jniLibs/, which is git-ignored: binaries are build
+// artifacts here (AGENTS.md §2.5), so they are produced, never committed.
+
+fun commandAvailable(command: String): Boolean = runCatching {
+    ProcessBuilder("sh", "-c", "command -v $command")
+        .redirectErrorStream(true)
+        .start()
+        .waitFor() == 0
+}.getOrDefault(false)
+
+val rustDir = layout.projectDirectory.dir("src/main/rust").asFile
+val jniLibsDir = layout.projectDirectory.dir("src/main/jniLibs").asFile
+val rustToolchainReady = commandAvailable("cargo") && commandAvailable("cargo-ndk")
+
+val buildRustKernels = tasks.register<Exec>("buildRustKernels") {
+    group = "build"
+    description = "Cross-compiles the Rust pixel kernels into src/main/jniLibs (skipped without cargo-ndk)."
+    workingDir = rustDir
+    commandLine(
+        "cargo", "ndk",
+        "-t", "arm64-v8a",
+        "-t", "x86_64",
+        "-o", jniLibsDir.absolutePath,
+        "build", "--release"
+    )
+    onlyIf {
+        if (!rustToolchainReady) {
+            logger.lifecycle(
+                "cargo / cargo-ndk not found: skipping Rust kernels (Kotlin reference will be used)."
+            )
+        }
+        rustToolchainReady
+    }
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(buildRustKernels) }
+
 dependencies {
   val composeBom = platform(libs.androidx.compose.bom)
   implementation(composeBom)

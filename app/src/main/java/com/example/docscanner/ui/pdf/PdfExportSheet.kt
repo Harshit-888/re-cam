@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
@@ -89,6 +91,11 @@ fun PdfExportSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
+                // A sheet is measured against the *smallest* screen it runs on: on
+                // a short phone the header, two segmented rows, the output card and
+                // the CTA do not fit, and a sheet that is not scrollable simply
+                // clips the primary action off the bottom.
+                .verticalScroll(rememberScrollState())
                 .padding(start = 20.dp, end = 20.dp, bottom = 26.dp)
         ) {
             // ---- header -------------------------------------------------------

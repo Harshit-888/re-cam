@@ -175,6 +175,29 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 > **unverified**. If a build fails, the compiler is right — see
 > `docs/AGENTS_CHANGELOG.md` for the dependency versions that may need bumping.
 
+### Optional: Rust pixel kernels
+
+The filter pipelines (median, Laplacian, tone-table lookup) have a Rust
+counterpart in `app/src/main/rust`. It is **optional by design** — the app is
+complete without it:
+
+```bash
+cargo install cargo-ndk
+rustup target add aarch64-linux-android x86_64-linux-android
+export ANDROID_NDK_HOME=/path/to/android-sdk/ndk/27.0.12077973
+./gradlew assembleDebug          # :app:buildRustKernels compiles the .so first
+```
+
+- No Rust toolchain? The Gradle task skips itself, the `.so` is absent, and every
+  filter runs the Kotlin implementation. Nothing fails.
+- On first use, `DocumentFilters` runs each kernel and the Kotlin reference on the
+  same synthetic page and compares the results **byte for byte**. A mismatch
+  disables the native path for the session, so a wrong pixel can never ship.
+- Build output lands in `app/src/main/jniLibs/` and is git-ignored: binaries are
+  produced, never committed.
+- If the crate does not compile yet on your toolchain, keep shipping with
+  `./gradlew assembleDebug -x buildRustKernels` — the app does not need it.
+
 ---
 
 ## 🗺️ Roadmap

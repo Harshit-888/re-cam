@@ -208,6 +208,41 @@ saving/export paths are untouched, so nothing in §6d or spec §13 moves.
 **Not built here** (sandbox has no JDK/Android SDK). Last verified build is still
 Antigravity's in §7 — please run `assembleDebug testDebugUnitTest` before merging.
 
+## 6f. Rust pixel kernels (claimed by Arena, 2026-10-25, round 15)
+
+Files touched: `app/build.gradle.kts`, `.gitignore`, `README.md`, new
+`app/src/main/rust/`, new `util/NativeFilters.kt`, `util/DocumentFilters.kt`
+(kernel dispatch + parity self-test only), plus three UI fixes (`PageViewerScreen`,
+`PdfExportSheet`, `SignaturePadDialog`, `TrashScreen`).
+
+### What changed in DocumentFilters
+
+- Every ported kernel now has two bodies: the public function dispatches, and the
+  Kotlin implementation is kept as `medianBlurGrayReference` / `median3x3Reference`
+  / `laplacian3x3Reference` (all `private`). **Do not delete the reference bodies** —
+  they are the parity oracle and the fallback.
+- `nativeFiltersReady()` / `verifyNativeFilters()` are new and `internal`. The
+  self-test runs once, lazily, on the first filter call (i.e. off the main thread).
+- No filter maths changed. If the self-test passes, output is byte-identical by
+  construction; if it fails, the old code runs.
+
+### Build system
+
+- New task `:app:buildRustKernels` (an `Exec`), hooked to `preBuild`, guarded by
+  `onlyIf { cargo && cargo-ndk present }`. Absent toolchain → skipped, no failure.
+- It writes `app/src/main/jniLibs/arm64-v8a/libdocscanner_native.so` (+ `x86_64`),
+  which is **git-ignored**. Do not commit it (AGENTS.md §2.5).
+- Escape hatch if the crate does not compile yet: `-x buildRustKernels`.
+- ABI guard: `NativeFilters.EXPECTED_ABI` must match `ABI_VERSION` in `lib.rs`.
+  Bump both when a kernel's output changes, or a stale `.so` will be refused.
+
+### Verification status
+
+The Rust crate has **never been compiled** (no Rust toolchain or NDK in the Arena
+sandbox). Treat the first `cargo ndk` run as a compile-check of the `jni` 0.21 API
+usage in `lib.rs`. The Kotlin side is safe regardless: `System.loadLibrary` failure
+and the byte-for-byte self-test both fall back to Kotlin.
+
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-25 (`./gradlew assembleDebug testDebugUnitTest` passed).

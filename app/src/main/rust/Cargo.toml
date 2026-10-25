@@ -1,0 +1,23 @@
+[package]
+name = "docscanner_native"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "docscanner_native"
+crate-type = ["cdylib"]
+
+# The JNI crate is the only dependency: it is the standard, well-audited binding
+# and it keeps this file free of hand-rolled vtable offsets. Nothing else is
+# pulled in — no rayon, no image crates — so the .so stays in the hundreds of KB
+# and the toolchain cannot drift under us.
+[dependencies]
+jni = "0.21"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

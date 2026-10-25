@@ -141,9 +141,19 @@ fun PageViewerScreen(
                         .fillMaxSize()
                         .pointerInput(Unit) {
                             detectTransformGestures { _, pan, zoom, _ ->
-                                scale = (scale * zoom).coerceIn(1f, 4f)
-                                offset = if (scale > 1f) {
-                                    Offset(offset.x + pan.x, offset.y + pan.y)
+                                val next = (scale * zoom).coerceIn(1f, MAX_VIEWER_ZOOM)
+                                scale = next
+                                // Clamp the pan to the part of the page that is
+                                // actually outside the viewport. Without this the
+                                // page can be flung into empty space and the user
+                                // has to guess their way back.
+                                val maxX = (size.width * (next - 1f)) / 2f
+                                val maxY = (size.height * (next - 1f)) / 2f
+                                offset = if (next > 1f) {
+                                    Offset(
+                                        (offset.x + pan.x).coerceIn(-maxX, maxX),
+                                        (offset.y + pan.y).coerceIn(-maxY, maxY)
+                                    )
                                 } else {
                                     Offset.Zero
                                 }
@@ -354,6 +364,9 @@ fun PageViewerScreen(
         }
     }
 }
+
+/** How far the viewer magnifies a page before the pan clamp takes over. */
+private const val MAX_VIEWER_ZOOM = 4f
 
 /** Dark, slightly warm backdrop: a page reads as paper against it. */
 private val ViewerBackdrop = Color(0xFF101215)

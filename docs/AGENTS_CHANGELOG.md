@@ -4,6 +4,54 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (x) — Arena.ai — Rust kernels behind a byte-for-byte parity gate
+
+Round 15, first performance increment. **Filter output is unchanged** — that is the
+entire point of the design below — and the app still works with no Rust toolchain
+installed.
+
+### New files
+
+| File | What it is |
+| --- | --- |
+| `app/src/main/rust/Cargo.toml` | `cdylib` crate `docscanner_native`. One dependency (`jni`), LTO, stripped, panic=abort. |
+| `app/src/main/rust/src/kernels.rs` | Ports of `medianBlurGray`, `median3x3`, `laplacian3x3`. |
+| `app/src/main/rust/src/lib.rs` | Four JNI entry points; `0` = ran, `-1` = fall back. |
+| `util/NativeFilters.kt` | Kotlin facade: loads the `.so`, refuses a stale ABI, exposes the raw calls. |
+
+### How it stays safe
+
+- `DocumentFilters` keeps every Kotlin kernel (renamed `…Reference`) as the
+  **reference implementation**, and computes `nativeFiltersReady()` lazily on first
+  use by running both on a 96×64 synthetic page and comparing **byte for byte**.
+  Any mismatch, missing library, wrong ABI or JNI error → Kotlin path, for the
+  session. A wrong pixel cannot reach the user.
+- `median_blur_gray` is a *sliding histogram* (Huang) rather than the reference's
+  81-element partial selection. Both return the same order statistic of the same
+  window, so parity is by construction, not by luck.
+- `laplacian3x3` keeps the reference's left-to-right `f32` evaluation order, so no
+  fused-multiply-add contraction can move a bit.
+- Gradle task `:app:buildRustKernels` cross-compiles `arm64-v8a` + `x86_64` into
+  `src/main/jniLibs/` and is **skipped automatically** when `cargo`/`cargo-ndk` is
+  absent. `jniLibs/` and `rust/target/` are git-ignored (AGENTS.md §2.5).
+
+### UI fixes in the same commit
+
+- Viewer: panning is clamped to the zoomed page instead of letting the page be
+  flung into empty space (`MAX_VIEWER_ZOOM = 4f`).
+- PDF sheet and signature dialog are scrollable, so the primary action cannot be
+  clipped off the bottom on a short screen; the signature pad's canvas caps its
+  height with `heightIn`.
+- Recycle bin: *Empty recycle bin* is centred instead of reading like another row.
+
+### Not done here
+
+No JDK/Android SDK and **no Rust toolchain in this sandbox** — the crate has never
+been compiled. Expect the first `cargo ndk build` to shake out API details of the
+`jni` crate; the Kotlin side is written so that even a completely broken `.so`
+only means "Kotlin path". Next kernels after this one is proven on device: the
+tone-table divide loop and the perspective warp.
+
 ## 2026-10-25 (w) — Antigravity — Round 14 build verification & compilation fixes
 
 Verified Round 14 Material 3 Expressive UI overhaul locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. Resolved 3 compilation issues from Arena's uncompiled UI changes:

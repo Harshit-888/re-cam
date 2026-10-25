@@ -119,11 +119,18 @@ fun TrashScreen(
                 }
                 item {
                     Spacer(Modifier.height(6.dp))
-                    TonalPillButton(
-                        text = "Empty recycle bin",
-                        icon = Icons.Default.DeleteForever,
-                        onClick = { showEmptyTrashConfirm = true }
-                    )
+                    // Centred: a destructive bulk action pinned to the left edge
+                    // reads like another list row, which is exactly what it is not.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        TonalPillButton(
+                            text = "Empty recycle bin",
+                            icon = Icons.Default.DeleteForever,
+                            onClick = { showEmptyTrashConfirm = true }
+                        )
+                    }
                 }
             }
         }
