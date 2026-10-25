@@ -33,8 +33,16 @@ object ImageStore {
     private const val SIGNATURES_DIR = "signatures"
     private const val EXPORTS_DIR = "exports"
 
-    /** Longest edge kept for a captured page. Enough for OCR and A3 print. */
-    const val MAX_CAPTURE_DIMENSION = 2600
+    /**
+     * Longest edge kept for a captured page — **3200 px**.
+     *
+     * Matched to `DocumentFilters.MAX_PROCESS_DIMENSION` and to
+     * `ImageQuality.HIGH`. A page cannot be saved sharper than it was captured, so
+     * capping here at 2600 while the pipeline asked for 3200 would have silently
+     * made the A4 page a 243 DPI scan instead of a 300 DPI one — the difference
+     * between text that survives a zoom and text that turns into blocks.
+     */
+    const val MAX_CAPTURE_DIMENSION = 3200
 
     const val JPEG_QUALITY = 92
 
@@ -56,6 +64,22 @@ object ImageStore {
     /** File that holds the rendered result of the editor's bake. */
     fun editedFile(context: Context, pageId: String): File =
         File(pagesDir(context), "${pageId}_edited.jpg")
+
+    /**
+     * Lossless twin of [editedFile], used for the filters that produce flat or
+     * bi-level output.
+     *
+     * *Clear B&W* is the reason this exists. A JPEG is a 8 × 8 DCT of a block of
+     * glyph edges: at quality 88–95 the ringing around every stroke is baked in,
+     * and since the PDF embeds the decoded bitmap losslessly that damage becomes
+     * the PDF's ceiling. A PNG of binary text is both smaller and exact.
+     *
+     * The two files coexist deliberately: pages baked before this change keep
+     * their `.jpg` and remain valid, because the stored `imageUri` is an absolute
+     * path, not a name convention.
+     */
+    fun editedLosslessFile(context: Context, pageId: String): File =
+        File(pagesDir(context), "${pageId}_edited.png")
 
     fun signatureFile(context: Context, signatureId: String): File =
         File(signaturesDir(context), "$signatureId.png")
@@ -185,13 +209,36 @@ object ImageStore {
         context: Context,
         pageId: String,
         bitmap: Bitmap,
-        quality: Int = JPEG_QUALITY
+        quality: Int = JPEG_QUALITY,
+        lossless: Boolean = false
     ): String? = try {
-        val target = editedFile(context, pageId)
-        writeJpeg(bitmap, target, quality)
+        // Whichever we write, the other format's stale file must go: a later
+        // rebake with the other filter would otherwise leave two candidates on
+        // disk and `imageUri` decides which one wins. Deleted *after* the new file
+        // is written — if the write throws, the previous page must still exist.
+        val stale = if (lossless) editedFile(context, pageId) else editedLosslessFile(context, pageId)
+        val target = if (lossless) editedLosslessFile(context, pageId) else editedFile(context, pageId)
+        if (lossless) writePng(bitmap, target) else writeJpeg(bitmap, target, quality)
+        runCatching { stale.delete() }
         target.absolutePath
     } catch (_: Throwable) {
         null
+    }
+
+    /**
+     * Writes [bitmap] to [target] as a PNG.
+     *
+     * For *Clear B&W* and *Grayscale* this is both more faithful and smaller than a
+     * JPEG: binary glyphs are exactly what DEFLATE is good at, and it cannot ring.
+     */
+    fun writePng(bitmap: Bitmap, target: File) {
+        target.parentFile?.let { if (!it.exists()) it.mkdirs() }
+        FileOutputStream(target).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            out.flush()
+        }
+        // Bitmap cache keys include the file's mtime; make sure it advances.
+        target.setLastModified(System.currentTimeMillis())
     }
 
     /**
@@ -326,6 +373,7 @@ object ImageStore {
     fun deletePageFiles(context: Context, page: ScannedPage) {
         runCatching { pageFile(context, page.id).delete() }
         runCatching { editedFile(context, page.id).delete() }
+        runCatching { editedLosslessFile(context, page.id).delete() }
     }
 
     fun deleteDocumentFiles(context: Context, pages: List<ScannedPage>) {

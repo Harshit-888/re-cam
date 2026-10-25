@@ -2,6 +2,7 @@ package com.example.docscanner.util
 
 import android.content.Context
 import android.graphics.Bitmap
+import com.example.docscanner.model.FilterType
 import com.example.docscanner.model.ImageQuality
 import com.example.docscanner.model.ScannedPage
 import kotlinx.coroutines.Dispatchers
@@ -42,13 +43,7 @@ object PageRenderer {
 
         var result: Bitmap = source
         try {
-            result = ImageProcessingUtils.applyEnhancements(
-                src = source,
-                filterType = page.filterType,
-                rotationDegrees = page.rotationDegrees,
-                corners = page.corners,
-                maxDimension = maxDimension
-            )
+            result = renderEnhanced(source, page, maxDimension)
 
             val signaturePath = page.signatureOverlayUri
             if (!signaturePath.isNullOrBlank()) {
@@ -61,14 +56,57 @@ object PageRenderer {
                 }
             }
 
-            val savedPath = ImageStore.saveEditedPage(context, page.id, result, jpegQuality)
-                ?: return null
+            val savedPath = ImageStore.saveEditedPage(
+                context = context,
+                pageId = page.id,
+                bitmap = result,
+                quality = jpegQuality,
+                lossless = savesLosslessly(page.filterType)
+            ) ?: return null
             return page.copy(imageUri = savedPath, originalImageUri = pristinePath)
         } finally {
             if (result !== source) result.recycle()
             if (!source.isRecycled) source.recycle()
         }
     }
+
+    /**
+     * Applies the page's transform, falling back to a smaller working resolution
+     * only if the full one runs out of memory.
+     *
+     * 3200 px needs about 95 MB of planes at peak. A device that cannot give it
+     * should still save the page — at 2400 px (~225 DPI on A4) rather than at
+     * 300 DPI — instead of failing the save, which is what an uncaught
+     * `OutOfMemoryError` inside the filter would otherwise do.
+     */
+    private fun renderEnhanced(source: Bitmap, page: ScannedPage, maxDimension: Int): Bitmap {
+        var dimension = maxDimension
+        while (true) {
+            try {
+                return ImageProcessingUtils.applyEnhancements(
+                    src = source,
+                    filterType = page.filterType,
+                    rotationDegrees = page.rotationDegrees,
+                    corners = page.corners,
+                    maxDimension = dimension
+                )
+            } catch (error: OutOfMemoryError) {
+                if (dimension <= FALLBACK_MIN_DIMENSION) throw error
+                dimension = maxOf(FALLBACK_MIN_DIMENSION, (dimension * 3) / 4)
+            }
+        }
+    }
+
+    /**
+     * Bi-level and single-channel pages are worth storing losslessly.
+     *
+     * *Clear B&W* is binary: JPEG turns every glyph edge into ringing and, because
+     * the PDF embeds the decoded bitmap losslessly, that ringing becomes the
+     * ceiling of the exported document. PNG of binary text is smaller *and* exact.
+     * *Grayscale* is the same argument with more levels.
+     */
+    private fun savesLosslessly(filterType: FilterType): Boolean =
+        filterType == FilterType.CLEAR_BW || filterType == FilterType.GRAYSCALE
 
     suspend fun bake(
         context: Context,
@@ -84,9 +122,9 @@ object PageRenderer {
      * the save.
      *
      * Capped at [DocumentFilters.MAX_PROCESS_DIMENSION]: that is the working
-     * resolution the filters are tuned and budgeted for, so a "High (2600)"
-     * capture is filtered at 2000 rather than silently costing a third more
-     * memory per plane. Medium (1900) is honoured as-is.
+     * resolution the filters are tuned and budgeted for. High (3200) and the cap
+     * are the same number on purpose — that is what makes the PDF a 300 DPI page
+     * rather than a 187 DPI one. Medium (2000) is honoured as-is.
      */
     fun bakeDimension(quality: ImageQuality): Int =
         minOf(quality.maxDimension, DocumentFilters.MAX_PROCESS_DIMENSION)
@@ -102,4 +140,7 @@ object PageRenderer {
     }
 
     private const val SIGNATURE_MAX_DIMENSION = 1200
+
+    /** Lowest working resolution the memory fallback will step down to (~225 DPI on A4). */
+    private const val FALLBACK_MIN_DIMENSION = 2400
 }

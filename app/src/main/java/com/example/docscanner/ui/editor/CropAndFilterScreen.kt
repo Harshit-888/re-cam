@@ -104,10 +104,22 @@ import kotlin.math.sin
  * How long the filter strip must rest before a full-resolution preview render.
  *
  * Swiping across the chips changes the selection every frame; each render is a
- * 2000 px pass and the previous bitmap stays on screen meanwhile, so the delay
- * only prevents wasted work.
+ * multi-megapixel pass and the previous bitmap stays on screen meanwhile, so the
+ * delay only prevents wasted work.
  */
 private const val PREVIEW_SETTLE_MS = 140L
+
+/**
+ * Longest edge rendered for the on-screen preview.
+ *
+ * The editor used to render at the bake size, which was 2000 and is now 3200 — a
+ * 2.5× cost for pixels the display cannot show. The frame is about 1000 px wide,
+ * so 2400 is already supersampled for it, and nothing the user judges changes:
+ * the threshold field, the Sauvola window and the anti-aliasing all scale with the
+ * page, so a 2400 px render and a 3200 px render look the same at fit-to-screen.
+ * The *file* stays at 3200 px.
+ */
+private const val PREVIEW_RENDER_DIMENSION = 2400
 
 /** Smallest allowed gap between opposing edges, in normalised units. */
 private const val MIN_GAP = 0.02f
@@ -202,11 +214,14 @@ fun CropAndFilterScreen(
         // what a 2000 px bake looks like, which is exactly why the preview read as
         // soft next to the PDF.
         val bakeEdge = PageRenderer.bakeDimension(repository.currentSettings().imageQuality)
+        // Decode at what the screen can show, not at what the file will be: the
+        // filter render below is capped the same way, so this avoids a 3200 px
+        // decode followed by a 2400 px downscale.
         val decoded = withContext(Dispatchers.IO) {
             ImageStore.loadBitmap(
                 context,
                 current.originalImageUri ?: current.imageUri,
-                bakeEdge
+                minOf(bakeEdge, PREVIEW_RENDER_DIMENSION)
             )
         }
         if (decoded == null) {
@@ -268,10 +283,19 @@ fun CropAndFilterScreen(
         // runCatching: an OutOfMemoryError mid-filter must not strand the UI in a
         // permanent "filtering…" state.
         val jpegQuality = repository.currentSettings().imageQuality.jpegQuality
+        // Clear B&W and Grayscale are saved as PNG — lossless — so there is no
+        // encoder between the render and the file to imitate.
+        val lossless = selectedFilter == FilterType.CLEAR_BW ||
+            selectedFilter == FilterType.GRAYSCALE
+        // Render at screen scale, not at file scale: the frame is ~1000 px wide, so
+        // 2400 is already supersampled for it, and the filters are resolution-
+        // independent (the Sauvola window and the AA both scale with the page). The
+        // file keeps the full 3200 — see PageRenderer.bakeDimension.
+        val previewDimension = minOf(bakeDimension, PREVIEW_RENDER_DIMENSION)
         val rendered = withContext(Dispatchers.Default) {
             runCatching {
                 val warped = PerspectiveWarp.warp(source, corners)
-                var filtered = DocumentFilters.apply(warped, selectedFilter, bakeDimension)
+                var filtered = DocumentFilters.apply(warped, selectedFilter, previewDimension)
                 // DocumentFilters returns its input unchanged for ORIGINAL and on
                 // any failure, so only recycle intermediates that are neither the
                 // source nor the result. Recycling `warped` unconditionally was a
@@ -285,7 +309,11 @@ fun CropAndFilterScreen(
                 // than it saves, which is exactly the judgement the preview exists
                 // for. Round-trip through the same encoder so the screen and the
                 // file are the same image, and recycle the unencoded copy.
-                val encoded = runCatching {
+                //
+                // Not for the lossless filters: PNG decode returns the identical
+                // pixels, so an encode step here would make the preview *less*
+                // faithful than the file.
+                val encoded = if (lossless) null else runCatching {
                     ByteArrayOutputStream().use { stream ->
                         if (filtered.compress(Bitmap.CompressFormat.JPEG, jpegQuality, stream)) {
                             stream.toByteArray()

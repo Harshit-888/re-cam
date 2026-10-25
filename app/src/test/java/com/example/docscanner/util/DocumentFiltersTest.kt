@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.roundToInt
 
 /**
  * Pins [DocumentFilters] to the behaviour recovered from the original APK.
@@ -559,6 +560,161 @@ class DocumentFiltersTest {
         assertEquals(samples, samples.sortedDescending())
         // Halfway through the fade is half strength.
         assertEquals(base / 2f, DocumentFilters.adaptiveSharpenAmount(base, 6.5f), 1e-4f)
+    }
+
+    // ------------------------------------------------- page size, bands, coverage AA
+
+    /**
+     * The PDF is a raster page, so its sharpness at zoom is its DPI. A4 with the
+     * standard 25 pt margin leaves a 770.8 pt (10.7 in) image box, so 300 DPI needs
+     * `10.7 × 300 ≈ 3212` px. Anything much below that is the "pixelated when I
+     * zoom into the PDF" report.
+     */
+    @Test
+    fun processDimension_reachesThreeHundredDpiOnA4() {
+        val neededFor300Dpi = (770.8f / 72f * 300f).roundToInt()   // 3212
+        assertTrue(
+            "MAX_PROCESS_DIMENSION=${DocumentFilters.MAX_PROCESS_DIMENSION} is under " +
+                "the $neededFor300Dpi px A4 needs for 300 DPI",
+            DocumentFilters.MAX_PROCESS_DIMENSION >= neededFor300Dpi - 20
+        )
+    }
+
+    /**
+     * A band split that skipped or double-processed rows would leave them black —
+     * silently, and only on multi-core devices.
+     */
+    @Test
+    fun bands_visitsEveryRowExactlyOnce() {
+        val h = 1000
+        val counts = IntArray(h)
+        DocumentFilters.bands(h) { from, to ->
+            for (y in from until to) counts[y]++
+        }
+        for (y in 0 until h) {
+            assertEquals("row $y must be visited once", 1, counts[y])
+        }
+    }
+
+    @Test
+    fun bands_handlesAnImageShorterThanOneBand() {
+        val visits = ArrayList<Int>()
+        DocumentFilters.bands(5) { from, to -> synchronized(visits) { visits.add(to - from) } }
+        assertEquals("a 5-row image must still be covered", 5, visits.sum())
+    }
+
+    @Test
+    fun bilinearAt_interpolatesAndClamps() {
+        val w = 4
+        val h = 2
+        val plane = floatArrayOf(
+            0f, 100f, 0f, 70f,
+            0f, 0f, 0f, 0f
+        )
+
+        assertEquals(0f, DocumentFilters.bilinearAt(plane, w, h, 0f, 0f), 1e-4f)
+        assertEquals(100f, DocumentFilters.bilinearAt(plane, w, h, 1f, 0f), 1e-4f)
+        assertEquals("midpoint", 50f, DocumentFilters.bilinearAt(plane, w, h, 0.5f, 0f), 1e-4f)
+        // Outside the plane must clamp to the edge pixel, not wrap.
+        assertEquals(70f, DocumentFilters.bilinearAt(plane, w, h, 9f, 0f), 1e-4f)
+        assertEquals(0f, DocumentFilters.bilinearAt(plane, w, h, -9f, 0f), 1e-4f)
+    }
+
+    @Test
+    fun medianOf9InPlace_returnsTheMiddleValue() {
+        val values = floatArrayOf(9f, 1f, 8f, 2f, 7f, 3f, 6f, 4f, 5f)
+        assertEquals(5f, DocumentFilters.medianOf9InPlace(values), 1e-4f)
+        assertEquals("must not allocate a copy", 5f, values[4], 1e-4f)
+    }
+
+    @Test
+    fun boxBlurInPlace_leavesAFlatPlaneUntouched() {
+        val w = 12
+        val h = 9
+        val plane = FloatArray(w * h) { 173f }
+
+        DocumentFilters.boxBlurInPlace(plane, w, h)
+
+        for (i in plane.indices) assertEquals("index $i", 173f, plane[i], 1e-4f)
+    }
+
+    /**
+     * A single bright pixel must be spread to its 3 × 3 neighbourhood with weight
+     * 1/9 and nothing may be lost — this is the property that makes the in-place
+     * version a drop-in for the allocating one.
+     */
+    @Test
+    fun boxBlurInPlace_spreadsAnImpulseWithoutLosingEnergy() {
+        val w = 7
+        val h = 7
+        val plane = FloatArray(w * h)
+        plane[3 * w + 3] = 90f
+
+        DocumentFilters.boxBlurInPlace(plane, w, h)
+
+        assertEquals("centre", 10f, plane[3 * w + 3], 1e-4f)
+        assertEquals("left", 10f, plane[3 * w + 2], 1e-4f)
+        assertEquals("diagonal", 10f, plane[2 * w + 2], 1e-4f)
+        assertEquals("far corner untouched", 0f, plane[0], 1e-4f)
+        assertEquals("total energy", 90f, plane.sum(), 1e-3f)
+    }
+
+    @Test
+    fun noiseFromResidual_readsTheResidualAmplitude() {
+        val w = 20
+        val h = 20
+        val plane = FloatArray(w * h) { i -> if (i % 2 == 0) 106f else 94f }
+        val flat = FloatArray(w * h) { 100f }
+
+        assertEquals(0f, DocumentFilters.noiseFromResidual(flat, flat), 1e-4f)
+        assertEquals(6f, DocumentFilters.noiseFromResidual(plane, flat), 1e-4f)
+    }
+
+    /**
+     * The whole point of the coverage cut: interiors stay perfectly bi-level while
+     * the contour gets grey, and that grey must be *only* on the contour.
+     */
+    @Test
+    fun coverageCut_keepsInteriorsBinaryAndSoftensOnlyTheContour() {
+        // A 40-level-per-pixel ramp crosses the threshold at x = 6.2, i.e. inside
+        // pixel 6 — the case where a hard cut has to pick a side and coverage does
+        // not.
+        val w = 32
+        val h = 4
+        val decision = FloatArray(w * h) { i -> (i % w) * 40f - 120f }
+        val coverage = DocumentFilters.coverageCut(decision, w, h) { _, _ -> 128f }
+
+        val grey = ArrayList<Int>()
+        for (i in coverage.indices) {
+            val value = coverage[i].toInt() and 0xFF
+            val x = i % w
+            when {
+                x <= 5 -> assertEquals("dark interior at x=$x", 0, value)
+                x >= 8 -> assertEquals("paper interior at x=$x", 255, value)
+                value in 1..254 -> grey.add(x)
+            }
+        }
+        // Pixel 6 is one third covered (two of its three sub-samples are below the
+        // threshold), so it must be ~85, and pixel 7 fully white.
+        assertTrue("the contour must get coverage values, got $grey", grey.isNotEmpty())
+        assertTrue("grey must stay within a pixel of the contour, got $grey", grey.all { it in 6..7 })
+        assertEquals("one third coverage", 85, coverage[1 * w + 6].toInt() and 0xFF)
+    }
+
+    @Test
+    fun coverageCut_producesNoGreyOnAUniformPlane() {
+        val w = 20
+        val h = 20
+        val white = FloatArray(w * h) { 240f }
+        val black = FloatArray(w * h) { 10f }
+
+        val paper = DocumentFilters.coverageCut(white, w, h) { _, _ -> 128f }
+        val ink = DocumentFilters.coverageCut(black, w, h) { _, _ -> 128f }
+
+        for (i in paper.indices) {
+            assertEquals(255, paper[i].toInt() and 0xFF)
+            assertEquals(0, ink[i].toInt() and 0xFF)
+        }
     }
 
     private fun rgb(r: Int, g: Int, b: Int): Int =

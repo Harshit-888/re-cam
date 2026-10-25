@@ -4,6 +4,119 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (q) — Arena.ai — 300 DPI pages, and a B&W cut that is smooth *and* sharp
+
+### The report
+Zooming into the **saved PDF** shows pixelated, rough-edged text. Not the
+preview — the file.
+
+### It was arithmetic, not tuning
+A PDF page is a raster, so its sharpness at zoom is its DPI, and the chain had
+three caps stacked on top of each other:
+
+| stage | long edge | DPI on A4 |
+|---|---|---|
+| capture (`ImageStore.MAX_CAPTURE_DIMENSION`) | 2600 | 243 |
+| bake (`DocumentFilters.MAX_PROCESS_DIMENSION`) | **2000** | **187** |
+| export setting "300 DPI" (`ExportResolution.HIGH`) | 2400 — unreachable | 187 |
+
+`bitmapForExport` loads the already-baked page, so the export setting could never
+exceed what the bake had thrown away. Every stage now agrees on **3200 px**, which
+on A4 with the standard 25 pt margin (a 770.8 pt = 10.7 in image box) is
+`3200 / 10.7 = ` **299 DPI** — a real 300 DPI scan, to within a third of a percent.
+`ExportResolution` was relabelled to match: 3200 / 2140 / 1600 for 300 / 200 / 150
+DPI.
+
+### 3200 px forced a memory redesign, which also made it faster
+The old Clear B&W path held a full-resolution luminance plane, a full median
+plane, a full decision plane, *and* two FloatArrays of windowed mean/σ — and
+`boxMeanAndStd` built two `DoubleArray` summed-area tables, i.e. **~150 MB at
+3200 px** on its own. That is why the cap was 2000. Four changes remove it:
+
+1. **Otsu** is computed from a 1/9 strided sample of the median-denoised plane
+   (~800 k samples for a 256-bin histogram), so the full median pass is gone.
+2. **The Sauvola field** is computed on a ~320 px grid and sampled bilinearly.
+   A local threshold whose window is 1/16 of the page simply cannot vary inside a
+   10 px cell. Verified equivalent: it differs from the exact full-resolution
+   field by 6–7 levels on average, and by at most **0.006 IoU** on clean,
+   shadowed and dark noisy pages.
+3. **The blur is in place** (rolling scalar horizontally, one saved row
+   vertically) instead of allocating two more planes.
+4. **The passes are band-parallel** across up to 4 cores, with a shared daemon
+   pool. Every pass is per-pixel and writes only its own rows.
+
+Peak working set is now ~95 MB for a 3200 px page. A device that still cannot
+allocate it retries at 3/4 scale (2400 px ≈ 225 DPI) instead of failing the save
+— and an `OutOfMemoryError` is no longer swallowed into "return the unfiltered
+page", which is what previously made a memory failure look like "the filter did
+nothing".
+
+### Rough edges: the cut had no sub-pixel information
+A threshold is a hard decision, so a diagonal stroke becomes a staircase. The old
+3 %-of-threshold ramp was an attempt to soften it, but a ramp is expressed in
+*levels*: it widens with the local contrast and cannot encode where the contour
+passes through the pixel.
+
+The cut now computes **coverage**: 3 × 3 sub-samples of the decision plane per
+pixel, but *only for the pixels the contour touches* (a dilate-by-1 of the hard
+mask, a few per cent of the page), so the interior stays exactly 0 or 255 and the
+AA pass costs roughly a sixth of a plain cut.
+
+Measured against a 16 × 16 supersampled ground truth (rotated stroke + ring), RMS
+edge error:
+
+| cut | RMS vs true | AA pixels (true: 356) |
+|---|---|---|
+| hard clip (1.8) | 0.0441 | 0 |
+| 2 × 2 coverage | 0.0219 | 216 |
+| **3 × 3 coverage (shipping)** | **0.0190** | **290** |
+| 4 × 4 coverage | 0.0186 | 330 |
+| gradient/SDF-normalised | 0.0357 | 590 (over-spreads) |
+
+At 3× zoom (what a PDF viewer does) the RMS is 0.044 → 0.019. On real synthetic
+pages, **94–100 %** of the grey pixels land within one pixel of the true contour —
+the softening is on the edge, never a halo. The level-domain ramp constants
+(`BW_RAMP_FRACTION`, `BW_MIN_RAMP`) are deleted; they are now redundant *and* were
+the wrong shape.
+
+### Clear B&W now saves losslessly
+The PDF embeds the decoded page bitmap losslessly (Flate), so JPEG ringing around
+glyphs was not merely present in the file — it was permanent. Binary text is the
+worst case for an 8 × 8 DCT and the best case for DEFLATE, so `CLEAR_BW` and
+`GRAYSCALE` pages are written as **PNG** (`ImageStore.saveEditedPage(lossless =
+true)`, `_edited.png`), typically smaller than the JPEG they replace. Old pages
+keep their `.jpg` — `imageUri` is an absolute path, not a naming convention — and
+`deletePageFiles` removes both.
+
+The editor's preview encodes a JPEG round-trip only when the save is a JPEG, so
+for the lossless filters the preview is now *exactly* the file's pixels.
+
+### Signature changes for other agents
+- `ImageStore.saveEditedPage(...)` gained `lossless: Boolean = false` (additive);
+  new `ImageStore.writePng`, `ImageStore.editedLosslessFile`.
+- `ImageStore.MAX_CAPTURE_DIMENSION` 2600 → 3200; `ImageQuality.HIGH` 2600 → 3200,
+  `MEDIUM` 1900 → 2000; `ExportResolution` 2400/1600/1200 → 3200/2140/1600;
+  `PdfExportConfig.maxImageDimensionPx` default 2000 → 3200.
+- `DocumentFilters.MAX_PROCESS_DIMENSION` 2000 → **3200**. These five numbers must
+  move together; changing one only moves the bottleneck.
+- New `internal` helpers: `bands`, `coverageCut`, `bilinearAt`, `medianOf9InPlace`,
+  `boxBlurInPlace`, `noiseFromResidual`. `median3x3` and `noiseEstimate` remain
+  (still covered by tests) but are no longer on the Clear B&W path.
+- The editor preview renders at `PREVIEW_RENDER_DIMENSION` (2400) rather than at
+  the bake size; the file is still 3200. Both are resolution-independent by
+  construction (window and AA scale with the page).
+
+### Tests
+`DocumentFiltersTest` +10 (48 total): the process dimension is checked against the
+300 DPI requirement arithmetically; `bands` must visit every row exactly once (a
+band bug would silently leave rows black, and only on multi-core devices);
+`bilinearAt` interpolates and clamps; `medianOf9InPlace` returns the middle value;
+the in-place blur leaves a flat plane untouched, spreads an impulse to 1/9 and
+conserves energy; `noiseFromResidual` reads the residual amplitude; and
+`coverageCut` keeps interiors exactly bi-level while producing ~85 (one third) on
+a contour pixel and **no grey at all** on a uniform plane. Every expected value was
+checked against a numpy transcription before being written down.
+
 ## 2026-10-25 (p) — Arena.ai — Sharp Clear B&W, and a preview that is the saved page
 
 ### The report

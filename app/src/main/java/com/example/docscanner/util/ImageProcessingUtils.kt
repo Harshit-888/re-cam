@@ -59,7 +59,12 @@ object ImageProcessingUtils {
 
         val filtered = try {
             DocumentFilters.apply(current, filterType, maxDimension)
-        } catch (_: Throwable) {
+        } catch (error: Throwable) {
+            // An OutOfMemoryError must reach the caller: swallowing it here means
+            // saving the *unfiltered* page, which looks like "the filter did
+            // nothing" rather than "this page was too big". PageRenderer retries
+            // at a lower resolution when it sees one.
+            if (error is OutOfMemoryError) throw error
             null
         }
         // DocumentFilters returns the input for ORIGINAL and on any failure, so a

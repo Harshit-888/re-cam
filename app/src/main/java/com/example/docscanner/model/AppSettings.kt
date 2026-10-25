@@ -123,20 +123,29 @@ enum class ImageQuality(
     val maxDimension: Int,
     val jpegQuality: Int
 ) {
-    HIGH("High", 2600, 95),
-    MEDIUM("Medium", 1900, 88),
+    HIGH("High", 3200, 95),
+    MEDIUM("Medium", 2000, 88),
     LOW("Low", 1400, 80)
 }
 
 /**
- * PDF raster resolution. The value is the longest edge of the bitmap embedded in
- * the PDF — 300 DPI on A4 is ~2480 px, which is what [HIGH] targets.
+ * PDF raster resolution: the longest edge of the bitmap embedded in the PDF.
+ *
+ * The numbers are derived, not guessed. On A4 with the standard 25 pt margin the
+ * printable image box is 770.8 pt = 10.7 in tall, so 300 DPI needs
+ * `10.7 × 300 ≈ 3212` px — [HIGH] is 3200. The previous values (2400 for "300
+ * DPI") could never have been reached either, because the baked page itself was
+ * capped at 2000 px; the real figure was **187 DPI**.
+ *
+ * A page cannot be exported sharper than it was baked, so these are ceilings, not
+ * promises: [HIGH] is only honest while `ImageQuality.HIGH` and
+ * `DocumentFilters.MAX_PROCESS_DIMENSION` stay at 3200 as well.
  */
 @Serializable
 enum class ExportResolution(val label: String, val maxImageDimensionPx: Int) {
-    HIGH("300 DPI", 2400),
-    MEDIUM("200 DPI", 1600),
-    LOW("150 DPI", 1200)
+    HIGH("300 DPI", 3200),
+    MEDIUM("200 DPI", 2140),
+    LOW("150 DPI", 1600)
 }
 
 /**

@@ -139,7 +139,7 @@ enum class DocumentSortOption(val label: String) {
 data class PdfExportConfig(
     val paperSize: PaperSize = PaperSize.A4,
     val margins: PdfMargin = PdfMargin.STANDARD,
-    val maxImageDimensionPx: Int = 2000,
+    val maxImageDimensionPx: Int = 3200,
     val includePageNumbers: Boolean = true,
     /** Per-page axis. [PageOrientation.AUTO] follows the scanned image's shape. */
     val pageOrientation: PageOrientation = PageOrientation.AUTO,

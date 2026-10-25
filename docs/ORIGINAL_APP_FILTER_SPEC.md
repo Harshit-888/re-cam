@@ -506,3 +506,87 @@ Two failure modes found in the same code path:
 still the right call for a *thumbnail* — a grid cell does not need 2000 px. The
 editor must not use it: for "does this look like the save", only
 `bakeDimension()` is correct.
+
+## 12. Page resolution and coverage anti-aliasing (the "pixelated when zoomed" fix)
+
+*Implementation notes, added while acting on "after saving the text looks
+pixelated and rough edged when I zoom into the saved PDF". Numbering continues
+from §11.*
+
+### 12.1 Sharpness at zoom is DPI, and there was a cap at every stage
+
+The exported PDF is a raster page. Its sharpness when magnified is therefore
+decided by one number, and the pipeline had three different ones:
+
+| stage | constant | long edge | DPI on A4 (25 pt margin) |
+|---|---|---|---|
+| capture | `ImageStore.MAX_CAPTURE_DIMENSION` | 2600 | 243 |
+| bake | `DocumentFilters.MAX_PROCESS_DIMENSION` | 2000 | 187 |
+| export | `ExportResolution.HIGH` ("300 DPI") | 2400 | 187 — capped by the bake |
+
+A4 with the standard 25 pt margin leaves a `842 − 50 − 16 = 776 pt` tall box
+(770.8 pt after the FIT scale), i.e. 10.7 in. 300 DPI therefore needs
+`10.7 × 300 ≈ 3212 px`. Everything now targets **3200 px ≈ 299 DPI**.
+
+Note that no filter tuning can substitute for this. §11.2's sharpening improves
+*where* the threshold falls; it cannot invent pixels that were discarded before
+the filter ran.
+
+### 12.2 What 3200 px costs, and how it is paid for
+
+The old Clear B&W path was already close to its memory ceiling at 2000 px:
+a luminance plane, a full median plane, a decision plane, mean and σ planes, plus
+two `DoubleArray` summed-area tables inside `boxMeanAndStd` — about 150 MB at
+3200 px, which is why the cap existed. The rewrite:
+
+| change | saves |
+|---|---|
+| Otsu from a 1/9 strided median sample instead of a full median plane | 29 MB + one pass |
+| Sauvola field on a 320 px grid, bilinearly sampled | 58 MB + two DoubleArrays |
+| in-place separable 3-box blur (rolling scalar / saved row) | 58 MB |
+| band-parallel passes (≤ 4 cores, shared daemon pool) | wall-clock ÷ ~3 |
+
+The two-scale threshold is the only approximation in that list, so it is measured:
+against the exact full-resolution field it differs by 6–7 levels on average and
+changes the binarised result by **≤ 0.006 IoU** across a clean page, a 35 %-shaded
+soft-focus page and a dark noisy one. That is expected — the field's window is
+1/16 of the page, so it is smooth by construction.
+
+### 12.3 Anti-aliasing must be geometric, not a threshold ramp
+
+The 3 % level ramp of §11.1 could not fix rough edges: a ramp is expressed in
+*levels*, so its width in pixels depends on the local gradient, and it encodes no
+information about where inside the pixel the contour runs.
+
+Coverage sampling does. For pixels adjacent to the contour (found by dilating the
+hard mask — a few per cent of a text page), 3 × 3 sub-samples of the decision
+plane are compared against the threshold and averaged. Interiors stay exactly 0 or
+255, so text keeps its contrast; the grey appears only where the edge really is.
+
+| cut | RMS vs 16 × 16 ground truth | grey pixels (true edge pixels: 356) |
+|---|---|---|
+| hard clip | 0.0441 | 0 |
+| 2 × 2 | 0.0219 | 216 |
+| **3 × 3** | **0.0190** | **290** |
+| 4 × 4 | 0.0186 | 330 |
+
+3 × 3 costs 44 % of 4 × 4's samples for the same RMS to three decimals. The
+gradient-normalised ("SDF") shortcut was also measured and rejected: it
+over-spreads on thin strokes (590 grey pixels for 356 true edge pixels) and its
+RMS is worse than a plain 2 × 2.
+
+On full synthetic pages the placement check is the important one: **94–100 %** of
+grey pixels lie within 1 px of the true contour. Anti-aliasing that puts grey
+*away* from the edge is blur; anti-aliasing that puts it on the edge is a scan.
+
+### 12.4 Bi-level pages are stored losslessly
+
+The PDF embeds the page bitmap losslessly, so whatever JPEG does to glyph edges is
+permanent. Binary text is the worst case for an 8 × 8 DCT (ringing on every
+stroke) and the best case for DEFLATE, so `CLEAR_BW` and `GRAYSCALE` write
+`_edited.png`. At 3200 px this is typically *smaller* than the equivalent JPEG.
+
+Invariant to preserve: `MAX_CAPTURE_DIMENSION`, `MAX_PROCESS_DIMENSION`,
+`ImageQuality.HIGH.maxDimension` and `ExportResolution.HIGH.maxImageDimensionPx`
+are one number in four places. Making them disagree again reintroduces a cap —
+and a cap anywhere in the chain silently wins over the others.
