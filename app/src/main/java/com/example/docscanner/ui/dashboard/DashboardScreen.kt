@@ -53,13 +53,13 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBarDefaults
@@ -80,7 +80,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -199,23 +198,24 @@ fun DashboardScreen(
     val trashCount = remember(documents) { documents.count { it.isTrash } }
     val pageCount = remember(activeDocs) { activeDocs.sumOf { it.pages.size } }
 
-    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-
+    // A pinned bar, deliberately.
+    //
+    // This was a `LargeTopAppBar` with `exitUntilCollapsedScrollBehavior`: it
+    // re-measured the bar, cross-faded two title styles and pushed a new content
+    // inset through the grid on *every* scroll frame — the most expensive thing a
+    // scrolling screen can do — and it slid the app name back down whenever the
+    // list was pulled up. The title now simply stays where it is.
     Scaffold(
-        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
-            LargeTopAppBar(
+            TopAppBar(
                 title = {
-                    Column {
-                        Text(
-                            "Library",
-                            style = MaterialTheme.typography.headlineLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+                    Text(
+                        "Doc Scanner",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
                 },
-                navigationIcon = {},
                 actions = {
                     IconButton(onClick = { isGridView = !isGridView }) {
                         Icon(
@@ -262,10 +262,9 @@ fun DashboardScreen(
                         }
                     }
                 },
-                scrollBehavior = scrollBehavior,
-                colors = TopAppBarDefaults.largeTopAppBarColors(
+                colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,
-                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                    titleContentColor = MaterialTheme.colorScheme.onSurface
                 )
             )
         },
@@ -340,17 +339,22 @@ fun DashboardScreen(
                 ) {
                     items(
                         count = activeDocs.size,
-                        key = { index -> activeDocs[index].id }
+                        key = { index -> activeDocs[index].id },
+                        // Reuse slots by type. Without `contentType` the grid tears
+                        // down and rebuilds a card every time one crosses the
+                        // viewport edge, which is what made fast scrolling stutter.
+                        contentType = { "grid-card" }
                     ) { index ->
                         val doc = activeDocs[index]
-                        Box(Modifier.entrance(3)) {
-                            DocumentGridCard(
-                                document = doc,
-                                onClick = { onNavigateToDetail(doc.id) },
-                                onDelete = { repository.moveToTrash(doc.id) },
-                                onMoveToFolder = { moveDocId = doc.id }
-                            )
-                        }
+                        // No per-item entrance animation: cards that fade and
+                        // slide in as you scroll re-run that animation for every
+                        // item that appears, so the list never settles.
+                        DocumentGridCard(
+                            document = doc,
+                            onClick = { onNavigateToDetail(doc.id) },
+                            onDelete = { repository.moveToTrash(doc.id) },
+                            onMoveToFolder = { moveDocId = doc.id }
+                        )
                     }
                 }
 
@@ -359,15 +363,17 @@ fun DashboardScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    items(activeDocs, key = { it.id }) { doc ->
-                        Box(Modifier.entrance(3)) {
-                            DocumentListCard(
-                                document = doc,
-                                onClick = { onNavigateToDetail(doc.id) },
-                                onDelete = { repository.moveToTrash(doc.id) },
-                                onMoveToFolder = { moveDocId = doc.id }
-                            )
-                        }
+                    items(
+                        items = activeDocs,
+                        key = { it.id },
+                        contentType = { "list-card" }
+                    ) { doc ->
+                        DocumentListCard(
+                            document = doc,
+                            onClick = { onNavigateToDetail(doc.id) },
+                            onDelete = { repository.moveToTrash(doc.id) },
+                            onMoveToFolder = { moveDocId = doc.id }
+                        )
                     }
                 }
             }
@@ -620,8 +626,8 @@ fun DocumentGridCard(
                     PageThumbnail(
                         page = cover,
                         modifier = Modifier.fillMaxSize(),
-                        reqWidth = 420,
-                        reqHeight = 540,
+                        reqWidth = 360,
+                        reqHeight = 460,
                         fallbackIconSize = 44.dp
                     )
                 } else {

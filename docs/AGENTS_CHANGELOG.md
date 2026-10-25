@@ -4,6 +4,54 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (z) — Arena.ai — Home screen: pinned title, "Doc Scanner", and the real scroll-jank fixes
+
+Reported: the home screen lagged badly, the title said "Library", and the app name
+slid back down while scrolling.
+
+### The title
+
+`LargeTopAppBar` + `exitUntilCollapsedScrollBehavior` is gone. That combination
+re-measured the bar, cross-faded two title styles and pushed a new content inset
+through the grid on **every scroll frame** — and it is what animated the app name
+back down. The home screen now uses a plain pinned `TopAppBar` reading
+**"Doc Scanner"**, with no `nestedScroll` connection at all.
+
+### The jank — three separate causes
+
+1. **Per-item entrance animations.** Every grid/list card was wrapped in
+   `Modifier.entrance(3)`, which composes an `animateFloatAsState` + `alpha()` +
+   `graphicsLayer` per item. In a lazy list that re-runs for every card that enters
+   the viewport, so the list animated continuously while scrolling and every card
+   carried its own alpha layer. Removed from items; the header rows keep their
+   one-shot entrance.
+2. **Missing `contentType`.** Without it the lazy slots are not reused by type, so
+   scrolling down threw away cards and rebuilt them at the top of the list.
+3. **Thumbnail decoding — the big one.** `Clear B&W` and `Grayscale` pages are
+   stored as **PNG** (they must be lossless). JPEG has DCT scaling, so a sampled
+   decode is cheap; PNG does not, so a 360 px thumbnail still inflated the full
+   3200 px image. Every card paid that on every pass over the list.
+
+### Thumbnail disk cache (`util/PageImageLoader.kt`)
+
+- Requests with a longest edge ≤ 1024 px are written to `cacheDir/thumbs` the
+  first time and decoded from there afterwards: a ~10 KB JPEG instead of a
+  multi-megabyte PNG.
+- The file name is a SHA-1 of the cache key, and the key includes the source
+  length + mtime, so a re-baked page can never show a stale thumbnail.
+- Writes are temp-file + rename (two cards can request the same page at once), the
+  directory is swept when it exceeds 400 files, and large requests (viewer,
+  editor) bypass the disk cache entirely.
+- Decodes now run on `Dispatchers.IO.limitedParallelism(2)`: a fling can put a
+  dozen cards on screen, and letting all of them decode starves the render thread
+  exactly when the list is moving fastest.
+- `clear(context)` drops the memory cache and, when given a context, the files.
+
+Grid thumbnails also drop from 420×540 to 360×460 (still above the on-screen size
+at 2× density), which cuts the bitmap cache footprint by a third.
+
+**Not fixed here:** Baseline Profiles. They are the next real 120 Hz win, but they
+need a device to generate, so they belong in a build-verified pass.
 ## 2026-10-25 (y) — Antigravity — Round 15 build verification & configuration cache fixes
 
 Verified Round 15 Rust pixel kernels & UI polish locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. Resolved 2 issues:

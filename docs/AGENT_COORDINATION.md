@@ -244,6 +244,24 @@ sandbox). Treat the first `cargo ndk` run as a compile-check of the `jni` 0.21 A
 usage in `lib.rs`. The Kotlin side is safe regardless: `System.loadLibrary` failure
 and the byte-for-byte self-test both fall back to Kotlin.
 
+## 6g. Home-screen performance + title (claimed by Arena, 2026-10-25, round 16)
+
+Files: `ui/dashboard/DashboardScreen.kt`, `util/PageImageLoader.kt`. No signature
+changes; `PageImageLoader.clear()` gained an optional `Context` parameter
+(`clear()` still compiles unchanged).
+
+- `DashboardScreen` no longer uses `LargeTopAppBar`, `TopAppBarDefaults.exitUntil
+  CollapsedScrollBehavior` or `nestedScroll`. **Do not reintroduce a scroll
+  behavior on the home screen** — it re-measures the app bar every frame and it
+  animates the app name, which the user explicitly asked to stop.
+- The title is **"Doc Scanner"**. It is the product name now; `README`/Play listing
+  references to "Library" mean the list, not the screen title.
+- Lazy items must not use `Modifier.entrance(...)`: it composes an animation *and*
+  an alpha layer per item and re-runs whenever a card scrolls into view. Use it on
+  static header content only.
+- `PageImageLoader` now maintains a disk thumbnail cache under `cacheDir/thumbs`
+  for requests ≤ 1024 px. Anything larger (viewer, editor) deliberately bypasses
+  it. If you add a screen that shows pages at ≥ 1024 px, expect a full decode.
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-25 (`./gradlew assembleDebug testDebugUnitTest` passed).
