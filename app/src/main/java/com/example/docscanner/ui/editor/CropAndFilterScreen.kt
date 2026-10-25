@@ -388,7 +388,12 @@ fun CropAndFilterScreen(
             docId,
             stillUntouched.associateWith { id -> found.getValue(id).corners }
         )
-        stillUntouched.forEach { borderedPages[it] = true }
+        // Only the confident ones are signed off. An unconfident detection still
+        // gives the page a usable quad (so a batch bake always has one), but it is
+        // not a decision the user made, so the page stays open and shows amber.
+        stillUntouched
+            .filter { found[it]?.confident == true }
+            .forEach { borderedPages[it] = true }
     }
 
     // ---- filter swatches -----------------------------------------------------
@@ -587,7 +592,13 @@ fun CropAndFilterScreen(
     // asking for a page-by-page walk that has already happened.
     val everyPageBordered = pages.isNotEmpty() &&
         pages.all { borderedPages[it.id] == true }
-    val uncertainPages = pages.count { autoBorders[it.id]?.confident == false }
+    // A page the detector was unsure about stays open until the user signs it off
+    // (which happens when they leave it — see persistGeometry).
+    val needsCheck: (ScannedPage) -> Boolean = { page ->
+        autoBorders[page.id]?.confident == false && borderedPages[page.id] != true
+    }
+    val uncertainPages = pages.count { needsCheck(it) }
+    val firstUncertainIndex = pages.indexOfFirst { needsCheck(it) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surface,
@@ -663,25 +674,37 @@ fun CropAndFilterScreen(
                         onRotateRight = {
                             rotation = ImageProcessingUtils.normalizeRotation(rotation + 90f)
                         },
-                        primaryLabel = if (hasNextPage && !everyPageBordered) {
-                            "Next page (${(activeIndex + 2).coerceAtMost(pages.size)} of ${pages.size})"
-                        } else {
-                            "Continue to filters"
+                        // The button always offers the *next thing that needs a
+                        // human*: a flagged page if there is one, otherwise the next
+                        // page in order, otherwise the filter.
+                        primaryLabel = when {
+                            everyPageBordered -> "Continue to filters"
+                            firstUncertainIndex >= 0 && firstUncertainIndex != activeIndex ->
+                                "Check page ${firstUncertainIndex + 1}"
+                            hasNextPage ->
+                                "Next page (${(activeIndex + 2).coerceAtMost(pages.size)} of ${pages.size})"
+                            else -> "Continue to filters"
                         },
-                        primaryIcon = if (hasNextPage && !everyPageBordered) {
-                            Icons.Default.ArrowForward
-                        } else {
+                        primaryIcon = if (everyPageBordered) {
                             Icons.Default.AutoFixHigh
+                        } else {
+                            Icons.Default.ArrowForward
                         },
                         onPrimary = {
-                            // Every quad is already decided: jumping straight to the
-                            // filter keeps the promise the automatic pass just made
-                            // instead of walking pages the user does not need to see.
-                            if (everyPageBordered) {
-                                persistGeometry()
-                                stage = Stage.FILTERS
-                            } else {
-                                advanceOrFinish()
+                            when {
+                                // Every quad is decided: jumping straight to the
+                                // filter keeps the promise the automatic pass made
+                                // instead of walking pages nobody needs to see.
+                                everyPageBordered -> {
+                                    persistGeometry()
+                                    stage = Stage.FILTERS
+                                }
+                                firstUncertainIndex >= 0 && firstUncertainIndex != activeIndex ->
+                                    // goToPage persists the page being left, so a
+                                    // flagged page is only ever signed off by having
+                                    // been on screen and left — never in passing.
+                                    goToPage(firstUncertainIndex)
+                                else -> advanceOrFinish()
                             }
                         }
                     )
@@ -1175,7 +1198,7 @@ private fun BordersControls(
                         // A confident detection is a tick; an unconfident one is a
                         // warning, not a success. Showing both as "done" would be a
                         // lie the user only discovers in the exported PDF.
-                        needsReview = autoBorders[page.id]?.confident == false,
+                        needsReview = needsCheck(page),
                         onClick = { onSelectPage(index) }
                     )
                 }

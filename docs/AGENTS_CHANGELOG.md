@@ -28,11 +28,13 @@ identical confirmations of something already correct.
   filled primary = confirmed by the user, accent badge = detected confidently, amber
   **"!"** = the detector was *not* sure. The pages worth looking at are now visible at
   a glance, instead of being discovered in the exported PDF.
-- **The primary button stops asking for work that happened.** Once every page has a
-  quad, it reads *Continue to filters* and goes straight there; otherwise it keeps
-  offering the page-by-page walk. The header subtitle reports the pass
-  ("Finding borders · 3 of 8 pages", then "All 8 borders found · tap a page to
-  adjust", or "… · 2 need a check").
+- **The primary button stops asking for work that happened.** It always offers the
+  next thing that needs a human, in this order: *Continue to filters* when every page
+  is signed off, else *Check page N* for the first page still flagged, else *Next
+  page (i of N)*. The header subtitle reports the pass ("Finding borders · 3 of 8
+  pages", then "All 8 borders found · tap a page to adjust", or "… · 2 need a check").
+  A flagged page is **not** signed off by the pass — only by having been on screen
+  and left (`persistGeometry`) — so confidence is never quietly upgraded.
 
 ### Unchanged
 

@@ -586,8 +586,14 @@ Read it in this order: `slow` (frames > 24 ms) → `pageDecodes` → `worst`. An
 - **`PageChip(needsReview = …)` must keep distinguishing *confident* from *user
   confirmed*.** Showing an unconfident detection as "done" is a lie the user only
   finds in the exported PDF.
-- The primary action jumps straight to filters when `everyPageBordered`; the
-  page-by-page walk stays available for the pages that failed detection.
+- **Leaving a page is signing it off** (`persistGeometry` → `borderedPages[id] =
+  true`). That is the only way a flagged page becomes clean, which is why the
+  primary button routes *to* flagged pages instead of past them: `everyPageBordered
+  -> "Continue to filters"`, otherwise `"Check page N"` for the first page still
+  flagged, otherwise `"Next page (i of N)"`. Do not let a flagged page be marked
+  done by the batch pass — a page the detector was unsure about and nobody looked
+  at must still show amber.
+- The primary action jumps straight to filters once `everyPageBordered`.
 
 ### Deferred, deliberately
 
