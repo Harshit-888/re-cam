@@ -4,6 +4,65 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (t) — Arena.ai — The divide table was indexed by the wrong thing
+
+### The finding
+Round 13's premise was that `enhanceDocument` is a transcription problem. It was —
+but the transcription in (previous) §13.4 had three errors, and together they made
+**every document filter wash the page out**. Measured on the old code: ink at 50 on
+paper 238 came out at **98**, i.e. mid-grey text; light print at 110 came out at
+**218**, i.e. nearly invisible. That is not a tuning difference, it is the wrong
+function.
+
+The disassembly of the table builder (`0x105e0`–`0x10734`) is now decoded exactly:
+
+```c
+divide[row][col] = 255 - response[min(2000, row*2000/(col+1))] * 255 / 2000;
+```
+
+Three things were wrong before:
+
+| | wrong | correct |
+|---|---|---|
+| ratio | `value·2000/(row+1)` | `row·2000/(value+1)` |
+| `row` means | the paper level | `\|src − paper\|` — the difference |
+| stored byte | `q` | `255 − q` (the `−1` before `strb`, on a value the negative magic multiply already flipped) |
+
+The evidence is falsifying rather than aesthetic: the wrong readings either saturate
+*every* ink pixel to white or turn paper black. The corrected one gives paper → 255
+and ink → 0 at every plausible paper level.
+
+### What changed in code
+- `DocumentFilters.divideLookup(row, value)` — rewrite; `ToneTables.divide(row, value)`
+  param renamed from `paper`.
+- `DocumentFilters.colourise` — the alpha blend now happens **on the divide row**
+  (`row = B[|d|] + α(A[|d|] − B[|d|])`), which is what `0x110b0`–`0x11124` does, instead
+  of on the output. Stronger edge → bigger row → darker, which is the documented
+  "sharpens midtone contrast, preserves chromaticity".
+- `applyDocumentBw` — `divide[curveA(|src − paper|)][src]` per channel, then grey.
+- New `DocumentFilters.levelTwoChannel(table, paper, src)` and
+  `DocumentFilters.toneTables()` as test seams.
+- **Deleted** the leftover approximation machinery, all of it unreachable:
+  `sharpenLuminance`, `localThresholds`, `gainLimits`, `buildThresholdField`,
+  `sharpenDecisionInPlace`, `gatedUnsharp`, `noiseEstimate`, `documentCurveLut`,
+  `coverageCut`, `normalise`, `medianHistogram`. **Deleted the 10 tests** that only
+  exercised those. Added 2. Suite is now **56 tests** repo-wide, down from 58.
+- `medianBlurGray` no longer shares one window buffer across threads (a data race).
+
+### Validation (no device here — this is numpy, not a build)
+- Synthetic page, paper 236 with a 45 % left-to-right shadow gradient plus text:
+  paper out **255 (max error 1)**, text out **0**, 75 % of the page white, 6.3 % pure
+  black. The closing recovers the paper level through the shadow.
+- Colour preservation (level 1): stamp `(190,40,45)` on paper `(232,232,232)` →
+  `(187,0,0)`.
+- 46 numeric assertions in `DocumentFiltersTest` re-derived and checked against a
+  faithful emulation of the Kotlin.
+
+### Still not recovered
+`PSBlockDigest::algorithm4`, `findSmallestRadius`'s predicate, and the level-1
+blend order (A vs B at α = 0) — see spec §13.10. `PaperMap` remains our stand-in for
+the first two.
+
 ## 2026-10-25 (s) — Antigravity — Added original APK binaries for Arena.ai
 
 - Added `docs/original_apk_binaries/` containing `libimageproc.so` (138 KB), `classes.dex` (10 MB), `classes2.dex` (9.2 MB), `classes3.dex` (7.0 MB), and `classes4.dex` (7.0 MB) directly extracted from the original release splits (`base.apk` and `split_config.arm64_v8a.apk`).

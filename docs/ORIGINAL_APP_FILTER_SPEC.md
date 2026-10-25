@@ -590,3 +590,296 @@ Invariant to preserve: `MAX_CAPTURE_DIMENSION`, `MAX_PROCESS_DIMENSION`,
 `ImageQuality.HIGH.maxDimension` and `ExportResolution.HIGH.maxImageDimensionPx`
 are one number in four places. Making them disagree again reintroduces a cap —
 and a cap anywhere in the chain silently wins over the others.
+
+## 13. Instruction-level disassembly of `libimageproc.so` (supersedes §7)
+
+*Recovered 2026-10-25 from `docs/original_apk_binaries/libimageproc.so`
+(138 664 B, `sha256 3bed46d2db8870b30c46514bd8c824c96c0d641a653ab902aae24eb66c9e3ca6`,
+ELF64 AArch64, stripped, `.text` @ `0x8bb4`). Method: Capstone disassembly with
+`.rela.plt` → `.got` → `.dynsym` resolution, so every `bl` below is named.*
+
+**Read this before §7.** §7 is a narrative summary written from notes, and two of
+its statements are wrong: `enhancePhoto` *does* contain a static 256-byte table
+(the identity LUT, taken when the estimated points are inverted), and
+`enhanceDocument`'s background estimator is not a plain dilate→erode closing —
+it is a per-cell block digest with an adaptive radius search and three
+raised-cosine tables.
+
+### 13.1 `enhancePhoto` (`0xf5d4`, 608 B) — *transcribed in full*
+
+```c
+void enhancePhoto(JNIEnv*, jclass, jobject, jlong src, jlong dst,
+                  jint blackPoint, jint whitePoint, jint colorMode)   // w5,w6,w7
+{
+    cv::Mat lut(1, 256, CV_8UC1);                    // 0xf630
+    int range = whitePoint - blackPoint;             // 0xf62c
+    if (range < 0) {
+        // 0xf6bc: 16 × 16-byte vector copies of a .rodata table at 0x5030..0x5180
+        // that is *exactly* {0,1,2,…,255} — i.e. the identity LUT.
+        memcpy(lut.data, identity_256, 256);
+    } else {
+        float f = (float)range;
+        for (int v = 0; v < 256; v++) {
+            if (v <= blackPoint)        lut.data[v] = 0;              // 0xf660
+            else if (v >= whitePoint)   lut.data[v] = 255;            // 0xf6b4
+            else {
+                float s = ((float)(v - blackPoint) / f) * 255.0f;     // 0xf690
+                int t = (int)floor((double)s + 0.5);                  // 0xf6a0 fcvtms
+                t &= ~(t >> 31);                 // max(t,0)           0xf6a4 bic
+                lut.data[v] = (t < 255) ? t : 255;                    // 0xf6ac csel
+            }
+        }
+    }
+    cv::LUT(src, lut, dst);                           // 0xf798
+    if (colorMode == 2) cv::cvtColor(dst, dst, 6 /*COLOR_BGR2GRAY*/);  // 0xf7d0
+}
+```
+
+Notes: `fcvtms` rounds *down*, so this is `floor(s + 0.5)`, not round-half-even.
+The inverted-range case is **identity**, so an inverted pair leaves the image
+untouched — it does not black it out. §7's "no static LUTs" is therefore wrong,
+though the table it missed is trivial.
+
+### 13.2 `ColorizingRadius` — the background accumulator (`0xc954`…`0xc9c8`)
+
+```c
+struct ColorizingRadius { int r, g, b, count; };     // 16 B, zeroed by reset()
+
+void reset() { *(uint64_t*)this = 0; *(uint64_t*)(this + 8) = 0; }
+
+// 0xc95c — accumulates one packed 0xRRGGBB colour per call.
+// Lane shifts come from .rodata 0x4548 = { -16, -8 } (ushl → shift *right*),
+// so colour >> 16 is RED: the packing is 0xRRGGBB, red in the high byte.
+void computeRadius(int color, int, int, int) {
+    this->r += (color >> 16) & 0xff;
+    this->g += (color >>  8) & 0xff;
+    this->b +=  color        & 0xff;
+    this->count += 1;
+}
+
+// 0xc994 — average of everything accumulated, or white if nothing was.
+int getBackgroundColor() {
+    if (count < 1) return -1;                        // 0xffffffff, treated as white
+    return ((r/count) << 16) | ((g/count) << 8) | (b/count);
+}
+```
+
+`getBackgroundColor()` is the **return value of `enhanceDocument`**, and the app
+stores it as `page.filterInfo.bgColor` (`bx.smali:504`). It is the estimated paper
+colour, not a diagnostic.
+
+### 13.3 Cell geometry and the three tables (`0x101c8`…`0x10734`)
+
+```c
+int R = (int)sqrt((double)(rows * cols) / 8000.0);   // 0x101e8: magic 0x10624DD3, >>41
+R = max(R, 14);                                      // 0x1020c csel
+int gw = cols / (R + 1) + 1;                         // 0x1021c
+int gh = rows / (R + 1) + 1;                         // 0x10224
+int cells = gw * gh;
+int* blocks = new int[cells]; memset(blocks, 0xff);  // default paper = white
+```
+
+So the working grid is derived from the *pixel count*, not from a fixed divisor —
+at 3200×2400 that is `sqrt(7.68e6/8000) = 30`, i.e. ~31 px cells and a ~103×78 grid.
+
+Three integer tables are then built. Each is a raised cosine on a fractional power
+(`0x102e8`–`0x105dc`), all evaluated in double and rounded with `frinta`:
+
+| table | size | formula | exponent source |
+|---|---|---|---|
+| curve A | 256 × int32 | `round(255 · ½ · (1 − cos(π·(i/255)^0.625)))` | `fmov d1,#0.625` @0x102f8 |
+| curve B | 256 × int32 | `round(255 · ½ · (1 − cos(π·(i/255)^0.8)))` | `.rodata 0x4550` = 0.8 |
+| response | 2001 × int32 | `round(1000 · (1 − cos(π·(i/2000)^0.7)))`, and `[2000] = 2000` | `0x3FE666…` = 0.7 |
+
+Curve A is read through `x27` on the level-2 path and curve B through `x20` on the
+level-1 path (they are stored as the pair `stp x20, x27, [sp,#0x40]` @0x1073c).
+
+### 13.4 The 256 × 256 divide table (`0x105e0`–`0x10734`) — **corrected**
+
+`new char[0x10000]` is filled as `divide[row][col]`. The builder is fully decoded:
+
+```c
+for (int row = 0; row < 256; row++)               // 0x10640: lsl x16, x8, #8
+  for (int col = 0; col < 256; col++) {           // 0x10654: x15
+      int idx = row * 2000 / (col + 1);           // 0x10644 mul w14,w8,w19 ; 0x1065c udiv
+      if (idx > 2000) idx = 2000;                 // 0x10664 cmp #0x7d0 ; 0x10668 csel lo
+      int q  = response[idx] * 255 / 2000;        // 0x10670 lsl#8, 0x10674 sub → ·255
+                                                  // 0x10678 smull with magic −274877907
+                                                  // (i.e. ÷2000 with a NEGATIVE sign),
+                                                  // 0x1068c asr #0x27, 0x10694 add sign
+      int v  = q & (q >> 31);                     // 0x1069c: clamp negatives to 0
+      if (v > -255) v = v; else v = -255;         // 0x106a8/0x106ac cmn #0xff + csel
+      v -= 1;                                     // 0x106b0 sub w17, w17, #1
+      divide[row][col] = (uint8_t)v;              // 0x106b4 strb
+  }
+```
+
+Because the magic multiplier is **negative**, `q` comes out as `−q`, so
+`v = −q − 1`, and `strb` keeps the low byte:
+
+```
+divide[row][col] = 255 − response[min(2000, row·2000/(col+1))]·255/2000
+```
+
+Four things that are easy to get wrong — the first version of this section got three
+of them wrong, which made every document filter wash out:
+
+| | wrong (first reading) | correct |
+|---|---|---|
+| ratio | `value·2000/(row+1)` | **`row·2000/(value+1)`** |
+| row means | the paper level | **`\|src − paper\|`, the difference** |
+| stored byte | `q` | **`255 − q`, complemented** |
+| clamp | `min(1999, …)` | **`min(2000, …)`** (2001-entry table, `[2000]=2000`) |
+
+**Evidence that this is the right reading, not a preference.** The corrected table
+gives paper → 255 and ink → 0 for every plausible paper level, which is what the
+app's "Clear B&W" visibly does. The wrong readings are falsifiable rather than
+merely different: `value·2000/(row+1)` saturates *every* ink pixel to 255, and
+`divide = q` (uncomplemented) turns paper black. A third check is that the ramp must
+sit *near the paper level* — with `row = |src−paper|` the ramp lands at
+`src ∈ [150, 238]` for paper 238, i.e. paper ripple stays white and print goes black,
+whereas indexing by the paper level puts the ramp nowhere useful.
+
+Measured, paper level 238, level 2 (`row = A(|d|)`, see §13.7):
+
+| src | 0 | 45 | 120 | 150 | 180 | 200 | 215 | 230 | 238 |
+|---|---|---|---|---|---|---|---|---|---|
+| out | 0 | 0 | 0 | 5 | 89 | 168 | 218 | 250 | 255 |
+
+`divide()` in `DocumentFilters.kt` is now this exact function, and
+`divideLookup_turnsPaperWhiteAndInkBlack` / `divideLookup_isComplementedNotInverted`
+pin both the direction and the complement.
+
+### 13.4b What the row actually is
+
+The pixel loop does not hand the paper level to the table as the row. It computes a
+signed per-channel difference, runs it through the curve tables, and uses
+**`|blended|` as the row** (`0x11024`: `neg w16,w16` when negative, `add x16, x17,
+x16, lsl #8`). So:
+
+```
+row = |curve_of(|src − paper|) blended by alpha|      →  divide[row][src]
+```
+
+That is the mechanism of the whole filter: the row is how far the pixel sits from its
+own local paper, and the divide turns that ratio into a byte. Level 2 is the same
+expression with no alpha blend.
+
+### 13.5 Background surface
+
+```c
+PSBlockDigest::algorithm4(imageInts, ?, ColorRGB*, gw, gh);   // 0x10ae4, 7880 B
+ColorizingRadius cr;
+findSmallestRadius(cr, blocks, gw, gh, x, y, R);             // 0x10c1c, 772 B
+int bg = cr.getBackgroundColor();                            // 0x10c24
+// 0x10d84: GaussianBlur(blockMat, tmp, Size(9,9), sigmaX=0, sigmaY=0, BORDER_REFLECT_101);
+// 0x10dc0: resize(tmp, surface, Size(cols, rows), 0, 0, INTER_CUBIC /* 2 */);
+```
+
+`findSmallestRadius` contains **no library calls at all** (`grep bl` over
+`0xfe74`–`0x10178` yields nothing): it is a pure outward ring scan over the block
+grid that stops on the first ring satisfying its (unrecovered) predicate.
+
+### 13.6 Level 1 — "Magic Color" (`0x10df0`–`0x11160`)
+
+```c
+cv::Mat gray; cvtColor(src, gray, 6 /*BGR2GRAY*/);            // 0x10e28
+medianBlur(gray, gray, 3);                                    // 0x10e4c
+Laplacian(gray, detail, /*ddepth*/0, /*ksize*/3,              // 0x10e84
+          /*scale*/1.0, /*delta*/0.0, /*border*/4);
+uint8_t e = ((uint8_t*)detail.data)[i];         // 0x10e8c/0x10f54
+float alpha = e ? min(1.0f, e / 50.0f) : 0.0f;  // 0x10f60, 50.0 = 0x4049000000000000
+```
+
+Per channel, with `d = src.c − paper.c`:
+
+```
+a   = curveA[|d|]                      // 0x10f94 / 0x10fd8 (index negated when d < 0,
+b   = curveB[|d|]                      //   and the looked-up value negated too)
+row = b + alpha·(a − b)                // 0x110b0–0x11124 fmsub/fmadd/fcsel
+out = divide[row][src.c]               // 0x11024 ldrb, 0x10eec write-back
+```
+
+`Laplacian` with `ddepth == 0` is a **CV_8U** destination, so the negative half of
+the response saturates to zero before it ever reaches `alpha` — i.e. only the ink
+side of an edge carries weight.
+
+`alpha` moves the row *up* toward curve A as the edge gets stronger; a bigger row
+makes the divide land darker. That is precisely the documented behaviour of this
+preset — "sharpens midtone contrast, preserving stamp/logo chromaticity": contrast
+is added at edges, and because the lookup is per channel a red stamp stays red
+(measured: `(190,40,45)` on paper `(232,232,232)` → `(187,0,0)`).
+
+### 13.7 Level 2 — "Clear B&W" (`0x11164`–`0x1147c`)
+
+The same divide table, **no Laplacian**, and therefore no alpha: the `cmp`/`b.ne`
+at `0x10f50` routes level ≠ 1 to `0x10fac`, where all three channels use curve A
+(`0x10ff8`–`0x11018`).
+
+```
+row = curveA[|src.c − paper.c|]
+out = divide[row][src.c]
+```
+
+then, because the app passes `colorType == 2`, `cvtColor(dst, dst, BGR2GRAY)` at
+`0x114c4`.
+
+**There is no Otsu threshold and no adaptive threshold anywhere in
+`enhanceDocument`** — no `cv::threshold` import exists, and the LUT path is only
+used in `enhancePhoto`. The binarisation comes out of the divide table itself: once
+a pixel sits meaningfully below its paper level, `row·2000/(src+1)` exceeds 2000,
+the response saturates at 2000, and the byte lands on 0.
+
+Measured on a synthetic page (paper 232, black text, anti-aliased edges, a red
+stamp): 75 % pure white, 17.5 % pure black, 7.5 % at 11 — i.e. glyph edges keep a
+mid tone instead of being forced binary, which is what keeps zoomed text smooth.
+
+### 13.8 Output (`0x11480`–`0x11528`)
+
+```c
+if (colorType == 2) cvtColor(dst, dst, 6 /*BGR2GRAY*/);   // 0x114c4
+return (bgR << 16) | (bgG << 8) | bgB;                    // 0x114c8
+```
+
+### 13.9 What the app does around the call (`lu3.smali`, `qx3.smali`, `bx.smali`)
+
+- `lu3.E` passes `level = (enhanceType == Level2) ? 2 : 1` and
+  `colorType = (colorType == GrayScale) ? 2 : 1`, and does **no resize**: the
+  bitmap goes to `Utils.bitmapToMat` (→ `s46.e`, which calls
+  `Utils.bitmapToMat` and therefore hands the native a **4-channel RGBA Mat**), so
+  the cell radius is in absolute pixels of the page as stored.
+- `qx3.E(bitmap, colorType)`: `colorType == Color` returns the bitmap untouched;
+  otherwise `Imgproc.cvtColor(…, 9)` (= `COLOR_BGRA2GRAY`) **then
+  `Imgproc.medianBlur(…, 9)`** — the Grayscale preset is desaturate + a 9-tap
+  median, which is why the original's grey pages look cleaner than ours.
+- `bx.smali:482`–`504` stores `result.bgColor` on the page and passes it to the
+  save path (`yn0.f`), so the page/PDF background is the estimated paper colour.
+
+### 13.10 Still not recovered (be explicit, do not invent)
+
+Settled this round (were listed as unknown before):
+
+* ~~The divide table's scaling~~ — decoded to `255 − response[idx]·255/2000` with
+  `idx = min(2000, row·2000/(col+1))`; the negative magic multiply *is* the ÷2000,
+  and the `−1` before `strb` is the complement. See §13.4.
+* ~~Which counter is the paper level~~ — neither: the row is `|src − paper|`
+  (§13.4b). The old "physical constraint settles it" note is withdrawn; the
+  constraint was evidence of a wrong reading, not of an orientation.
+
+Still open, in priority order:
+
+1. `PSBlockDigest::algorithm4` (7880 B, `0xcb88`) — the per-cell estimator behind
+   `PaperMap`. Our block-pooled mean is a stand-in; the original's cell statistic
+   (and therefore the paper level, and therefore every row of the divide table)
+   differs on gradients and textured paper.
+2. `findSmallestRadius`'s predicate (`0xfe74`) — no library calls, a pure outward
+   ring scan. Determines the background colour the app hands back as
+   `ColorizingRadius::getBackgroundColor()`.
+3. **Level 1 blend order** at `0x110b0`: which of the two curve tables is the
+   `alpha == 0` end. We use B; the two are one register apart. Affects flat-area
+   tone by a few counts, not structure.
+4. Whether the level-2 path really has `alpha ≡ 0` or reuses a *stale* alpha value
+   from the level-1 registers (the branch at `0x10f50` skips the Laplacian, but the
+   register is not obviously cleared).
+
+Anything built on top of these is a reconstruction and must be labelled as one.

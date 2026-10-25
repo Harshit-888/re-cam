@@ -140,6 +140,30 @@ Rules for this area:
 3. Do not move settings into `library.json`; it would rewrite the whole library
    on every toggle.
 
+## 6d. Document filter internals (claimed by Arena, 2026-10-25, round 13)
+
+All inside `app/src/main/java/com/example/docscanner/util/DocumentFilters.kt` and its
+test — no other file touched:
+
+- **Signature change:** `ToneTables.divide(paper, value)` → `divide(row, value)`.
+  `row` is `|src − paper|`, not the paper level (spec §13.4b).
+- **Semantics change:** `divideLookup(row, value)` now returns
+  `255 − response[min(2000, row·2000/(value+1))]·255/2000`. Anything calling it with
+  a paper level as the first argument is wrong.
+- **New internal seams:** `levelTwoChannel(table, paper, src)`, `toneTables()`.
+- **Deleted** (were unreachable, all replaced by the transcription):
+  `sharpenLuminance`, `localThresholds`, `gainLimits`, `buildThresholdField`,
+  `sharpenDecisionInPlace`, `gatedUnsharp`, `noiseEstimate`, `documentCurveLut`,
+  `coverageCut`, `normalise`, `medianHistogram`, plus the 10 tests that only covered
+  them.
+- `applyDocumentColor` / `applyDocumentBw` are transcriptions again: the gamma,
+  saturation, Sauvola, Otsu and unsharp stages are **gone**. Do not reintroduce them
+  without a disassembly citation — spec §13 is the source of truth.
+- `applyGrayscale(pixels, w, h)` now applies `medianBlur(…, 9)` after desaturating.
+
+Arena verified the arithmetic with numpy only. **No build or device run here** — the
+last verified build is still Antigravity's.
+
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-25 (`./gradlew assembleDebug testDebugUnitTest` passed).

@@ -122,35 +122,6 @@ class DocumentFiltersTest {
     }
 
     // -------------------------------------------------------------- ink curve
-
-    @Test
-    fun documentCurve_pinsBothEnds() {
-        val curve = DocumentFilters.documentCurveLut()
-
-        assertEquals("shadows must reach pure black", 0, curve[0])
-        assertEquals("paper must reach pure white", 255, curve[255])
-        assertEquals("highlight noise must snap to white", 255, curve[240])
-    }
-
-    @Test
-    fun documentCurve_isMonotonic() {
-        val curve = DocumentFilters.documentCurveLut()
-        for (v in 1..255) {
-            assertTrue("curve went backwards at $v", curve[v] >= curve[v - 1])
-        }
-    }
-
-    @Test
-    fun documentCurve_deepensMidtonesWithoutCrushingThem() {
-        val curve = DocumentFilters.documentCurveLut()
-
-        // Print at mid-grey must get darker so it reads as ink, but not so dark
-        // that anti-aliased glyph edges disappear.
-        assertTrue("mid-tone should darken", curve[128] < 128)
-        assertTrue("mid-tone should survive", curve[128] > 60)
-        assertTrue("near-white must stay light", curve[230] >= 240)
-    }
-
     // ------------------------------------------------------------------ grayscale
 
     @Test
@@ -471,82 +442,17 @@ class DocumentFiltersTest {
      * A flat field has no high-frequency content, so the gate must pass it through
      * untouched — this is the property that stops sharpening from amplifying grain.
      */
-    @Test
-    fun gatedUnsharp_leavesAFlatPlaneAlone() {
-        val plane = FloatArray(40 * 40) { 173f }
-
-        val out = DocumentFilters.gatedUnsharp(plane, 40, 40, amount = 0.6f, passes = 2, floor = 3f)
-
-        for (i in plane.indices) {
-            assertEquals("flat plane must be bit-identical, index $i", 173f, out[i], 1e-4f)
-        }
-    }
-
     /**
      * A strong edge must actually be steepened. A step from 90 to 180 is an 45-level
      * detail term, far above the 3-level floor, so the boost applies at full
      * strength on the pixels either side of the step.
      */
-    @Test
-    fun gatedUnsharp_steepensAStepEdge() {
-        val w = 32
-        val h = 8
-        val plane = FloatArray(w * h) { i -> if ((i % w) < w / 2) 90f else 180f }
-
-        val out = DocumentFilters.gatedUnsharp(plane, w, h, amount = 0.6f, passes = 2, floor = 3f)
-
-        val left = 4 * w + (w / 2 - 1)          // last dark pixel
-        val right = 4 * w + (w / 2)             // first bright pixel
-        assertTrue("dark side of the edge must darken: ${out[left]}", out[left] < plane[left] - 2f)
-        assertTrue("bright side must brighten: ${out[right]}", out[right] > plane[right] + 2f)
-        // ...and the flat interiors must not move.
-        assertEquals(90f, out[4 * w + 1], 1e-3f)
-        assertEquals(180f, out[4 * w + w - 2], 1e-3f)
-    }
-
     /** Detail just under the floor is ignored; detail well over it is boosted. */
-    @Test
-    fun gatedUnsharp_ignoresDetailBelowTheFloor() {
-        val w = 16
-        val h = 16
-        // A 2-level ripple: below SHARPEN_NOISE_FLOOR, i.e. exactly the grain case.
-        val plane = FloatArray(w * h) { i -> 150f + if ((i % 2) == 0) 1f else -1f }
-
-        val out = DocumentFilters.gatedUnsharp(plane, w, h, amount = 0.6f, passes = 2, floor = 3f)
-
-        for (i in plane.indices) {
-            assertEquals("sub-floor ripple must not be amplified, index $i", plane[i], out[i], 0.5f)
-        }
-    }
-
-    @Test
-    fun noiseEstimate_isZeroOnAFlatField() {
-        val plane = FloatArray(30 * 30) { 200f }
-
-        assertEquals(0f, DocumentFilters.noiseEstimate(plane, 30, 30, passes = 2), 0.001f)
-    }
-
     /**
      * Checkerboard noise has a residual equal to its amplitude, so the median
      * absolute residual should come out at that amplitude — not at the mean, and
      * not scaled by the blur.
      */
-    @Test
-    fun noiseEstimate_readsTheAmplitudeOfCheckerboardNoise() {
-        val w = 24
-        val h = 24
-        val amplitude = 12f
-        val plane = FloatArray(w * h) { i ->
-            val x = i % w
-            val y = i / w
-            160f + if ((x + y) % 2 == 0) amplitude else -amplitude
-        }
-
-        val noise = DocumentFilters.noiseEstimate(plane, w, h, passes = 2)
-
-        assertTrue("expected roughly $amplitude, got $noise", noise in (amplitude * 0.5f)..(amplitude * 1.5f))
-    }
-
     @Test
     fun adaptiveSharpenAmount_isFullAtLowNoiseAndZeroAtHighNoise() {
         val base = 0.6f
@@ -674,48 +580,153 @@ class DocumentFiltersTest {
      * The whole point of the coverage cut: interiors stay perfectly bi-level while
      * the contour gets grey, and that grey must be *only* on the contour.
      */
+    // -------------------------------------- transcribed from libimageproc.so (§13)
+
+    /**
+     * §13.3: `R = max(14, sqrt(rows·cols/8000))`. The floor is what keeps a thumbnail
+     * from producing a one-cell grid; the square-root law is what makes the cell size
+     * resolution-independent.
+     */
     @Test
-    fun coverageCut_keepsInteriorsBinaryAndSoftensOnlyTheContour() {
-        // A 40-level-per-pixel ramp crosses the threshold at x = 6.2, i.e. inside
-        // pixel 6 — the case where a hard cut has to pick a side and coverage does
-        // not.
-        val w = 32
+    fun cellRadius_followsThePixelsPerCellLawAndFloorsAtFourteen() {
+        assertEquals(14, DocumentFilters.cellRadius(64, 64))
+        // 3200 × 2400 = 7.68 M px → sqrt(960) = 30.98 → 30
+        assertEquals(30, DocumentFilters.cellRadius(3200, 2400))
+        // Four times the area → twice the radius: the rule scales with the count.
+        // sqrt(6400·4800/8000) = sqrt(3840) = 61.97 → 61.
+        assertEquals(61, DocumentFilters.cellRadius(6400, 4800))
+    }
+
+    /** §13.3: the curves are monotonic, hit 0 and 255, and A lies above B in between. */
+    @Test
+    fun toneCurves_matchTheRaisedCosineDefinition() {
+        val a = DocumentFilters.toneCurve(0.625)
+        val b = DocumentFilters.toneCurve(0.8)
+
+        assertEquals(256, a.size)
+        assertEquals("curve must start at 0", 0, a[0])
+        assertEquals("curve must end at 255", 255, a[255])
+        for (i in 1 until 256) {
+            assertTrue("curve A must be monotonic at $i", a[i] >= a[i - 1])
+            assertTrue("curve B must be monotonic at $i", b[i] >= b[i - 1])
+        }
+        // A (0.625) climbs faster than B (0.8), which is what lets level 1 interpolate
+        // between them by edge strength.
+        assertTrue("A must sit above B at midtone", a[64] > b[64])
+        // Spot values from the definition, checked against the same double maths.
+        assertEquals(96, a[64])
+        assertEquals(63, b[64])
+    }
+
+    @Test
+    fun responseTable_endsAtItsSentinel() {
+        assertEquals(0, DocumentFilters.responseValue(0))
+        assertEquals(2000, DocumentFilters.responseValue(2000))
+        assertEquals("past the end must stay at the sentinel", 2000, DocumentFilters.responseValue(5000))
+        assertTrue("must be monotonic", DocumentFilters.responseValue(1000) > DocumentFilters.responseValue(500))
+    }
+
+    /**
+     * §13.4: the divide lookup must send paper to white, ink to dark, and never invert
+     * the order. The opposite row/column assignment saturates everything to 255 — this
+     * test is what pins the orientation.
+     */
+    @Test
+    fun levelTwoChannel_makesItAClearBlackAndWhiteScan() {
+        val table = DocumentFilters.toneTables()
+        // Printed ink on typical paper must reach pure black, not mid-grey: this is
+        // the failure the old compose order produced (ink 45 came out at ~98).
+        assertEquals("ink must be black", 0, DocumentFilters.levelTwoChannel(table, 238, 45))
+        assertEquals("paper must be white", 255, DocumentFilters.levelTwoChannel(table, 238, 238))
+        // Paper noise of a few counts must not turn into speckle.
+        assertTrue(
+            "paper ripple must stay white, got ${DocumentFilters.levelTwoChannel(table, 238, 230)}",
+            DocumentFilters.levelTwoChannel(table, 238, 230) >= 240
+        )
+        // Light grey sits on the ramp rather than snapping, so anti-aliased glyph
+        // edges survive as edges.
+        val grey = DocumentFilters.levelTwoChannel(table, 238, 200)
+        assertTrue("the ramp must be gradual here, got $grey", grey in 150..210)
+    }
+
+    @Test
+    fun divideLookup_turnsPaperWhiteAndInkBlack() {
+        // Anchors taken from the transcribed table builder ($13.4): the row is
+        // |src - paper|, and the stored byte is complemented.
+        assertEquals("paper on paper must be white", 255, DocumentFilters.divideLookup(0, 238))
+        assertEquals("a pixel far below its paper must clip to black", 0, DocumentFilters.divideLookup(238, 0))
+        assertEquals("deep ink is black too", 0, DocumentFilters.divideLookup(193, 45))
+        // The ramp lives close to the paper level; 8 counts of JPEG ripple must not
+        // become grey speckle.
+        assertTrue("paper noise must stay white", DocumentFilters.divideLookup(8, 230) >= 240)
+
+        // Monotonic in the pixel value for a fixed row.
+        var previous = -1
+        for (v in 0..255) {
+            val out = DocumentFilters.divideLookup(120, v)
+            assertTrue("must not invert at $v", out >= previous)
+            previous = out
+        }
+        // Monotonic the other way in the row: a larger difference is never lighter.
+        previous = 256
+        for (row in 0..255) {
+            val out = DocumentFilters.divideLookup(row, 200)
+            assertTrue("a bigger row must not lighten at $row", out <= previous)
+            previous = out
+        }
+    }
+
+    @Test
+    fun divideLookup_isComplementedNotInverted() {
+        // Reading the stored byte as `q` rather than `255 - q` is the mistake that
+        // makes paper black; this pins the direction so it cannot regress.
+        assertTrue(DocumentFilters.divideLookup(0, 255) == 255)
+        assertTrue(DocumentFilters.divideLookup(200, 240) < 128)
+        assertTrue(DocumentFilters.divideLookup(0, 1) == 255)
+    }
+
+    /**
+     * §13.6: `Laplacian(CV_8U)` — negative responses saturate to 0, which is what makes
+     * the result usable as an edge weight `alpha = min(1, lap/50)`.
+     */
+    @Test
+    fun laplacian3x3_clampsNegativesAndRespondsToEdges() {
+        val w = 16
         val h = 4
-        val decision = FloatArray(w * h) { i -> (i % w) * 40f - 120f }
-        val coverage = DocumentFilters.coverageCut(decision, w, h) { _, _ -> 128f }
-
-        val grey = ArrayList<Int>()
-        for (i in coverage.indices) {
-            val value = coverage[i].toInt() and 0xFF
-            val x = i % w
-            when {
-                x <= 5 -> assertEquals("dark interior at x=$x", 0, value)
-                x >= 8 -> assertEquals("paper interior at x=$x", 255, value)
-                value in 1..254 -> grey.add(x)
-            }
+        val flat = FloatArray(w * h) { 100f }
+        for (v in DocumentFilters.laplacian3x3(flat, w, h)) {
+            assertEquals("a flat plane must have no response", 0f, v, 1e-4f)
         }
-        // Pixel 6 is one third covered (two of its three sub-samples are below the
-        // threshold), so it must be ~85, and pixel 7 fully white.
-        assertTrue("the contour must get coverage values, got $grey", grey.isNotEmpty())
-        assertTrue("grey must stay within a pixel of the contour, got $grey", grey.all { it in 6..7 })
-        assertEquals("one third coverage", 85, coverage[1 * w + 6].toInt() and 0xFF)
+
+        val step = FloatArray(w * h) { i -> if ((i % w) < w / 2) 40f else 200f }
+        val lap = DocumentFilters.laplacian3x3(step, w, h)
+        // [0 1 0; 1 -4 1; 0 1 0]: a pixel darker than its neighbourhood responds
+        // POSITIVELY, so the high response sits on the ink side of an edge —
+        // 3·40 + 200 − 4·40 = 160.
+        assertEquals(160f, lap[2 * w + w / 2 - 1], 1e-4f)
+        // The bright side is negative and saturates to 0 rather than wrapping.
+        assertEquals(0f, lap[2 * w + w / 2], 1e-4f)
+        // Interiors are flat.
+        assertEquals(0f, lap[2 * w + 1], 1e-4f)
+        assertEquals(0f, lap[2 * w + w - 2], 1e-4f)
     }
 
+    /** `qx3.smali`: the Grayscale preset is desaturate **+ medianBlur(9)**. */
     @Test
-    fun coverageCut_producesNoGreyOnAUniformPlane() {
-        val w = 20
-        val h = 20
-        val white = FloatArray(w * h) { 240f }
-        val black = FloatArray(w * h) { 10f }
+    fun medianBlurGray_removesSaltAndPepperAndKeepsEdges() {
+        val w = 21
+        val h = 21
+        val pixels = IntArray(w * h) { grey(120) }
+        pixels[10 * w + 10] = grey(250)          // a single hot pixel
+        pixels[5 * w + 5] = grey(0)              // and a single dead one
 
-        val paper = DocumentFilters.coverageCut(white, w, h) { _, _ -> 128f }
-        val ink = DocumentFilters.coverageCut(black, w, h) { _, _ -> 128f }
+        DocumentFilters.medianBlurGray(pixels, w, h, 9)
 
-        for (i in paper.indices) {
-            assertEquals(255, paper[i].toInt() and 0xFF)
-            assertEquals(0, ink[i].toInt() and 0xFF)
-        }
+        assertEquals("hot pixel must be gone", 120, DocumentFilters.greyOf(pixels[10 * w + 10]))
+        assertEquals("dead pixel must be gone", 120, DocumentFilters.greyOf(pixels[5 * w + 5]))
     }
+
+    private fun grey(v: Int): Int = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
 
     private fun rgb(r: Int, g: Int, b: Int): Int =
         (0xFF shl 24) or (r shl 16) or (g shl 8) or b
