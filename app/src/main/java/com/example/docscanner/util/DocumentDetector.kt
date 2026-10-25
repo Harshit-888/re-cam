@@ -148,12 +148,12 @@ object DocumentDetector {
         // which is a coarse job, and doing it there makes it four times cheaper.
         val smallRadius = closeRadius(working.w / CLOSE_DIVISOR)
         val blurRadius = max(2, smallRadius)
-        val background = background(working, smallRadius, blurRadius)
+        val bg = background(working, smallRadius, blurRadius)
 
         // Contrast of the background image, by histogram — no sort of the whole
         // frame, which used to cost more than everything else put together.
-        val lo = percentile(background, 0.03f)
-        val hi = percentile(background, 0.97f)
+        val lo = percentile(bg, 0.03f)
+        val hi = percentile(bg, 0.97f)
         val span = hi - lo
         if (span < MIN_CONTRAST) {
             // Nothing but one tone in view. Either the page fills the frame or
@@ -175,7 +175,7 @@ object DocumentDetector {
         // *inside* a bright page could be mistaken for the page itself.
         val polarities = if (hi < DARK_SCENE_LEVEL) floatArrayOf(1f, -1f) else floatArrayOf(1f)
         for (polarity in polarities) {
-            val quad = quadFrom(background, threshold, mid, band, polarity)
+            val quad = quadFrom(bg, threshold, mid, band, polarity)
             if (quad != null) return quad
         }
         return failed()
