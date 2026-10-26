@@ -37,6 +37,9 @@ Three reports from the device, all fixed:
   supported device is API 26+, so the adaptive icon is what is drawn everywhere.
 - **`res/values/strings.xml`** — `app_name` is `Doc Scanner` (was `DocScanner`), to
   match the title on the home screen.
+- **`docs/design/` (new)** — rendered previews of the mark and the launch screen
+  (`app_icon.png`, `launch_screen.png`) plus the colour table. Documentation only;
+  nothing in `app/` references them.
 - **`DashboardScreen.kt` — `LAUNCH_QUIET_MS` (2200).** Nothing in the background
   starts during the first two seconds: the OCR backfill is now
   `LAUNCH_QUIET_MS + 3000`, thumbnail repair is `LAUNCH_QUIET_MS + 1200`, and the
