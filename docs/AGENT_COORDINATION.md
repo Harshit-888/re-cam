@@ -968,6 +968,83 @@ search ranking are byte-identical to round 28.
   deliberately not written until a device report says decode is the bottleneck.
 - `ImageStore.loadBitmap` recycle audit is unfinished.
 
+## 6t. Launch, the brand mark, and border detection (Arena, 2026-10-26, round 31)
+
+### What the user reported
+
+Three symptoms, one launch, one detector, one gesture: a white empty screen then a
+stuttering library; auto-detected borders wrong; dragging a corner doing nothing.
+
+### Files and what each one owns
+
+| file | responsibility |
+| :--- | :--- |
+| `ui/common/LaunchSplash.kt` *(new)* | the mark + name shown while the library loads |
+| `res/drawable/launch_background.xml` *(new)*, `res/values/colors.xml` *(new)*, `res/values-v31/themes.xml` *(new)* | the brand gradient behind the first frame and, on Android 12+, behind the system splash |
+| `res/drawable/ic_launcher_foreground.xml`, `ic_launcher_background.xml` | **the app's own mark** — these were the Android Studio template |
+| `util/DocumentQuad.kt` *(new)* | **all** border geometry; pure JVM, no Android type |
+| `util/DocumentDetector.kt` | `Bitmap` → luma → `DocumentQuad`; the public `Detection` API |
+| `ui/editor/CropAndFilterScreen.kt` | the handles, and the gesture that moves them |
+| `MainActivity.kt` | builds the repository off the main thread, cross-fades splash → app |
+| `ui/dashboard/DashboardScreen.kt` | `LAUNCH_QUIET_MS` gating for every background pass |
+
+### The launch, and why it was white
+
+`ScannerRepository` reads and parses `library.json` in its constructor. It used to be
+constructed **inside composition**, so that parse ran on the UI thread before the
+first frame could be drawn: no frame until it finished, every frame behind it queued,
+and the window showed the platform's default `windowBackground` — flat light grey —
+which is the white screen. Three changes, in order of importance: the repository is
+built on `Dispatchers.IO`; the window background is now the brand gradient; nothing
+in the background starts for the first 2.2 s (`LAUNCH_QUIET_MS`), and the OCR backfill
+checks for a gesture before every *page* rather than every document.
+
+### The detector's contract that must not drift
+
+| fact | where |
+| :--- | :--- |
+| the geometry has **no Android type** and is unit-tested on the JVM | `util/DocumentQuad.kt`, `DocumentQuadTest.kt` |
+| each side is scanned across the **whole span**, walking in from the frame edge | `DocumentQuad.scanSide` |
+| **both polarities** are always tried; bright-on-dark first | `DocumentQuad.detect` |
+| step thresholds 0.18 / 0.30 / 0.10 of the background range, best-fitted-sides wins, early exit at 4 | `THRESHOLD_FRACTIONS` |
+| `sidesFound = 0` + full frame = "nothing to crop", **not** a failure | `DocumentDetector.detectInternal` |
+| RANSAC is seeded deterministically: pressing "detect" twice must not move the quad | `DocumentQuad.fitSide` |
+
+### Do not undo
+
+- **The off-centre scan.** Limiting a side's search to the half of the frame nearest
+  to it is what produced a crop displaced by half the frame on an off-centre page.
+  It looks like a harmless optimisation; it is the bug.
+- **Trying both polarities.** Gating the inverted one on "the whole frame is dark"
+  makes every dark document on a light surface undetectable.
+- **`rememberUpdatedState` in `BorderCanvas`.** `pointerInput` does not re-create its
+  block when its keys are unchanged, so anything captured by value inside it is
+  frozen at the composition that created the block. Reading `grabbedCorner` from the
+  parameter is why the handles never moved. Hit-testing has the same trap: it must use
+  the current pan/zoom or handles become ungrabbable after a pinch.
+- **`NonCancellable` around the repository construction.** Without it, a rotation
+  during the load can leave a repository with a live scope and no owner.
+- **The first-emission guard in `ScannerRepository.init`.** Removing it makes every
+  launch rewrite the whole library file for no reason, on the threads the cover
+  decodes are queued behind.
+
+### How to verify on a device
+
+1. `./gradlew testDebugUnitTest` — `DocumentQuadTest` is 11 pure-JVM tests, no device,
+   no Robolectric. It synthesises photographs (desk gradient, perspective page, ink,
+   deterministic noise) and asserts corner positions to within 2.5 % of the frame.
+2. Cold start with the app killed: the mark and "Doc Scanner" appear immediately on
+   the brand gradient, never a white window, then the library.
+3. Photograph a page at an angle, off to one side of the frame → *Borders* should
+   land on the paper on all four sides. Photograph a dark page (a menu board) on a
+   light table → it should detect at all, which it never used to.
+4. Drag a corner handle: it must follow the finger, and snap flat to a frame edge
+   when dragged within ~1 % of it. Pinch to zoom first, then drag — that used to be
+   impossible.
+5. Scroll immediately after launch. `adb logcat -s DocScannerPerf` should show
+   `pageDecodes` barely moving during the first gesture; if it spikes, the warm loop
+   or the prefetcher is decoding behind the finger.
+
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-26 (`./gradlew testDebugUnitTest assembleDebug` passed — Round 30).

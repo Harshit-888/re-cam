@@ -101,8 +101,17 @@ class ScannerRepository(context: Context) {
             _settings.collect { settingsStore.schedule(it) }
         }
 
-        // Persist every subsequent change. `combine` emits once immediately, which
-        // also normalises a fresh install's default folders to disk.
+        // Persist every subsequent change.
+        //
+        // `combine` emits once immediately, which is what normalises a fresh
+        // install's default folders to disk. On every *other* launch that first
+        // emission is a snapshot identical to the file that was just read, and
+        // writing it back means serialising the whole library — every page's OCR
+        // text included — moments after start-up, on the IO threads the cover
+        // decodes are queued behind. So the first emission is only written when
+        // there was nothing to read.
+        val restoredSnapshot = restored
+        var firstEmission = true
         scope.launch {
             combine(_documents, _folders) { documents, folders ->
                 LibrarySnapshot(
@@ -110,7 +119,14 @@ class ScannerRepository(context: Context) {
                     folders = folders,
                     documents = documents
                 )
-            }.collect { store.schedule(it) }
+            }.collect { snapshot ->
+                if (firstEmission) {
+                    firstEmission = false
+                    if (restoredSnapshot == null) store.schedule(snapshot)
+                } else {
+                    store.schedule(snapshot)
+                }
+            }
         }
 
         // Delete page files nothing references. Late, off the main thread, and
@@ -396,13 +412,19 @@ class ScannerRepository(context: Context) {
         if (pending.isEmpty()) return
         scope.launch {
             pending.groupBy({ it.first }, { it.second }).forEach { (docId, pages) ->
-                // Yield to the UI before starting a page, not after: a recognition
-                // pass that begins mid-fling is 200 ms of the CPU the next frame
-                // needed.
-                while (isBusy()) delay(OCR_PAUSE_POLL_MS)
-                val texts = pages.mapNotNull { page ->
-                    OcrEngine.readPage(page.imageUri)?.let { page.id to it }
-                }.toMap()
+                val texts = LinkedHashMap<String, String>()
+                for (page in pages) {
+                    // Before every *page*, not every document.
+                    //
+                    // This is the difference between "recognition politely waits"
+                    // and "recognition runs straight through a scroll": one page
+                    // is an ML Kit inference plus a 2400 px decode, so a batch of
+                    // eight pages belonging to one document used to spend several
+                    // seconds of CPU that the next frame needed, having checked for
+                    // a gesture only once, at the start.
+                    while (isBusy()) delay(OCR_PAUSE_POLL_MS)
+                    OcrEngine.readPage(page.imageUri)?.let { texts[page.id] = it }
+                }
                 setPageOcrTexts(docId, texts)
                 // Let the frame, the JSON write and the index settle before the
                 // next document lands on top of them.

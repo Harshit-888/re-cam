@@ -4,6 +4,107 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-26 (late pm) — Arena.ai — Round 31: launch without a white screen, and border detection that can be tested
+
+Three reports from the device, all fixed:
+
+1. a white, empty screen for the first seconds after opening, then a stuttering library;
+2. automatic border detection "not working correctly";
+3. dragging the corner handles doing nothing at all.
+
+### 1. Launch
+
+- **`MainActivity.kt` — the repository is now built off the main thread.**
+  It used to be constructed inside composition, so `LibraryStore.load()` (read and
+  parse `library.json`) ran on the thread that owed the system a frame. Nothing
+  could be drawn until it finished, which is exactly the blank window users saw, and
+  every frame behind it queued up — including the ones they scrolled with
+  immediately afterwards. It is now built on `Dispatchers.IO` behind the launch
+  screen. `repository` is therefore a nullable `@Volatile` field, not a `lazy`.
+- **`ui/common/LaunchSplash.kt` (new)** — the app's mark, its name and a quiet
+  progress bar, on the brand gradient. Shown while the library loads, for a minimum
+  of 320 ms so a warm start does not flash, then cross-faded into the dashboard.
+  It has no timer of its own: it is removed the moment the repository is ready.
+- **Resources** — `res/values/colors.xml` (new), `res/drawable/launch_background.xml`
+  (new), `res/values-v31/themes.xml` (new). `windowBackground` was the platform
+  default (flat light grey) and is now the brand gradient; Android 12+ names the
+  same colour as its system-splash background, so launcher → splash → library is one
+  colour instead of three.
+- **The launcher icon is now the app's own mark.** `ic_launcher_foreground.xml` and
+  `ic_launcher_background.xml` were the Android Studio template (a green grid behind
+  the default robot). They are now a page being scanned — white page outline, ink
+  lines, amber scan line — inside the 66 dp safe zone, on a brand gradient. Every
+  supported device is API 26+, so the adaptive icon is what is drawn everywhere.
+- **`res/values/strings.xml`** — `app_name` is `Doc Scanner` (was `DocScanner`), to
+  match the title on the home screen.
+- **`DashboardScreen.kt` — `LAUNCH_QUIET_MS` (2200).** Nothing in the background
+  starts during the first two seconds: the OCR backfill is now
+  `LAUNCH_QUIET_MS + 3000`, thumbnail repair is `LAUNCH_QUIET_MS + 1200`, and the
+  speculative cover warm loop abandons itself the moment a scroll starts.
+- **`ScannerRepository.kt` — two launch-time costs removed.**
+  - The OCR backfill checks `isBusy` before **every page**, not every document. A
+    batch of eight pages belonging to one document used to run straight through a
+    scroll, having checked once.
+  - The persistence loop no longer rewrites `library.json` on start-up when the
+    snapshot it just emitted is the one it just read. That write serialises the whole
+    library — all page text included — onto the same IO threads the cover decodes use.
+
+### 2. Border detection
+
+`util/DocumentQuad.kt` (**new, no Android types**) now holds the whole geometry:
+background image, edge scan, RANSAC fits, validation. `util/DocumentDetector.kt`
+keeps only the `Bitmap` handling and delegates. The split exists so detection can be
+tested — see below.
+
+Two real defects were found by re-implementing the previous algorithm independently
+and running it over synthetic scenes:
+
+- **A side was only searched in the half of the frame nearest to it.** Any page
+  sitting off-centre had no far-side edge to find, that side fell back to the frame
+  edge, and the result was a quad displaced by nearly half the frame — a
+  *confidently wrong crop*, which is worse than no crop. Sides are scanned across the
+  whole span now.
+- **The inverted polarity was only tried when the entire frame was dark.** A dark
+  document on a light surface — a menu board, a form, a phone screen — was never
+  detected at all. Both polarities are tried, always.
+
+Also: three step thresholds (0.18, 0.30, 0.10 of the background's range) instead of
+one, evaluated in order of preference with an early exit once four sides are found,
+so the ordinary photograph still costs one pass.
+
+`DocumentDetector.Detection` gained **`sidesFound: Int = 0`** (defaulted; existing
+construction sites are unaffected) and `DocumentDetector.WORK_WIDTH` is now public.
+
+The editor shows the difference: a *partial* result ("Only 2 of 4 borders found —
+check the corners") is no longer indistinguishable from a complete one.
+
+### 3. Dragging a corner
+
+`ui/editor/CropAndFilterScreen.kt` — the gesture read `corners`, `zoom`, `pan` and
+above all `grabbedCorner` **by value, from the composition that created it**.
+`pointerInput`'s block is kept for as long as its keys do not change, and its keys
+(rotation, frame size) do not change during a drag — so `grabbedCorner` stayed `null`
+for the entire gesture and the corner branch was never entered. The handles could not
+move. Every value the gesture needs is now read through `rememberUpdatedState`, the
+grabbed corner is a local of the gesture, hit-testing uses the current pan/zoom (it
+used the stale transform, so handles became ungrabbable after a pinch), and a handle
+dragged to within 1.2 % of a frame edge snaps onto it (`CORNER_SNAP`).
+
+### Tests
+
+**`app/src/test/java/com/example/docscanner/util/DocumentQuadTest.kt` (new, 11
+tests)** — synthetic photographs, no device: desk gradient, perspective page, ink
+lines, deterministic noise. Covers a plain page, an off-centre page (the regression),
+a dark page on a light surface (the regression), a page on a nearly-as-bright desk, a
+rotated page, noise, a featureless frame, a page that fills the frame, an image too
+small to judge, determinism, and a landscape frame.
+
+### Untouched
+
+Filter kernels, the Rust ABI, PDF output, OCR text, search ranking, geometry
+builtins: `PerspectiveWarp` and `ImageProcessingUtils` are unchanged, so a crop that
+was already correct is byte-identical.
+
 ## 2026-10-26 (pm) — Antigravity — Round 30: Rust acceleration of 6 filter kernels (ABI 2)
 
 Expanded the Rust pixel-kernel library with 6 new kernels covering the most expensive CPU loops in every document filter. All unit tests pass and `app-debug.apk` builds (65,687,518 bytes).

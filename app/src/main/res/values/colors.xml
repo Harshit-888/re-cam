@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The brand surface. One colour is used by three things that must agree, or the
+      launch looks like three launches: the window background behind the first
+      frame, the Compose launch screen, and the system splash on Android 12+.
+    -->
+    <color name="brand_ink">#06223A</color>
+    <color name="brand_blue">#0A5AA0</color>
+</resources>

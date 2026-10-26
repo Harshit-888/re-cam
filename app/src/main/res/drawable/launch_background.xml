@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What the window shows between "the launcher was tapped" and "the first Compose
+  frame". It used to be the platform default — a flat light grey — which is the
+  white flash the app used to open with, and it is also what a cold start looked
+  like while the library JSON was being parsed on the main thread.
+
+  Deliberately icon-free: the Compose launch screen (and, on Android 12+, the
+  system splash) draw the mark. Two icons at once, fading into each other, is
+  worse than one.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="270"
+                android:endColor="@color/brand_blue"
+                android:startColor="@color/brand_ink"
+                android:type="linear" />
+        </shape>
+    </item>
+</layer-list>

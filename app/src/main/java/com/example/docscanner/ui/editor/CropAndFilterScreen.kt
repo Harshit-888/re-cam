@@ -68,6 +68,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -240,6 +241,10 @@ fun CropAndFilterScreen(
     var isSaving by remember { mutableStateOf(false) }
     var isAutoDetecting by remember { mutableStateOf(false) }
     var detectionFailed by remember { mutableStateOf(false) }
+    // How many of the four borders were real edges. "Nothing found" and "three of
+    // four found" both need saying, and they need different words: one is a
+    // failure, the other is a page whose fourth side runs off the frame.
+    var sidesFound by remember { mutableIntStateOf(0) }
     var loadedPageId by remember { mutableStateOf<String?>(null) }
     var cornersEdited by remember { mutableStateOf(false) }
 
@@ -313,8 +318,10 @@ fun CropAndFilterScreen(
             isAutoDetecting = false
             corners = detection.corners
             detectionFailed = !detection.confident
+            sidesFound = detection.sidesFound
         } else {
             detectionFailed = false
+            sidesFound = 4
         }
 
         loadedPageId = activePageId
@@ -513,6 +520,7 @@ fun CropAndFilterScreen(
             corners = detection.corners
             cornersEdited = false
             detectionFailed = !detection.confident
+            sidesFound = detection.sidesFound
             isAutoDetecting = false
         }
     }
@@ -822,6 +830,15 @@ fun CropAndFilterScreen(
                         container = MaterialTheme.colorScheme.tertiaryContainer,
                         content = MaterialTheme.colorScheme.onTertiaryContainer
                     )
+                } else if (isBordersStage && !isAutoDetecting && image != null && sidesFound in 1..2) {
+                    // Not a failure: a page photographed on a surface the same
+                    // colour as itself really does have one or two invisible sides.
+                    // Saying so is more useful than a silent, slightly wrong crop.
+                    InfoPill(
+                        text = "Only $sidesFound of 4 borders found — check the corners",
+                        container = MaterialTheme.colorScheme.secondaryContainer,
+                        content = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
                 }
                 if (isAutoDetecting) {
                     InfoPill(
@@ -925,6 +942,25 @@ private fun BorderCanvas(
             return Offset(candidate.x.coerceIn(-maxX, maxX), candidate.y.coerceIn(-maxY, maxY))
         }
 
+        // Everything the gesture reads, read *through a state holder* rather than
+        // captured by value.
+        //
+        // This is the whole reason dragging a handle did nothing. `pointerInput`'s
+        // block is kept for as long as its keys do not change — and the keys here
+        // are the rotation and the frame size, which do not change while a handle
+        // is being dragged. So the block went on seeing the `corners`, `zoom` and
+        // above all `grabbedCorner` values from the composition that created it:
+        // `grabbedCorner` was `null` for the entire gesture, the corner branch was
+        // never entered, and the finger moved a handle that could not move.
+        // `rememberUpdatedState` keeps one stable object while always returning the
+        // current value.
+        val latestCorners = rememberUpdatedState(corners)
+        val latestZoom = rememberUpdatedState(zoom)
+        val latestPan = rememberUpdatedState(pan)
+        val reportGrabbed = rememberUpdatedState(onGrabbedCornerChange)
+        val reportCorners = rememberUpdatedState(onCornersChange)
+        val reportZoomPan = rememberUpdatedState(onZoomPanChange)
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -942,13 +978,19 @@ private fun BorderCanvas(
                      * `screen = centre + pan + zoom · R(rotation) · (canvas − centre)`
                      */
                     fun screenToCanvas(point: Offset): Offset {
-                        val vx = point.x - centerX - pan.x
-                        val vy = point.y - centerY - pan.y
+                        // The *current* pan and zoom, not the ones from when this
+                        // block was created: after a pinch, hit-testing with the
+                        // old transform would miss every handle that is visible on
+                        // screen.
+                        val panNow = latestPan.value
+                        val zoomNow = latestZoom.value
+                        val vx = point.x - centerX - panNow.x
+                        val vy = point.y - centerY - panNow.y
                         val rad = -rotateRad
                         val c = cos(rad)
                         val s = sin(rad)
-                        val rx = (vx * c - vy * s) / zoom
-                        val ry = (vx * s + vy * c) / zoom
+                        val rx = (vx * c - vy * s) / zoomNow
+                        val ry = (vx * s + vy * c) / zoomNow
                         return Offset(rx + frameW / 2f, ry + frameH / 2f)
                     }
 
@@ -957,11 +999,12 @@ private fun BorderCanvas(
                         val nx = canvasPoint.x / frameW
                         val ny = canvasPoint.y / frameH
                         if (nx < -0.15f || nx > 1.15f || ny < -0.15f || ny > 1.15f) return null
+                        val quad = latestCorners.value
                         val distances = listOf(
-                            distSq(nx, ny, corners.topLeftX, corners.topLeftY),
-                            distSq(nx, ny, corners.topRightX, corners.topRightY),
-                            distSq(nx, ny, corners.bottomRightX, corners.bottomRightY),
-                            distSq(nx, ny, corners.bottomLeftX, corners.bottomLeftY)
+                            distSq(nx, ny, quad.topLeftX, quad.topLeftY),
+                            distSq(nx, ny, quad.topRightX, quad.topRightY),
+                            distSq(nx, ny, quad.bottomRightX, quad.bottomRightY),
+                            distSq(nx, ny, quad.bottomLeftX, quad.bottomLeftY)
                         )
                         return distances.withIndex().minByOrNull { it.value }
                             ?.takeIf { it.value < GRAB_THRESHOLD }
@@ -970,7 +1013,12 @@ private fun BorderCanvas(
 
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
-                        onGrabbedCornerChange(grabCornerAt(down.position))
+                        // The grabbed corner is a local of *this gesture*. It used
+                        // to be read from the composable's parameter, which the
+                        // gesture could not see update — so it was permanently
+                        // null and the handle never moved.
+                        val grabbed = grabCornerAt(down.position)
+                        reportGrabbed.value(grabbed)
                         var multiTouch = false
 
                         var event: PointerEvent
@@ -982,62 +1030,68 @@ private fun BorderCanvas(
                                 // Once a second finger lands the gesture stays a
                                 // pinch even if one lifts, so nothing jumps.
                                 multiTouch = true
-                                onGrabbedCornerChange(null)
+                                reportGrabbed.value(null)
                                 val zoomChange = event.calculateZoom()
                                 val panChange = event.calculatePan()
                                 if (zoomChange != 1f || panChange != Offset.Zero) {
-                                    val newZoom = (zoom * zoomChange).coerceIn(1f, MAX_ZOOM)
-                                    val k = newZoom / zoom
+                                    val zoomBefore = latestZoom.value
+                                    val newZoom = (zoomBefore * zoomChange).coerceIn(1f, MAX_ZOOM)
+                                    val k = newZoom / zoomBefore
                                     val centroid = event.calculateCentroid(useCurrent = false)
                                     val u = Offset(centroid.x - centerX, centroid.y - centerY)
                                     val candidate = if (newZoom <= 1.0001f) {
                                         Offset.Zero
                                     } else {
-                                        pan * k + u * (1f - k) + panChange
+                                        latestPan.value * k + u * (1f - k) + panChange
                                     }
-                                    onZoomPanChange(newZoom, clampPanFor(newZoom, candidate))
+                                    reportZoomPan.value(newZoom, clampPanFor(newZoom, candidate))
                                     event.changes.forEach { if (it.positionChanged()) it.consume() }
                                 }
                             } else if (pressed == 1 && !multiTouch) {
-                                val change = event.changes.first { it.pressed }
-                                val grabbed = grabbedCorner
+                                val change = event.changes.firstOrNull { it.pressed }
+                                if (change == null) continue
                                 if (grabbed != null) {
                                     val canvasPoint = screenToCanvas(change.position)
-                                    val nx = (canvasPoint.x / frameW).coerceIn(0f, 1f)
-                                    val ny = (canvasPoint.y / frameH).coerceIn(0f, 1f)
-                                    onCornersChange(
+                                    val nx = snapToFrame((canvasPoint.x / frameW).coerceIn(0f, 1f))
+                                    val ny = snapToFrame((canvasPoint.y / frameH).coerceIn(0f, 1f))
+                                    val quad = latestCorners.value
+                                    reportCorners.value(
                                         when (grabbed) {
-                                            0 -> corners.copy(
-                                                topLeftX = clamp(nx, 0f, corners.topRightX - MIN_GAP),
-                                                topLeftY = clamp(ny, 0f, corners.bottomLeftY - MIN_GAP)
+                                            0 -> quad.copy(
+                                                topLeftX = clamp(nx, 0f, quad.topRightX - MIN_GAP),
+                                                topLeftY = clamp(ny, 0f, quad.bottomLeftY - MIN_GAP)
                                             )
-                                            1 -> corners.copy(
-                                                topRightX = clamp(nx, corners.topLeftX + MIN_GAP, 1f),
-                                                topRightY = clamp(ny, 0f, corners.bottomRightY - MIN_GAP)
+                                            1 -> quad.copy(
+                                                topRightX = clamp(nx, quad.topLeftX + MIN_GAP, 1f),
+                                                topRightY = clamp(ny, 0f, quad.bottomRightY - MIN_GAP)
                                             )
-                                            2 -> corners.copy(
-                                                bottomRightX = clamp(nx, corners.bottomLeftX + MIN_GAP, 1f),
-                                                bottomRightY = clamp(ny, corners.topRightY + MIN_GAP, 1f)
+                                            2 -> quad.copy(
+                                                bottomRightX = clamp(nx, quad.bottomLeftX + MIN_GAP, 1f),
+                                                bottomRightY = clamp(ny, quad.topRightY + MIN_GAP, 1f)
                                             )
-                                            3 -> corners.copy(
-                                                bottomLeftX = clamp(nx, 0f, corners.bottomRightX - MIN_GAP),
-                                                bottomLeftY = clamp(ny, corners.topLeftY + MIN_GAP, 1f)
+                                            3 -> quad.copy(
+                                                bottomLeftX = clamp(nx, 0f, quad.bottomRightX - MIN_GAP),
+                                                bottomLeftY = clamp(ny, quad.topLeftY + MIN_GAP, 1f)
                                             )
-                                            else -> corners
+                                            else -> quad
                                         }
                                     )
                                     change.consume()
-                                } else if (zoom > 1.001f) {
+                                } else if (latestZoom.value > 1.001f) {
                                     val delta = change.position - change.previousPosition
                                     if (delta != Offset.Zero) {
-                                        onZoomPanChange(zoom, clampPanFor(zoom, pan + delta))
+                                        val zoomNow = latestZoom.value
+                                        reportZoomPan.value(
+                                            zoomNow,
+                                            clampPanFor(zoomNow, latestPan.value + delta)
+                                        )
                                         change.consume()
                                     }
                                 }
                             }
                         } while (event.changes.any { it.pressed })
 
-                        onGrabbedCornerChange(null)
+                        reportGrabbed.value(null)
                     }
                 }
         ) {
@@ -1660,6 +1714,20 @@ private fun ApplyingOverlay(current: Int, total: Int) {
 }
 
 /**
+ * Pulls a handle onto the frame edge when it is within [CORNER_SNAP] of it.
+ *
+ * Dragging to the very edge of a photo frame is a pixel-exact finger exercise on a
+ * phone, and "the crop stops 4 px short of the page" is the result. Snapping is the
+ * difference between aiming and landing: the value the user wanted is the one the
+ * handle visibly reaches.
+ */
+private fun snapToFrame(value: Float): Float = when {
+    value <= CORNER_SNAP -> 0f
+    value >= 1f - CORNER_SNAP -> 1f
+    else -> value
+}
+
+/**
  * `coerceIn` throws when `min > max`. Dragging one corner past its neighbour used
  * to produce exactly that and crash the editor; this orders the bounds first.
  */
@@ -1687,3 +1755,9 @@ private const val ZOOM_FACTOR = 1.6f
  * grows as the user zooms in.
  */
 private const val GRAB_THRESHOLD = 0.05f
+
+/**
+ * A dragged handle this close to a frame edge (fraction of the frame) is snapped
+ * onto it, so a crop that should reach the edge actually does.
+ */
+private const val CORNER_SNAP = 0.012f

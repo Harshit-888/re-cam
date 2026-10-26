@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+      Android 12 draws its own splash before the app gets a frame: the launcher
+      icon, on a colour the theme names. Naming the brand ink here (rather than
+      letting it default to the window background) keeps the system's splash, our
+      own launch screen and the first Compose frame the same colour.
+    -->
+    <style name="Theme.DocScanner" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@drawable/launch_background</item>
+        <item name="android:windowSplashScreenBackground">@color/brand_ink</item>
+    </style>
+</resources>

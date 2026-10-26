@@ -451,6 +451,12 @@ fun DashboardScreen(
         val size = if (isGridView) coverSize else listCoverSize
         val last = (perRow * WARM_ROWS - 1).coerceAtMost(activeDocs.lastIndex)
         for (index in 0..last) {
+            // The finger wins. This loop exists to make the *first* fling smooth,
+            // but once one has started the decode threads belong to the tiles that
+            // are actually visible — carrying on with a speculative pre-warm is
+            // exactly the contention this round is removing. The work is not lost:
+            // the prefetcher picks those rows up as they come into view.
+            if (gridState.isScrollInProgress || listState.isScrollInProgress) return@LaunchedEffect
             val cover = activeDocs.getOrNull(index)?.pages?.firstOrNull()?.imageUri
                 ?: continue
             if (PageImageLoader.peek(cover, size.width, size.height) != null) continue
@@ -467,7 +473,7 @@ fun DashboardScreen(
     // exactly what made the library feel slow right after launch even though the
     // dashboard itself was doing less work than before.
     LaunchedEffect(Unit) {
-        delay(OCR_START_DELAY_MS)
+        delay(LAUNCH_QUIET_MS + OCR_START_DELAY_MS)
         repository.backfillTextInBackground(
             isBusy = { gridState.isScrollInProgress || listState.isScrollInProgress }
         )
@@ -492,7 +498,10 @@ fun DashboardScreen(
             .distinctUntilChanged()
             .collectLatest { scrolling ->
                 if (scrolling) return@collectLatest
-                delay(THUMBNAIL_PRIME_DELAY_MS)
+                // Repair, not launch work: a page without a stored thumbnail is
+                // rare, and the ones that exist can be built while the user reads
+                // the list rather than while they open it.
+                delay(LAUNCH_QUIET_MS + THUMBNAIL_PRIME_DELAY_MS)
                 val uris = repository.documents.value
                     .asSequence()
                     .filterNot { it.isTrash }
@@ -1038,10 +1047,23 @@ private const val PREFETCH_ROWS = 2
 private const val WARM_ROWS = 6
 
 /**
+ * How long the app is left alone after launch before *any* background work starts.
+ *
+ * This is the answer to "the library is fine, but it stutters for a few seconds
+ * after opening". Nothing about the first seconds is caused by the grid: it is the
+ * page decodes, thumbnail writes and text recognition that all decide launch is
+ * the right moment to begin. They are wrong — launch is the one moment the user is
+ * guaranteed to be touching the list. So the first two seconds belong to the UI
+ * alone, and everything that is nobody's emergency waits for them.
+ */
+private const val LAUNCH_QUIET_MS = 2200L
+
+/**
  * How long the library gets to itself before background text recognition starts.
  *
  * Long enough for launch, the first paint and the first scroll to be over; short
- * enough that search finds older pages within seconds of opening the app.
+ * enough that search finds older pages within seconds of opening the app. Counted
+ * *after* [LAUNCH_QUIET_MS], not from process start.
  */
 private const val OCR_START_DELAY_MS = 3000L
 

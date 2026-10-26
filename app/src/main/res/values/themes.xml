@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.DocScanner" parent="android:Theme.Material.Light.NoActionBar" />
+    <!--
+      `windowBackground` is the app's first frame. It used to be the platform
+      default, which is a flat light grey and was the white flash on opening. It is
+      a brand gradient now, so the launcher → splash → library hand-off is one
+      colour rather than three.
+    -->
+    <style name="Theme.DocScanner" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@drawable/launch_background</item>
+    </style>
 </resources>
