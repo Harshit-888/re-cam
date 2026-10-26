@@ -1939,7 +1939,12 @@ object DocumentFilters {
         Log.i(
             TAG,
             if (verdict) {
-                "Rust kernels verified byte-identical to the Kotlin reference"
+                // Honest wording: the integer kernels are compared with
+                // `contentEquals`, but the float planes (the paper map and the
+                // three blurs) are compared within 0.01, because two f32 pipelines
+                // can disagree in the last bit. Saying "byte-identical" for all
+                // nine would be a claim this code cannot make.
+                "Rust kernels verified (integer kernels byte-identical, float planes within 0.01)"
             } else {
                 "Rust kernels unavailable or mismatched - using the Kotlin reference"
             }

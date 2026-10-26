@@ -71,6 +71,10 @@ class MainActivity : ComponentActivity() {
         // The budget every frame is judged against comes from the panel that was
         // just selected — not from a 60 Hz constant.
         PerfTrace.setDisplayRefreshRate(displayHz)
+        // …and every report re-asks the display what it is doing, so a request the
+        // OEM compositor ignored is visible as `hz=60 fps=60` rather than hidden
+        // behind the number we asked for. See PerfTrace.syncDisplayRate.
+        PerfTrace.setRateProvider { FramePacing.currentRate(window).currentHz }
         // The stage breakdown needs a `Window`, which only the Activity has. Without
         // it the scroll line still reports frames and image work, just not where the
         // frame went.
@@ -169,7 +173,9 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         // The frame-metrics listener holds this Window; leaving it attached would
-        // outlive the Activity it belongs to.
+        // outlive the Activity it belongs to. The rate provider closes over the same
+        // window, so it goes with it.
+        PerfTrace.clearRateProvider()
         PerfTrace.detachWindow(window)
         // Configuration changes recreate the Activity but must not tear down the
         // repository mid-write; only a real finish ends its scope.

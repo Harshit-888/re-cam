@@ -106,6 +106,56 @@ object PerfTrace {
     val displayHz: Float get() = refreshRateHz
 
     /**
+     * Where to ask what the panel is doing *now*.
+     *
+     * [setDisplayRefreshRate] is called once, at launch, with the rate this app
+     * asked the display for. That is not the same thing as the rate it got: an OEM
+     * compositor is free to ignore the request, and a panel is free to drop to 60
+     * when the content does not need more. Without this, a refused request reads as
+     * `hz=120 fps≈60` — which looks like an app that cannot keep up, when it is
+     * actually a display that never changed mode.
+     *
+     * Only consulted when a line is about to be printed, so the frame path stays
+     * arithmetic on fields.
+     */
+    @Volatile
+    private var rateProvider: (() -> Float)? = null
+
+    /** Installed by `MainActivity`, which is the only thing that holds a `Window`. */
+    fun setRateProvider(provider: () -> Float) {
+        rateProvider = provider
+    }
+
+    /**
+     * Dropped when the Activity goes away.
+     *
+     * This object is a singleton and the provider closes over a `Window`, which
+     * holds its `Activity`. Leaving it installed across a configuration change (or
+     * a finish, on a process that stays alive) would keep a destroyed Activity
+     * reachable for as long as the process lives.
+     */
+    fun clearRateProvider() {
+        rateProvider = null
+    }
+
+    /**
+     * Re-reads the panel's rate before a report.
+     *
+     * Deliberately *not* per frame: `Display.getMode()` goes through the window
+     * manager, and a binder call on the frame path is precisely the kind of thing
+     * this file exists to catch. Once per gesture is enough to notice that the rate
+     * changed.
+     */
+    private fun syncDisplayRate() {
+        val reported = runCatching { rateProvider?.invoke() }.getOrNull() ?: return
+        // `isFinite` as well as the range: a provider that divides by a zero
+        // refresh rate hands back NaN, and NaN would poison every budget after it.
+        if (!reported.isFinite() || reported <= 1f) return
+        if (kotlin.math.abs(reported - refreshRateHz) < 0.5f) return
+        refreshRateHz = reported
+    }
+
+    /**
      * Where a frame's time went, per gesture.
      *
      * The frame-interval numbers answer *"was it janky"*; they do not answer *"what
@@ -323,6 +373,7 @@ object PerfTrace {
      */
     private fun reportGesture() {
         if (gestureFrames == 0) return
+        syncDisplayRate()
         val average = gestureTotalNs / gestureFrames
         val verdict = if (gestureMissed == 0) "smooth" else "JANK"
         val atBudget = gestureAtBudget * 100 / gestureFrames
@@ -351,6 +402,7 @@ object PerfTrace {
     }
 
     private fun report() {
+        syncDisplayRate()
         val sorted = frameTimes.copyOf(WINDOW)
         sorted.sort()
         val p50 = sorted[WINDOW / 2]

@@ -28,10 +28,27 @@ import android.view.Window
  *
  * It is deliberately conservative: it only ever selects a mode **with the same
  * physical resolution**, so unlocking the refresh rate can never change the
- * layout, the density or the pixels being drawn — and it asks with
- * `FRAME_RATE_COMPATIBILITY_DEFAULT` rather than `FIXED_SOURCE`, which leaves the
- * system free to step down if this app cannot sustain the rate. Claiming
- * `FIXED_SOURCE` and then missing vsyncs is worse than not asking at all.
+ * layout, the density or the pixels being drawn — and it never claims
+ * `FIXED_SOURCE` behaviour, which would forbid the platform from stepping the rate
+ * down when this app cannot sustain it. Claiming a rate and then missing vsyncs is
+ * worse than not asking at all.
+ *
+ * # Which field to set, per API level (read off AOSP, not remembered)
+ *
+ * `Window` has no `setFrameRate`; that method is on `Surface`, and a Compose
+ * activity has no public handle on the window's surface before it is attached. The
+ * sanctioned pre-attach route is `WindowManager.LayoutParams`, and the two relevant
+ * fields do **not** behave the same way:
+ *
+ * | API | what to set | why |
+ * | :--- | :--- | :--- |
+ * | 34+ (`UPSIDE_DOWN_CAKE`) | `preferredRefreshRate` only | documented as "use in favour of `preferredDisplayModeId` for applications that want to specify the refresh rate, but do not want to specify a preference for any other displayMode properties (e.g. resolution)" — and from 34 it accepts any rate, the OS picks the closest match |
+ * | 23–33 | `preferredDisplayModeId` | window-local and reliable. `preferredRefreshRate` before 34 "will be applied to the **display's default mode**", i.e. it can change the panel's mode for every app, not just this window |
+ *
+ * The trap: **`preferredRefreshRate` is ignored whenever `preferredDisplayModeId`
+ * is set.** Setting both — which an earlier revision of this file did — looks like
+ * asking twice and is actually asking once, via the field that pins the resolution.
+ * So exactly one of them is written, ever.
  */
 object FramePacing {
 
@@ -51,20 +68,38 @@ object FramePacing {
         val display = displayOf(window) ?: return DEFAULT_HZ
         val fastest = fastestMode(display) ?: return safeRefreshRate(display)
 
-        // Only ask for a mode when it is actually faster, so a device that is
-        // already at its best mode never pays for a window relayout.
-        if (fastest.refreshRate > safeRefreshRate(display) + 1f && fastest.modeId >= 0) {
+        // Only ask when it is actually faster, so a device already at its best mode
+        // never pays for a window relayout.
+        if (fastest.refreshRate > safeRefreshRate(display) + 1f) {
             val attributes = window.attributes
             var changed = false
-            if (attributes.preferredDisplayModeId != fastest.modeId) {
-                attributes.preferredDisplayModeId = fastest.modeId
-                changed = true
-            }
-            @Suppress("DEPRECATION")
-            if (attributes.preferredRefreshRate != fastest.refreshRate) {
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                // Rate only — resolution untouched, because that is what was asked
+                // for. Any display-mode preference must be cleared first: the mode
+                // id wins over the rate and would silently make this a no-op.
+                if (attributes.preferredDisplayModeId != 0) {
+                    attributes.preferredDisplayModeId = 0
+                    changed = true
+                }
+                if (attributes.preferredRefreshRate != fastest.refreshRate) {
+                    attributes.preferredRefreshRate = fastest.refreshRate
+                    changed = true
+                }
+            } else if (fastest.modeId > 0) {
+                // Window-local on older releases. `preferredRefreshRate` is not
+                // used here on purpose: before 34 it applies to the *display's*
+                // default mode, which is a system-wide change from a scanner app.
+                if (attributes.preferredDisplayModeId != fastest.modeId) {
+                    attributes.preferredDisplayModeId = fastest.modeId
+                    changed = true
+                }
+            } else if (attributes.preferredRefreshRate != fastest.refreshRate) {
+                // No usable mode id: the rate hint is all that is left.
                 attributes.preferredRefreshRate = fastest.refreshRate
                 changed = true
             }
+
             if (changed) {
                 window.attributes = attributes
             }

@@ -95,7 +95,7 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai & Antigravity | ✅ merged & verified (Round 26) | `model/Models.kt`, `util/PdfGenerator.kt` (rewritten), `util/PdfWriter.kt` (new), `util/PdfSecurity.kt` (new), `ui/pdf/PdfExportSheet.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `app/src/test/.../PdfWriterTest.kt` + `PdfSecurityTest.kt` (new), docs | Password-protected PDFs, choose-the-size compression, rename at share time, and multi-select → merge from the library. **`PdfExportSheet` and `PdfGenerator.generatePdf` signatures changed** — see the changelog. See §6q. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 27) | `util/DocumentSearch.kt`, `util/NativeSearch.kt` (new), `app/src/main/rust/src/search.rs` + `lib.rs`, `ui/dashboard/DashboardScreen.kt`, `ui/settings/SettingsScreen.kt`, `app/src/test/.../MagicSearchTest.kt` (new), docs | "Magic Search": typo/prefix/stem/synonym/phrase/year matching with highlighted snippets, and the vocabulary walk in Rust behind a parity gate. **`SearchBarField` renamed to `MagicSearchField`.** Fixed `vocabulary.asList()` on `expandReference`. See §6r. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 29) | `util/FramePacing.kt`, `util/FrameBudget.kt`, `util/PerfTrace.kt`, `MainActivity.kt`, `theme/Theme.kt`, `util/PageImageLoader.kt`, `ui/dashboard/DashboardScreen.kt`, `app/src/test/.../FrameBudgetTest.kt`, docs | Dynamic high-refresh display pacing (fastest same-resolution mode), display-aware frame budgets & jank detection, stable card callbacks, and RGB_565 tile decodes. Fixed `FramePacing.kt` display mode/refresh rate application. See §6s. |
-| Antigravity | ✅ merged & verified (Round 30) | `app/src/main/rust/src/kernels.rs`, `app/src/main/rust/src/lib.rs`, `util/NativeFilters.kt`, `util/DocumentFilters.kt` | Rust acceleration of 6 more expensive filter loops: `meanPool` (paper map), `applyLut` (Lighten), `rec601InPlace` (Grayscale), `gaussianBlur3`, `boxBlur3`, `boxBlurInPlace` — all behind byte-for-byte parity gates with Kotlin reference fallbacks. ABI bumped to 2. `verifyNativeFilters` now checks all 9 kernels. All unit tests pass, `app-debug.apk` built (65,687,518 bytes). See §6t. |
+| Antigravity | ✅ merged & verified (Round 30) | `app/src/main/rust/src/kernels.rs`, `app/src/main/rust/src/lib.rs`, `util/NativeFilters.kt`, `util/DocumentFilters.kt` | Rust acceleration of 6 more expensive filter loops: `meanPool` (paper map), `applyLut` (Lighten), `rec601InPlace` (Grayscale), `gaussianBlur3`, `boxBlur3`, `boxBlurInPlace` — all behind byte-for-byte parity gates with Kotlin reference fallbacks. ABI bumped to 2. `verifyNativeFilters` now checks all 9 kernels. All unit tests pass, `app-debug.apk` built (65,687,518 bytes). Reviewed in §6u. |
 
 ## 5. File ownership map
 
@@ -1044,6 +1044,73 @@ checks for a gesture before every *page* rather than every document.
 5. Scroll immediately after launch. `adb logcat -s DocScannerPerf` should show
    `pageDecodes` barely moving during the first gesture; if it spikes, the warm loop
    or the prefetcher is decoding behind the finger.
+
+## 6u. Round 30 reviewed: the six Rust kernels, and three corrections (Arena, 2026-10-26, round 32)
+
+Antigravity's Round 30 added six native kernels behind the existing parity gate and
+bumped the ABI to 2. This section records what it does, what it does **not** do, and
+the three things reviewing it changed.
+
+### What it actually speeds up
+
+`meanPool`, `applyLut`, `rec601InPlace`, `gaussianBlur3`, `boxBlur3` and
+`boxBlurInPlace` are the loops inside `DocumentFilters.apply` — the **bake** path.
+They make "Save & Next", export and the editor's filter preview finish sooner. They
+do not touch a single frame of the library scroll or of launch: if the complaint is
+"the list stutters", this work is not the answer, and the two rounds that were about
+that were about the main-thread parse, background contention and per-frame
+allocation.
+
+Scope, threading and dependencies are all sound: `std::thread::scope` bands capped
+at `available_parallelism() - 2` and at 6, no new crate, `panic = "abort"`, and every
+call site is `if (nativeFiltersReady() && NativeFilters.xxx(...)) return` with a
+Kotlin reference underneath.
+
+### What I checked by reading it (nothing here was compiled)
+
+| kernel | the property that matters | verdict |
+| :--- | :--- | :--- |
+| `box_blur_inplace` | in-place horizontal pass must read the **stale** left neighbour, and the vertical pass must use two scratch rows — an "obvious" rewrite of this silently changes every pixel | matches the Kotlin reference line for line |
+| `mean_pool` | cell bounds `min(h-1, gy*cell)` / `min(h, y0+cell)`, and `count` per cell | matches; `i64` accumulators cannot overflow where Kotlin's `Int` could at large cells |
+| `rec601_inplace` | rounding | `floor(v + 0.5)` equals Kotlin's `roundToInt` for the non-negative inputs here, and the f32 multiply/add order is identical, so the exact `contentEquals` gate should pass on device |
+| `median_blur_gray` | is it on a production path? | **no** — Kotlin deliberately keeps the O(k) histogram median. The gate verifies it anyway, which costs microseconds and is fine |
+
+### Three corrections
+
+1. **`FramePacing` was asking for the refresh rate in a field that is ignored when
+   the other one is set.** AOSP `WindowManager.LayoutParams` says of
+   `preferredRefreshRate`: *"This value is ignored if `preferredDisplayModeId` is
+   set"*, and *"This should be used in favor of `preferredDisplayModeId` for
+   applications that want to specify the refresh rate, but do not want to specify a
+   preference for any other displayMode properties (e.g., resolution)"*. Round 30 set
+   both. Now exactly one is written: **API ≤ 33 → `preferredDisplayModeId`**
+   (window-local; before 34 the rate field "will be applied to the display's default
+   mode", i.e. a system-wide change from a scanner app), **API 34+ →
+   `preferredRefreshRate` only**, with any mode id explicitly cleared so the rate can
+   take effect.
+   Note also that `Window` has **no** `setFrameRate` — that is `Surface#setFrameRate`,
+   and a Compose activity has no public handle on the window's surface before attach.
+   Removing that call in Round 30 was correct; `LayoutParams` is the only sanctioned
+   pre-attach route.
+2. **`PerfTrace` reported the rate that was requested, not the rate granted.** A
+   refused request read as `hz=120 fps≈60`, which looks like an app that cannot keep
+   up when it is a display that never changed mode. `setRateProvider` is installed by
+   `MainActivity` and `syncDisplayRate()` re-reads the panel before each line —
+   per gesture, never per frame.
+3. **The parity log said "byte-identical" for all nine kernels.** It is true of the
+   integer ones (`contentEquals`) and not of the float planes (paper map, three
+   blurs), which are compared within 0.01. The line now says which is which.
+
+### Do not undo
+
+- **Exactly one of `preferredDisplayModeId` / `preferredRefreshRate`.** Setting both
+  is not asking twice.
+- **Same-resolution modes only**, still. A mode with a different size reallocates the
+  window surface mid-launch.
+- **`syncDisplayRate()` stays off the frame path.** It is a window-manager call; once
+  per gesture is enough and once per frame would be the bug.
+- **Every native call keeps its `return` guard and its Kotlin reference.** The gate is
+  the only thing standing between a compiler quirk and a changed scan.
 
 ## 7. Known-good state
 

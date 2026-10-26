@@ -4,6 +4,69 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-26 (night) — Arena.ai — Round 32: Round 30 reviewed, and the refresh-rate request corrected
+
+Antigravity's Round 30 (six Rust filter kernels, ABI 2) is merged and is good work.
+Reading it surfaced one thing in **my** Round 29 code that had never been verified,
+because this sandbox cannot compile: `Window` has no `setFrameRate`. Round 30 removed
+that call and replaced it with `preferredRefreshRate` — correct diagnosis, and the
+replacement was still not right.
+
+### 1. `util/FramePacing.kt` — one field, chosen by API level
+
+AOSP `WindowManager.LayoutParams`, on `preferredRefreshRate`:
+
+> This value is ignored if `preferredDisplayModeId` is set. … This should be used in
+> favor of `preferredDisplayModeId` for applications that want to specify the refresh
+> rate, but do not want to specify a preference for any other displayMode properties
+> (e.g., resolution).
+
+Round 29 set `preferredDisplayModeId`; Round 30 added `preferredRefreshRate` beside
+it, so the rate field was dead code — the window was still pinned by mode id. Now
+exactly one field is written:
+
+| API | field | why |
+| :--- | :--- | :--- |
+| 34+ (`UPSIDE_DOWN_CAKE`) | `preferredRefreshRate` only, mode id explicitly cleared | documented recommendation for "a rate, no other display-mode opinion", and from 34 it accepts any rate and lets the OS pick the closest match |
+| 23–33 | `preferredDisplayModeId` | window-local. Before 34 the rate field "will be applied to the display's **default mode**", i.e. it can change the panel's mode for every app |
+
+`preferredMinDisplayRefreshRate` / `preferredMaxDisplayRefreshRate` were checked and
+are **`@hide`/`@TestApi`**, so they are not an option.
+
+### 2. `util/PerfTrace.kt` — report the rate the panel granted, not the one requested
+
+`hz=` was the number this app asked the display for. A request an OEM compositor
+ignores therefore read as `hz=120 fps≈60` — indistinguishable from an app that cannot
+hold the rate, when it is really a display that never changed mode. New
+`setRateProvider(...)`, installed by `MainActivity`, and `syncDisplayRate()` re-reads
+`Display.mode` **before each line is printed** — once per gesture, never per frame
+(it is a window-manager call, and a binder call on the frame path is exactly what
+this file exists to catch). The provider closes over a `Window`, so it is cleared in
+`onDestroy` (`clearRateProvider`); leaving it installed would keep a destroyed
+Activity reachable from a singleton. A non-finite rate is ignored rather than stored.
+
+### 3. `util/DocumentFilters.kt` — an honest parity log
+
+The gate compares the integer kernels with `contentEquals` but the float planes (the
+paper map and three blurs) within 0.01, because two f32 pipelines can disagree in the
+last bit. The log line claimed "byte-identical" for all nine. It now says which is
+which. The gate itself is unchanged.
+
+### Docs
+
+`docs/AGENT_COORDINATION.md` §6u: what Round 30 speeds up (the **bake** path — "Save
+& Next", export, editor preview — not the library scroll or launch), what I checked by
+reading each kernel (`box_blur_inplace`'s stale-`left` semantics, `mean_pool`'s cell
+bounds and `i64` accumulators, `rec601`'s rounding, `median_blur_gray` not being on a
+production path), and the invariants not to undo. The Round 30 table row pointed at
+§6t, which is Round 31; it now points at §6u.
+
+### Not verified here
+
+Nothing in this commit was compiled or run — no JDK, no Android SDK, no Rust
+toolchain. Round 30's "all tests pass, APK built" is Antigravity's claim, not
+something this environment can confirm.
+
 ## 2026-10-26 (late pm) — Arena.ai — Round 31: launch without a white screen, and border detection that can be tested
 
 Three reports from the device, all fixed:
