@@ -97,6 +97,7 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai & Antigravity | ✅ merged & verified (Round 29) | `util/FramePacing.kt`, `util/FrameBudget.kt`, `util/PerfTrace.kt`, `MainActivity.kt`, `theme/Theme.kt`, `util/PageImageLoader.kt`, `ui/dashboard/DashboardScreen.kt`, `app/src/test/.../FrameBudgetTest.kt`, docs | Dynamic high-refresh display pacing (fastest same-resolution mode), display-aware frame budgets & jank detection, stable card callbacks, and RGB_565 tile decodes. Fixed `FramePacing.kt` display mode/refresh rate application. See §6s. |
 | Antigravity | ✅ merged & verified (Round 30) | `app/src/main/rust/src/kernels.rs`, `app/src/main/rust/src/lib.rs`, `util/NativeFilters.kt`, `util/DocumentFilters.kt` | Rust acceleration of 6 more expensive filter loops: `meanPool` (paper map), `applyLut` (Lighten), `rec601InPlace` (Grayscale), `gaussianBlur3`, `boxBlur3`, `boxBlurInPlace` — all behind byte-for-byte parity gates with Kotlin reference fallbacks. ABI bumped to 2. `verifyNativeFilters` now checks all 9 kernels. All unit tests pass, `app-debug.apk` built (65,687,518 bytes). Reviewed in §6u. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 33) | `data/LibraryViewModel.kt` (new), `MainActivity.kt`, `Navigation.kt`, `data/ScannerRepository.kt`, `theme/Motion.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/editor/CropAndFilterScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `ui/signature/SignaturePadDialog.kt`, `ui/common/Expressive.kt`, docs | Six behaviour bugs (empty documents, unconfirmed page delete, detail dead-end, stale selection/no-op merge, silent rename discard, per-rotation repository rebuild), five hot paths moved to draw-phase reads / layer transforms / coalesced IPC, four motion corrections. Fixed compilation issues in DashboardScreen, DocumentDetailScreen, and PageViewerScreen. All unit tests pass, `app-debug.apk` built. See §6v. |
+| Arena.ai | ✅ committed (Round 34) | `ui/pdf/PdfExportSheet.kt` (rebuilt), `docs/design/pdf_export_sheet.png` + `render_pdf_sheet.py` (new), docs | Export sheet UI/UX rebuilt: paper as a collapsible grid, file size as 2 × 2 cards, margins as a 2 × 2 of chips, whole-row toggles, a CTA caption that names the output, no swipe-dismiss mid-export, and `selectable`/`toggleable` semantics for TalkBack. Scrolling segmented controls removed from this sheet; `SegmentedPill` itself untouched. Signature unchanged. See §6w. |
 
 ## 5. File ownership map
 
@@ -1184,6 +1185,68 @@ change behaviour other screens can see; they are flagged first.
   `onDestroy` as well would tear down the instance the next Activity reuses.
 - **Still nothing to compile here.** `./gradlew testDebugUnitTest` and
   `assembleDebug` remain the gate, and only a machine with a JDK can run them.
+
+## 6w. Round 34: the export sheet rebuilt (Arena, 2026-10-26, round 34)
+
+Owner complaint, verbatim: *"the export pdf page where all the size and password
+settings are listed is absolutley wrong with the ui/ux"*. It was, and the cause is
+worth remembering because it is one line away in any other sheet.
+
+### The defect
+
+`SegmentedPill` divides the available width **evenly** between its options. That is
+correct for the two-option control it was designed for ("Borders | Filters") and wrong
+for `PaperSize.entries`, which has **eight** options whose labels carry their
+dimensions. On a 360 dp phone each segment received ~34 dp, so every label rendered as
+a fragment — "A4…", "US…", "Ex…". `PdfMargin` and `PdfCompression` had the same
+treatment at four options ("No Man…", "Compac…"). Six identical uppercase eyebrows over
+six equally weighted blocks finished the job: nothing on the sheet said which choices
+are made on every export (file size, password) and which are set once (paper, margins).
+
+**Rule going forward:** `SegmentedPill` is for two to four options with short, fixed
+labels. Anything driven by an enum with a long or variable label needs its own
+control. Do not pass a model enum's `label` straight into a segmented control.
+
+### What it is now
+
+| Section | Control |
+| :--- | :--- |
+| Paper | one row showing the current size and its dimensions; expands to a 2-column grid of all 8; choosing one folds it away |
+| File size | 2 × 2 cards — label plus what it costs, check on the chosen one, one line under the grid explaining the level from the enum's own numbers |
+| Layout | margins as a 2 × 2 of equal chips, then a full-width toggle row for footer page numbers |
+| Password | a full-width toggle row; the field and its warning expand in place |
+| Action | the CTA plus a caption naming exactly what will be written: "12 pages · A4 · Balanced" |
+
+`docs/design/pdf_export_sheet.png` (and `render_pdf_sheet.py`) shows before, after, and
+after-with-the-grid-open. It is a **drawing** that mirrors the dp values, not a
+screenshot — nothing in this sandbox can build the app.
+
+### Behaviour changes an agent could notice
+
+- **The sheet can no longer be swiped away while it is writing.** Dismissal cancelled
+  the export coroutine (it belongs to the sheet's composition scope) and could leave a
+  half-written file. `rememberModalBottomSheetState(confirmValueChange = …)` returns
+  `false` for `Hidden` while `isGenerating`.
+- **Every choice reports its selected state to accessibility services**
+  (`selectable(..., Role.RadioButton)` instead of `clickable`), and the toggle rows use
+  `toggleable(..., Role.Switch)`. If you add a choice control to this sheet, do the same
+  — colour is not a state.
+- The footer now names the engine correctly: a password **or** any lossy file-size level
+  switches to the app's own `PdfWriter`.
+
+`PdfExportSheet(...)`'s signature is unchanged; `PdfGenerator`, `PdfWriter`,
+`PdfExportConfig` and every default are untouched, so the file produced for the same
+choices is identical.
+
+### Do not undo
+
+- **Do not put `PaperSize`, `PdfMargin` or `PdfCompression` back into `SegmentedPill`.**
+- **Do not remove the CTA caption.** It is the only place the sheet states what the tap
+  produces before it happens.
+- **Do not replace `selectable`/`toggleable` with `clickable`.** That is what made four
+  identical buttons with no announced state.
+- **Still uncompiled here.** The `PdfExportSheet` rewrite is source-only in this
+  sandbox; `./gradlew testDebugUnitTest assembleDebug` is the gate.
 
 ## 7. Known-good state
 

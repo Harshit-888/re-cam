@@ -253,6 +253,15 @@ fun SectionCard(
  * Two states only in this app (Borders / Filters), which is the case where a
  * segmented control beats tabs: both options stay visible and the thumb makes the
  * current one unmistakable, even at a glance.
+ *
+ * **It divides the width evenly between its options, so every option must have a
+ * short label of roughly the same length.** That is the deal a segmented control
+ * makes, and breaking it is silent: the PDF export sheet once fed it
+ * `PaperSize.entries`, whose eight labels carry their dimensions, and every segment
+ * rendered ~34 dp wide — "A4…", "US…", "Ex…". Nothing overflowed, nothing crashed,
+ * the labels just became meaningless. Two to four options, short labels. Anything
+ * driven by an enum with a long or variable label needs its own control (see
+ * `ui/pdf/PdfExportSheet.kt` for the grid-and-cards version).
  */
 @Composable
 fun SegmentedPill(

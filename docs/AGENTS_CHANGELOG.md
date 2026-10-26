@@ -4,6 +4,69 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-26 (night, 2) — Arena.ai — Round 34: the export sheet rebuilt, and the review that justified each change
+
+Reported as "the export pdf page where all the size and password settings are listed is
+absolutely wrong with the ui/ux". It was. The cause was mechanical, not a matter of
+taste, and it is worth writing down because the same mistake is one line away in any
+other sheet:
+
+**`SegmentedPill` divides its width evenly between its options.** That is correct for
+"Borders | Filters" and wrong for `PaperSize.entries`, which has **eight** options whose
+labels carry their dimensions. On a 360 dp phone each segment got ~34 dp, so every label
+was clipped to a fragment — "A4…", "US…", "Ex…". `PdfMargin` and `PdfCompression` had
+the same treatment at four options ("No Man…", "Compac…"). The sheet therefore read as
+a wall of unlabelled bars, and six identical uppercase eyebrows over six equally
+weighted blocks gave no signal about which choices matter on every export (file size,
+password) and which are set once (paper, margins).
+
+### The whole sheet is new; the produced PDF is not
+
+`ui/pdf/PdfExportSheet.kt` was rebuilt. Nothing behind it changed: the same
+`PdfExportConfig`, the same defaults, the same `PdfGenerator.generatePdf` call, so the
+file that comes out is byte-for-byte what it was for the same choices.
+
+| Before | After | Why |
+| :--- | :--- | :--- |
+| Paper size as one segmented bar of 8 equal segments | One row stating the current size, opening a 2-column grid of all 8 with dimensions | Progressive disclosure that still shows the answer; no label can clip |
+| Margins as one bar of 4 equal segments | 2 × 2 of equal chips | Four natural-width chips orphan onto a second line at 360 dp; a deliberate grid cannot |
+| File size as 4 equal segments | 2 × 2 cards, label + what it costs, check on the chosen one | This is the decision made on every export; it deserves the weight |
+| Section titles "PAPER SIZE", "MARGINS", "FILE SIZE", "OUTPUT" | "PAPER", "FILE SIZE", "LAYOUT", "PASSWORD", grouped by weight | Four sections instead of six; the two that matter per-export lead |
+| Switch rows where only the 52 dp switch was tappable | Whole row toggles (`toggleable`, `Role.Switch`) | A thumb aiming at a switch on the right edge is the wrong target on a 300 dp row |
+| No output summary | CTA caption: "12 pages · A4 · Balanced", or the reason it is disabled | Says what the tap will produce before the tap |
+| Progress shown as a label swap only | Same, plus the sheet refuses to be swiped away mid-write | Dismissing cancelled the export and could leave a half-written file |
+| Six equal-size blocks | Paper 1 row · size 2 × 2 · layout card · password card | Hierarchy: one primary, one secondary, two utilities |
+
+Accessibility is part of "not wrong": every choice now uses `selectable(...,
+Role.RadioButton)` instead of `clickable`, so TalkBack announces "A4, selected" rather
+than four identical buttons with no state, and the paper row carries an
+`onClickLabel` ("Choose paper size" / "Hide paper sizes"). Colour is never the only
+signal — the chosen card also has a check mark.
+
+### Also fixed
+
+- The sheet's footer said "written by the system PDF engine" whenever there was no
+  password, but a *lossy* file-size choice also switches to the app's writer. It now
+  accounts for both, and the header explains the chosen level from the enum's own
+  numbers ("JPEG quality 85 · every pixel").
+- The compression detail line was being clipped at 68 dp; the cards are 76 dp so
+  "Looks the same, far smaller" wraps to two lines instead of being cut.
+
+### Review artifact
+
+`docs/design/pdf_export_sheet.png` — three tiles (before, after, after with the paper
+grid open), rendered by `docs/design/render_pdf_sheet.py`, which mirrors the dp values
+in the Kotlin file. **A drawing, not a screenshot**: this sandbox has no JDK or Android
+SDK, so nothing here was compiled or run.
+
+### Signatures
+
+`PdfExportSheet(title, pages, settings, onDismiss, mergeSources, defaultCompression)` is
+unchanged. New private composables: `ExportHeader`, `PaperSizeChooser`, `PaperOption`,
+`CompressionCard`, `ChoiceChip`, `ToggleRow`. New private extensions:
+`PaperSize.shortLabel`/`dimensionsLabel`, `PdfMargin.shortLabel`. New constant
+`CHOICE_MS = 140`. `SegmentedPill` itself is untouched and still used by the editor.
+
 ## 2026-10-26 (late) — Antigravity — Round 33 build verification & compilation fixes
 
 Verified Round 33 changes from Arena.ai. Fixed 3 compilation errors:

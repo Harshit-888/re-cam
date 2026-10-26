@@ -4,9 +4,17 @@ import android.content.Context
 import android.content.Intent
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,7 +33,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CallMerge
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Share
@@ -37,9 +47,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -51,7 +63,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -68,22 +82,53 @@ import com.example.docscanner.model.PdfMargin
 import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.theme.DocShapes
 import com.example.docscanner.theme.pressScale
+import com.example.docscanner.ui.common.Hairline
 import com.example.docscanner.ui.common.InfoPill
 import com.example.docscanner.ui.common.LoadingDots
 import com.example.docscanner.ui.common.SectionLabel
-import com.example.docscanner.ui.common.SegmentedPill
 import com.example.docscanner.util.PdfGenerator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
+import kotlin.math.roundToInt
+
+/** How long a selection colour takes to settle. Short, because it follows a tap. */
+private const val CHOICE_MS = 140
 
 /**
  * The share sheet: everything about the PDF is decided here, in one place.
  *
  * It takes **pages**, not a document, because a merge is just the pages of
  * several documents in a row — the same sheet, the same engine, one file out.
+ *
+ * ## Why this was rebuilt
+ *
+ * The previous revision expressed three of its five choices as `SegmentedPill`,
+ * which divides the available width evenly between its options. That works for
+ * "Borders | Filters" and fails completely here: `PaperSize` has **eight** options
+ * whose labels carry their dimensions ("US Letter (8.5 × 11 in)"), so every segment
+ * was about 34 dp wide and every label was clipped to a fragment — "No Man",
+ * "Compac". `PdfMargin` and `PdfCompression` had the same treatment at four
+ * options, which is why the sheet read as a wall of unlabelled bars. Beyond that,
+ * six identical uppercase eyebrows over six equally weighted blocks gave the eye
+ * nowhere to land: nothing said which choices matter every time (file size,
+ * password) and which are set once and forgotten (paper, margins).
+ *
+ * The sheet is now four weighted sections plus the name, with the two decisions
+ * that matter on every export carrying the visual weight:
+ *
+ * * **Paper** collapses to one row that states the current value and expands into
+ *   a two-column grid of real paper sizes — progressive disclosure with the answer
+ *   still on screen, instead of eight chips competing with everything else.
+ * * **File size** is a 2 × 2 grid of cards, because "smaller file" is the question
+ *   people actually have, and the answer to it should be visible without a scroll.
+ * * **Password** is a single tappable row that opens a field, with the warning
+ *   shown *before* it is needed rather than as red text after an empty field.
+ *
+ * Nothing about the produced PDF changed: same settings, same defaults, same
+ * `PdfGenerator` call. This is the sheet, not the file.
  *
  * @param title what the file is called before the user renames it, and the PDF's
  *   metadata title.
@@ -131,6 +176,9 @@ fun PdfExportSheet(
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
     var isGenerating by remember { mutableStateOf(false) }
+    // Collapsed until asked for: eight paper sizes are a one-time decision, and
+    // eight chips on arrival is what made this sheet feel like a form.
+    var paperExpanded by remember { mutableStateOf(false) }
 
     val totalPages = pages.size
     val safeName = remember(fileName) {
@@ -138,9 +186,24 @@ fun PdfExportSheet(
     }
     val passwordReady = !protect || password.isNotBlank()
     val canExport = !isGenerating && totalPages > 0 && passwordReady
+    // The one line that explains the *chosen* size, instead of four lines that
+    // explain all of them at once.
+    val compressionSummary = remember(compression) { compressionMeta(compression) }
+
+    // A swipe-down is a dismissal, and dismissing is what cancels the export: the
+    // writing coroutine belongs to this composition's scope, so a sheet that slides
+    // away mid-write takes the job with it and can leave a half-written file behind.
+    // Blocking the *gesture* is honest — the button says what is happening and the
+    // caption asks for the screen to stay open — where silently cancelling is not.
+    val sheetState = rememberModalBottomSheetState(
+        confirmValueChange = { value ->
+            !(isGenerating && value == SheetValue.Hidden)
+        }
+    )
 
     ModalBottomSheet(
         onDismissRequest = { if (!isGenerating) onDismiss() },
+        sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
         shape = DocShapes.sheet
     ) {
@@ -149,62 +212,22 @@ fun PdfExportSheet(
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 // A sheet is measured against the *smallest* screen it runs on, and
-                // this one now carries a name field and a password field that the
+                // this one carries a name field and a password field that the
                 // keyboard pushes up. `imePadding` keeps the CTA reachable, and the
                 // scroll keeps everything reachable on a short phone.
                 .imePadding()
                 .verticalScroll(rememberScrollState())
-                .padding(start = 20.dp, end = 20.dp, bottom = 26.dp)
+                .padding(start = 20.dp, end = 20.dp, bottom = 18.dp)
         ) {
-            // ---- header -------------------------------------------------------
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(46.dp)
-                        .clip(DocShapes.iconButton)
-                        .background(MaterialTheme.colorScheme.primaryContainer),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        if (mergeSources.isEmpty()) Icons.Default.PictureAsPdf else Icons.Default.CallMerge,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-                Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        if (mergeSources.isEmpty()) "EXPORT" else "MERGE",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        InfoPill(
-                            "$totalPages ${if (totalPages == 1) "page" else "pages"}",
-                            icon = Icons.Default.Description
-                        )
-                        if (mergeSources.size > 1) {
-                            InfoPill("${mergeSources.size} documents")
-                        } else {
-                            InfoPill(settings.resolution.label)
-                        }
-                        if (protect) {
-                            InfoPill("Protected", icon = Icons.Default.Lock)
-                        }
-                    }
-                }
-            }
+            ExportHeader(
+                title = title,
+                totalPages = totalPages,
+                mergeSources = mergeSources,
+                resolutionLabel = settings.resolution.label,
+                protect = protect
+            )
 
-            Spacer(Modifier.height(22.dp))
+            Spacer(Modifier.height(20.dp))
 
             // ---- name ---------------------------------------------------------
             SectionLabel("File name")
@@ -246,9 +269,7 @@ fun PdfExportSheet(
                 ) {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
                         mergeSources.forEachIndexed { index, document ->
-                            if (index > 0) {
-                                Spacer(Modifier.height(8.dp))
-                            }
+                            if (index > 0) Spacer(Modifier.height(8.dp))
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     "${index + 1}",
@@ -277,38 +298,59 @@ fun PdfExportSheet(
             Spacer(Modifier.height(18.dp))
 
             // ---- paper --------------------------------------------------------
-            SectionLabel("Paper size")
-            SegmentedPill(
-                options = PaperSize.entries.map { it.label },
-                selectedIndex = PaperSize.entries.indexOf(selectedPaperSize),
-                onSelect = { selectedPaperSize = PaperSize.entries[it] },
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(Modifier.height(18.dp))
-
-            // ---- margins ------------------------------------------------------
-            SectionLabel("Margins")
-            SegmentedPill(
-                options = PdfMargin.entries.map { it.label },
-                selectedIndex = PdfMargin.entries.indexOf(selectedMargin),
-                onSelect = { selectedMargin = PdfMargin.entries[it] },
-                modifier = Modifier.fillMaxWidth()
+            SectionLabel("Paper")
+            PaperSizeChooser(
+                selected = selectedPaperSize,
+                expanded = paperExpanded,
+                onToggle = { paperExpanded = !paperExpanded },
+                onSelect = { size ->
+                    selectedPaperSize = size
+                    // Picking a size *is* the answer to the question this row asks,
+                    // so the grid folds away again. Leaving it open would keep the
+                    // rest of the sheet below the fold for no reason.
+                    paperExpanded = false
+                }
             )
 
             Spacer(Modifier.height(18.dp))
 
             // ---- file size ----------------------------------------------------
+            // The decision people actually make on every export, so it gets cards
+            // rather than a line of chips.
             SectionLabel("File size")
-            SegmentedPill(
-                options = PdfCompression.entries.map { it.label },
-                selectedIndex = PdfCompression.entries.indexOf(compression),
-                onSelect = { compression = PdfCompression.entries[it] },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(6.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CompressionCard(
+                        level = PdfCompression.ORIGINAL,
+                        selected = compression == PdfCompression.ORIGINAL,
+                        onClick = { compression = PdfCompression.ORIGINAL },
+                        modifier = Modifier.weight(1f)
+                    )
+                    CompressionCard(
+                        level = PdfCompression.BALANCED,
+                        selected = compression == PdfCompression.BALANCED,
+                        onClick = { compression = PdfCompression.BALANCED },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CompressionCard(
+                        level = PdfCompression.SMALL,
+                        selected = compression == PdfCompression.SMALL,
+                        onClick = { compression = PdfCompression.SMALL },
+                        modifier = Modifier.weight(1f)
+                    )
+                    CompressionCard(
+                        level = PdfCompression.TINY,
+                        selected = compression == PdfCompression.TINY,
+                        onClick = { compression = PdfCompression.TINY },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
             Text(
-                compression.detail,
+                compressionSummary,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 8.dp)
@@ -316,43 +358,44 @@ fun PdfExportSheet(
 
             Spacer(Modifier.height(18.dp))
 
-            // ---- output -------------------------------------------------------
-            SectionLabel("Output")
+            // ---- layout -------------------------------------------------------
+            SectionLabel("Layout")
             Surface(
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
                 shape = DocShapes.cardSmall,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "Footer page numbers",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Medium
-                        )
-                        Text(
-                            "1 / $totalPages at the bottom centre",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+                    // Margins as a 2 × 2 of equal chips. Four equal *segments* was
+                    // the original mistake ("No Man…", "Compac…"); one row of
+                    // natural-width chips does not fit four labels on a 360 dp phone
+                    // either — it leaves a single orphan chip on a second line, which
+                    // reads as a mistake. A deliberate 2 × 2 is stable at every font
+                    // scale, and matches the grid the paper sizes use.
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PdfMargin.entries.chunked(2).forEach { pair ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                pair.forEach { margin ->
+                                    ChoiceChip(
+                                        label = margin.shortLabel,
+                                        selected = margin == selectedMargin,
+                                        onClick = { selectedMargin = margin },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
                     }
-                    Switch(
+                    Spacer(Modifier.height(14.dp))
+                    Hairline()
+                    ToggleRow(
+                        title = "Footer page numbers",
+                        subtitle = "1 / $totalPages at the bottom centre",
                         checked = includePageNumbers,
-                        onCheckedChange = { includePageNumbers = it }
+                        onToggle = { includePageNumbers = !includePageNumbers }
                     )
                 }
             }
-
-            Spacer(Modifier.height(12.dp))
-            Text(
-                "${settings.pageOrientation.label} · ${settings.imageScale.label} image scale",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 8.dp)
-            )
 
             Spacer(Modifier.height(18.dp))
 
@@ -363,35 +406,30 @@ fun PdfExportSheet(
                 shape = DocShapes.cardSmall,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                "Require a password",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                "The PDF asks for it when it is opened",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = protect,
-                            onCheckedChange = { enabled ->
-                                protect = enabled
-                                if (!enabled) {
-                                    password = ""
-                                    passwordVisible = false
-                                }
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    ToggleRow(
+                        title = "Require a password",
+                        subtitle = if (protect) {
+                            "Needed to open the PDF. There is no recovery."
+                        } else {
+                            "Anyone with the file can open it"
+                        },
+                        checked = protect,
+                        onToggle = {
+                            protect = !protect
+                            if (!protect) {
+                                password = ""
+                                passwordVisible = false
                             }
-                        )
-                    }
+                        }
+                    )
 
-                    AnimatedVisibility(visible = protect) {
-                        Column {
-                            Spacer(Modifier.height(12.dp))
+                    AnimatedVisibility(
+                        visible = protect,
+                        enter = fadeIn(tween(CHOICE_MS)) + expandVertically(tween(CHOICE_MS)),
+                        exit = fadeOut(tween(CHOICE_MS)) + shrinkVertically(tween(CHOICE_MS))
+                    ) {
+                        Column(Modifier.padding(bottom = 12.dp)) {
                             OutlinedTextField(
                                 value = password,
                                 onValueChange = { typed ->
@@ -430,12 +468,10 @@ fun PdfExportSheet(
                             )
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                if (password.isBlank()) {
-                                    "Enter the password to continue."
-                                } else if (password.length < 4) {
-                                    "Short. Four characters or more is worth it."
-                                } else {
-                                    "Letters, numbers and symbols. There is no way to recover it."
+                                when {
+                                    password.isBlank() -> "Enter the password to continue."
+                                    password.length < 4 -> "Short. Four characters or more is worth it."
+                                    else -> "Letters, numbers and symbols."
                                 },
                                 style = MaterialTheme.typography.labelMedium,
                                 color = if (password.isBlank()) {
@@ -460,7 +496,7 @@ fun PdfExportSheet(
                 )
             }
 
-            Spacer(Modifier.height(22.dp))
+            Spacer(Modifier.height(20.dp))
 
             ExportCta(
                 label = when {
@@ -468,6 +504,16 @@ fun PdfExportSheet(
                     isGenerating -> "Compiling pages…"
                     mergeSources.size > 1 -> "Merge & share PDF"
                     else -> "Generate & share PDF"
+                },
+                // What the button will actually do, in the user's words, under the
+                // button: the sheet's last line before it commits.
+                caption = when {
+                    isGenerating -> "Keep this screen open until it finishes"
+                    totalPages == 0 -> "Nothing to export yet"
+                    !passwordReady -> "Add a password to continue"
+                    mergeSources.size > 1 -> "$totalPages pages from ${mergeSources.size} documents"
+                    else -> "$totalPages pages · ${selectedPaperSize.shortLabel} · " +
+                        compression.label
                 },
                 busy = isGenerating,
                 enabled = canExport,
@@ -516,70 +562,570 @@ fun PdfExportSheet(
                 }
             )
 
-            if (compression.isLossless && !protect) {
-                Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(10.dp))
+            Text(
+                // Both engines are named because they differ: a passphrase needs the
+                // app's writer, and it is the only thing that changes the output.
+                buildString {
+                    append(settings.pageOrientation.label)
+                    append(" · ")
+                    append(settings.imageScale.label)
+                    append(" · written by ")
+                    // The platform writer can neither encrypt nor compress, so a
+                    // password *or* any lossy level switches engines. Say which one
+                    // is about to write the file.
+                    append(
+                        if (protect || !compression.isLossless) {
+                            "the app's PDF writer"
+                        } else {
+                            "the system PDF engine"
+                        }
+                    )
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 8.dp)
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------- header
+
+/**
+ * Icon, title and the three facts that qualify it.
+ *
+ * The one thing that changes here as the user works is the lock chip, so the
+ * header doubles as a status line: turn protection on and it says so, above
+ * everything else.
+ */
+@Composable
+private fun ExportHeader(
+    title: String,
+    totalPages: Int,
+    mergeSources: List<Document>,
+    resolutionLabel: String,
+    protect: Boolean
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(46.dp)
+                .clip(DocShapes.iconButton)
+                .background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                if (mergeSources.isEmpty()) Icons.Default.PictureAsPdf else Icons.Default.CallMerge,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                if (mergeSources.isEmpty()) "EXPORT" else "MERGE",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                title,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                InfoPill(
+                    "$totalPages ${if (totalPages == 1) "page" else "pages"}",
+                    icon = Icons.Default.Description
+                )
+                if (mergeSources.size > 1) {
+                    InfoPill("${mergeSources.size} documents")
+                } else {
+                    InfoPill(resolutionLabel)
+                }
+                if (protect) {
+                    InfoPill(
+                        "Locked",
+                        icon = Icons.Default.Lock,
+                        container = MaterialTheme.colorScheme.primaryContainer,
+                        content = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+            }
+        }
+    }
+}
+
+// --------------------------------------------------------------- paper chooser
+
+/**
+ * The current paper on one row, the other seven behind it.
+ *
+ * A collapsed row is not a hidden control — it states the value it holds and
+ * looks tappable (a chevron, a container, haptic-free ripple) — so a user who
+ * never opens it still knows which size they are getting.
+ */
+@Composable
+private fun PaperSizeChooser(
+    selected: PaperSize,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onSelect: (PaperSize) -> Unit
+) {
+    val interactions = remember { MutableInteractionSource() }
+    val chevron by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = tween(180),
+        label = "paperChevron"
+    )
+
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = DocShapes.cardSmall,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(DocShapes.cardSmall)
+                    .clickable(
+                        interactionSource = interactions,
+                        indication = ripple(),
+                        // It opens a list, it does not toggle anything: a button that
+                        // says what it does is what a screen reader needs here.
+                        onClickLabel = if (expanded) "Hide paper sizes" else "Choose paper size",
+                        onClick = onToggle
+                    )
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        selected.shortLabel,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        selected.dimensionsLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 Text(
-                    "Lossless pages, written by the system PDF engine.",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 8.dp)
+                    if (expanded) "Done" else "Change",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    Icons.Default.ExpandMore,
+                    // Decorative: the row is one clickable, and its `onClickLabel`
+                    // already says what a tap does. A description here would be
+                    // announced twice.
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .size(20.dp)
+                        .rotate(chevron)
+                )
+            }
+
+            AnimatedVisibility(
+                visible = expanded,
+                enter = fadeIn(tween(CHOICE_MS)) + expandVertically(tween(CHOICE_MS)),
+                exit = fadeOut(tween(CHOICE_MS)) + shrinkVertically(tween(CHOICE_MS))
+            ) {
+                Column(
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Two columns: a paper name plus its dimensions does not fit
+                    // three-up on a small phone, and a wrapped grid reads worse than
+                    // a taller one.
+                    PaperSize.entries.chunked(2).forEach { pair ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            pair.forEach { size ->
+                                PaperOption(
+                                    size = size,
+                                    selected = size == selected,
+                                    onClick = { onSelect(size) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            // Keeps a lone last card the same width as the rest
+                            // instead of stretching it across the row.
+                            if (pair.size == 1) Spacer(Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PaperOption(
+    size: PaperSize,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val interactions = remember { MutableInteractionSource() }
+    val container by animateColorAsState(
+        targetValue = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHighest
+        },
+        animationSpec = tween(CHOICE_MS),
+        label = "paperContainer"
+    )
+    val content = if (selected) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    Column(
+        modifier = modifier
+            .height(54.dp)
+            .pressScale(interactions)
+            .clip(DocShapes.thumbnail)
+            .background(container)
+            // `selectable`, not `clickable`: it publishes *which* option is chosen to
+            // accessibility services, so TalkBack says "A4, selected" instead of
+            // reading four identical buttons. The colour alone is the only other
+            // signal, and colour is not one.
+            .selectable(
+                selected = selected,
+                interactionSource = interactions,
+                indication = ripple(),
+                role = Role.RadioButton,
+                onClick = onClick
+            )
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalArrangement = Arrangement.Center
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                size.shortLabel,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Medium,
+                color = content,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+            if (selected) {
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    Icons.Default.Check,
+                    contentDescription = null,
+                    tint = content,
+                    modifier = Modifier.size(14.dp)
                 )
             }
         }
+        Text(
+            size.dimensionsLabel,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (selected) content.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+// ------------------------------------------------------------- size / chips
+
+/**
+ * One compression level as a card you can compare at a glance.
+ *
+ * The label is the promise and the line under it is the cost, which is the order
+ * people read in: "Balanced" then "looks the same, far smaller". The selected
+ * card is the only one with a filled container and a check, so the current answer
+ * is unmistakable in a row of four.
+ */
+@Composable
+private fun CompressionCard(
+    level: PdfCompression,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val interactions = remember { MutableInteractionSource() }
+    val container by animateColorAsState(
+        targetValue = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
+        animationSpec = tween(CHOICE_MS),
+        label = "compressionContainer"
+    )
+    val content = if (selected) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    Column(
+        modifier = modifier
+            // 76 dp, not 68: the detail line wraps to two lines at half width on a
+            // small phone ("Looks the same, far smaller"), and a clipped second line
+            // is worse than a shorter label.
+            .height(76.dp)
+            .pressScale(interactions)
+            .clip(DocShapes.cardSmall)
+            .background(container)
+            .selectable(
+                selected = selected,
+                interactionSource = interactions,
+                indication = ripple(),
+                role = Role.RadioButton,
+                onClick = onClick
+            )
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.Center
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                level.label,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = content,
+                maxLines = 1,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+            if (selected) {
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    Icons.Default.Check,
+                    contentDescription = null,
+                    tint = content,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(2.dp))
+        Text(
+            level.detail,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (selected) content.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/** A pill that states a choice, sized to its own text. */
+@Composable
+private fun ChoiceChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val interactions = remember { MutableInteractionSource() }
+    val container by animateColorAsState(
+        targetValue = if (selected) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHighest
+        },
+        animationSpec = tween(CHOICE_MS),
+        label = "chipContainer"
+    )
+    val content = if (selected) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Row(
+        modifier = modifier
+            // 40 dp tall: a comfortable target for a two-word label, and tall enough
+            // that the ripple is not the only feedback.
+            .height(40.dp)
+            .pressScale(interactions)
+            .clip(DocShapes.pill)
+            .background(container)
+            .selectable(
+                selected = selected,
+                interactionSource = interactions,
+                indication = ripple(),
+                role = Role.RadioButton,
+                onClick = onClick
+            )
+            .padding(horizontal = 12.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (selected) {
+            Icon(
+                Icons.Default.Check,
+                contentDescription = null,
+                tint = content,
+                modifier = Modifier.size(15.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+            color = content,
+            maxLines = 1
+        )
+    }
+}
+
+/**
+ * A whole row that is a switch.
+ *
+ * The switch is not the only target: tapping the title, the subtitle or the space
+ * between them flips it, because a 52 dp switch on the right edge is a small thing
+ * to aim at with a thumb, and this row is 300 dp wide. The switch is drawn with
+ * `onCheckedChange = null` so the row owns the interaction and a tap on the switch
+ * is not handled twice.
+ */
+@Composable
+private fun ToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onToggle: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(DocShapes.thumbnail)
+            // `toggleable` announces "on/off" and the Switch role; a plain clickable
+            // row reads as an unnamed button that happens to contain a switch.
+            .toggleable(
+                value = checked,
+                role = Role.Switch,
+                onValueChange = { onToggle() }
+            )
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(checked = checked, onCheckedChange = null)
+    }
+}
+
+// ------------------------------------------------------------------- helpers
+
+/** "US Letter (8.5 × 11 in)" → "US Letter" and "8.5 × 11 in". */
+private val PaperSize.shortLabel: String
+    get() = label.substringBefore('(').trim()
+
+private val PaperSize.dimensionsLabel: String
+    get() = label.substringAfter('(', missingDelimiterValue = "").trimEnd(')').trim()
+
+/**
+ * "Compact (10 pt)" → "Compact".
+ *
+ * The point value is a real setting, but it is not what anyone is choosing
+ * between; the chip says the word and the row's own state says which is on.
+ */
+private val PdfMargin.shortLabel: String
+    get() = label.substringBefore('(').trim()
+
+/** What the chosen level actually does, in one line, from the enum's own numbers. */
+private fun compressionMeta(level: PdfCompression): String {
+    val pixels = (level.pixelScale * 100).roundToInt()
+    val resolution = if (pixels >= 100) "every pixel" else "$pixels% of the pixels"
+    return if (level.isLossless) {
+        "Lossless PNG page images · $resolution · largest file"
+    } else {
+        "JPEG quality ${level.jpegQuality} · $resolution · smaller file"
     }
 }
 
 /**
  * The sheet's one primary action.
  *
- * Built by hand rather than from `PillButton` because it carries two states —
- * idle with a share glyph, busy with breathing dots — and a pill can only host a
- * static label.
+ * Built by hand rather than from `PillButton` because it carries two states — idle
+ * with a share glyph, busy with breathing dots — plus a caption that says what the
+ * tap will produce. A pill can only host a static label.
  */
 @Composable
 private fun ExportCta(
     label: String,
+    caption: String,
     busy: Boolean,
     enabled: Boolean,
     onClick: () -> Unit
 ) {
     val interactions = remember { MutableInteractionSource() }
     val enabledAlpha by animateFloatAsState(if (enabled) 1f else 0.45f, label = "ctaAlpha")
-    Surface(
-        color = MaterialTheme.colorScheme.primary,
-        contentColor = MaterialTheme.colorScheme.onPrimary,
-        shape = DocShapes.pill,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(56.dp)
-            .alpha(enabledAlpha)
-            .pressScale(interactions)
-            .clip(DocShapes.pill)
-            .clickable(
-                enabled = enabled,
-                interactionSource = interactions,
-                indication = ripple(),
-                onClick = onClick
-            )
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
+    Column {
+        Surface(
+            color = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+            shape = DocShapes.pill,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .alpha(enabledAlpha)
+                .pressScale(interactions)
+                .clip(DocShapes.pill)
+                .clickable(
+                    enabled = enabled,
+                    interactionSource = interactions,
+                    indication = ripple(),
+                    onClick = onClick
+                )
         ) {
-            if (busy) {
-                LoadingDots(color = MaterialTheme.colorScheme.onPrimary, dotSize = 7.dp)
-                Spacer(Modifier.width(10.dp))
-            } else {
-                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(19.dp))
-                Spacer(Modifier.width(9.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (busy) {
+                    LoadingDots(color = MaterialTheme.colorScheme.onPrimary, dotSize = 7.dp)
+                    Spacer(Modifier.width(10.dp))
+                } else {
+                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(19.dp))
+                    Spacer(Modifier.width(9.dp))
+                }
+                Text(
+                    label,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
             }
-            Text(
-                label,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold
-            )
         }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            caption,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (enabled || busy) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                MaterialTheme.colorScheme.error
+            },
+            maxLines = 2,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp)
+        )
     }
 }
 
