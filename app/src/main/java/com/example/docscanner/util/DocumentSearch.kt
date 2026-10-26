@@ -843,7 +843,7 @@ object DocumentSearch {
         // `null` means "the kernel is absent or unproven"; an empty array is a real
         // answer ("nothing matched") and must not trigger a second walk.
         val triples = NativeSearch.expand(packedVocabulary, queries, maxDistance)
-            ?: return expandReference(vocabulary, queries, maxDistance)
+            ?: return expandReference(vocabulary.asList(), queries, maxDistance)
         val rows = ArrayList<Expansion>(triples.size / 3)
         var index = 0
         while (index + 2 < triples.size) {

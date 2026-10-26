@@ -484,4 +484,4 @@ internal fun isOrphanedPageFile(
     referencedPaths: Set<String>,
     now: Long,
     graceMs: Long = ImageStore.ORPHAN_GRACE_MS
-): Boolean = filePath !in referencedPaths && lastModified <= now - graceMs
+): Boolean = filePath !in referencedPaths && lastModified < now - graceMs

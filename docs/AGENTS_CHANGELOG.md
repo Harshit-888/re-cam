@@ -4,6 +4,18 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-26 (an) — Antigravity — Rounds 25–27 build verification & compilation fixes
+
+Verified Rounds 25 through 27 locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. Resolved 2 issues from Arena's commits:
+
+- `DocumentSearch.kt`:
+  - Resolved `Argument type mismatch: actual type is 'Array<String>', but 'List<String>' was expected` in `runVocabularyWalk` by converting `vocabulary` to `vocabulary.asList()` on call to `expandReference`.
+- `ImageStore.kt`:
+  - Fixed off-by-one grace boundary in `isOrphanedPageFile` (`lastModified < now - graceMs` instead of `<=`), ensuring files at the boundary threshold within the grace period are kept as verified by `OrphanSweepTest`.
+- Build status:
+  - 109 unit tests pass cleanly in 14s (`testDebugUnitTest`).
+  - `app-debug.apk` (65,678,931 bytes) assembled cleanly in 15s (`assembleDebug`).
+
 ## 2026-10-25 (am) — Arena.ai — Round 27: "Magic Search", with the vocabulary walk in Rust
 
 The home screen's search is now **Magic Search**: it finds a document when the query
