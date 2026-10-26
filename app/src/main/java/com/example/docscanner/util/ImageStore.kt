@@ -304,10 +304,24 @@ object ImageStore {
 
     // --------------------------------------------------------------- loading
 
-    /** Decodes with `inSampleSize` chosen for [reqWidth] x [reqHeight]. */
-    fun loadBitmap(context: Context, imageUri: String?, reqWidth: Int, reqHeight: Int): Bitmap? {
+    /**
+     * Decodes with `inSampleSize` chosen for [reqWidth] x [reqHeight].
+     *
+     * [config] exists for the one caller that draws decoration rather than a
+     * document: a library cover is shown at a few hundred pixels behind a ripple
+     * and a scrim, and `RGB_565` halves both its heap footprint and the texture
+     * the GPU uploads for it. Editing, viewing and export always ask for
+     * `ARGB_8888`, which stays the default so nothing can lose colour by accident.
+     */
+    fun loadBitmap(
+        context: Context,
+        imageUri: String?,
+        reqWidth: Int,
+        reqHeight: Int,
+        config: Bitmap.Config = Bitmap.Config.ARGB_8888
+    ): Bitmap? {
         val file = resolveFile(context, imageUri) ?: return null
-        return decodeFile(file, maxOf(reqWidth, reqHeight), Bitmap.Config.ARGB_8888)
+        return decodeFile(file, maxOf(reqWidth, reqHeight), config)
     }
 
     /** Full-fidelity decode, capped at [maxDimension] on the longest edge. */

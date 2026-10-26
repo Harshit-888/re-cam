@@ -208,10 +208,15 @@ fun DocumentDetailScreen(
                     container = MaterialTheme.colorScheme.primaryContainer,
                     content = MaterialTheme.colorScheme.onPrimaryContainer
                 )
-                InfoPill(
-                    text = SimpleDateFormat("MMM d, yyyy", Locale.getDefault())
+                // Remembered, not built in composition: `SimpleDateFormat` parses
+                // its pattern and loads a `DateFormatSymbols` when constructed, and
+                // the previous line did that on every recomposition of this header.
+                // Keyed on the date, because that is the only thing that changes it.
+                val modifiedLabel = remember(document.modifiedDate) {
+                    SimpleDateFormat("MMM d, yyyy", Locale.getDefault())
                         .format(Date(document.modifiedDate))
-                )
+                }
+                InfoPill(text = modifiedLabel)
                 if (document.pages.any { !it.watermarkText.isNullOrBlank() }) {
                     InfoPill(
                         text = "Watermarked",

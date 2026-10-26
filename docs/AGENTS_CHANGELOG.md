@@ -4,6 +4,106 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-26 (pm) — Arena.ai — Round 29: actually running at the panel's rate
+
+Round 29 was "the app is not running on full 120 fps". The measurement was lying as
+much as the frame loop was: every threshold in `PerfTrace` was a 60 Hz constant, so a
+120 Hz panel could drop half its frames and still print a clean report. Both are fixed,
+and the per-frame work the UI was doing has been cut.
+
+Nothing here changes rendering: filter output, geometry, colours and typography are
+untouched. This round is budgets, display mode selection, allocation and texture
+bandwidth only.
+
+### New files
+
+- **`util/FramePacing.kt`** (new, `object FramePacing`):
+  - `apply(window): Float` — picks the fastest `Display.Mode` **only among modes with
+    the same physical resolution as the current one**, sets
+    `window.attributes.preferredDisplayModeId`, and on API 30+ calls
+    `window.setFrameRate(hz, FRAME_RATE_COMPATIBILITY_DEFAULT)`. Never
+    `FIXED_SOURCE`: that would forbid the system from dropping the rate on a static
+    screen. Returns the rate it asked for.
+  - `currentRate(window): Rate` — `Rate(currentHz, maxHz)` with
+    `isLatchedDown = maxHz > currentHz + 1`.
+  - `rateOf(context): Float` — rate without a window; used by `MainActivity`.
+  - Same-resolution-only is deliberate: switching to a mode with a different size
+    reallocates the window surface mid-launch.
+- **`util/FrameBudget.kt`** (new, `internal object`, **pure JVM — no Android types**):
+  all frame-threshold maths, so it can be unit-tested off-device.
+  `budgetNs(hz)`, `missedThresholdNs(hz)` (`MISSED_FRAME_FACTOR 1.5f`), `isMissed`,
+  `isJankyWindow(hz, p90Ns, maxNs)` (`JANK_P90_FACTOR 1.25f`, or max ≥ 2× budget),
+  `bucketOf(intervalNs, buckets)`, `percentile90Ms(histogram)` (`-1` when empty),
+  `fpsOf(meanIntervalNs)`, `decimal`/`decimalMs`. Rates clamped to 30–240 Hz,
+  `DEFAULT_HZ = 60f`.
+
+### Changed
+
+- **`util/PerfTrace.kt`** — rewritten around `FrameBudget`.
+  - New `setDisplayRefreshRate(hz)`; `displayHz` getter. Every threshold, bucket
+    width, the jank test and the p90 are derived from the *display's* rate, not 60.
+  - 1 ms histogram, `HISTOGRAM_BUCKETS 100`, replacing the running percentile
+    estimate; `JANK_P90_NS` and `JANK_MAX_NS` are **gone**.
+  - Each gesture now reports `hz fps frames atBudget% missed p90 avg worst` plus the
+    stage breakdown. The old constants `24_000_000L` / `WINDOW 120` are gone.
+  - `setScrolling`, `install`, `attachWindow`, `detachWindow`, `onCacheHit`,
+    `onThumbnailDecode`, `onPageDecode`, `lastGesture`, `lastWindow`, `isEnabled`
+    are unchanged — Settings and callers need no edits.
+- **`MainActivity.kt`** — `FramePacing.apply(window)` before the first frame, then
+  `PerfTrace.setDisplayRefreshRate(...)` with the rate that was actually applied, so
+  the report is measured against the mode the window is really in.
+- **`theme/Theme.kt`** — `colorScheme` and `accents` are now
+  `remember(darkTheme, accent, dynamicColor)` / `remember(darkTheme, colorScheme)`.
+  They were rebuilt on **every** call, i.e. on every recomposition of anything that
+  reads `DocScannerTheme`, which invalidated colour-derived state app-wide.
+- **`util/ImageStore.kt`** (`loadBitmap(...)`) and **`util/ThumbnailStore.kt`**
+  (`read(...)`) gained `config: Bitmap.Config = ARGB_8888`. Existing call sites are
+  unchanged.
+- **`util/PageImageLoader.kt`** — new `configFor(w, h)`: `RGB_565` when
+  `maxOf(w, h) <= OPAQUE_TILE_LIMIT (1024)`, else `ARGB_8888`. Grid/list thumbnails
+  and the filmstrip hit the halved-byte path; the page viewer (1600×2200) and the
+  editor keep `ARGB_8888`. Scanned text is exactly what bands in 565, so the limit is
+  deliberately low and the lossless page path is untouched.
+- **`ui/dashboard/DashboardScreen.kt`** — the large one.
+  - `selectionOrderById: Map<String, Int>`, built once per selection change,
+    replaces the two O(selection) scans that ran **per card** per recomposition.
+  - `toggle(selection, id)` helper; `toggleSelection` is **removed**.
+  - One stable instance each of `openDocument`, `longPressDocument`,
+    `deleteDocument`, `moveDocumentToFolder`, `endSelection`, created once per screen
+    (`remember` + `rememberUpdatedState` for the navigation callback). Previously a
+    fresh lambda per card per recomposition, which made every card a changed
+    parameter and defeated skipping entirely.
+  - **Signature change:** `DocumentGridCard` / `DocumentListCard` now take
+    `onOpen`, `onLongPress`, `onDelete`, `onMoveToFolder`, all
+    `(String) -> Unit` — they were `onClick`/`onLongClick`/`onDelete`/`onMoveToFolder`
+    with captured per-document lambdas. All call sites are updated in this commit.
+- **`ui/detail/DocumentDetailScreen.kt`** — the modified-date pill's
+  `SimpleDateFormat` is `remember`ed on `document.modifiedDate` instead of being
+  constructed and thrown away on every recomposition of the header.
+- **`ui/settings/SettingsScreen.kt`** — the Performance (debug) legend prints the
+  panel's Hz and the resulting ms/frame from `PerfTrace.displayHz`, and explains what
+  `atBudget%` means. `java.util.Locale` imported for the formatted numbers.
+
+### Tests
+
+- **`app/src/test/java/com/example/docscanner/util/FrameBudgetTest.kt`** (new, 12
+  tests) — budget/missed/jank/p90/fps/decimal. The one that matters:
+  `isMissed(60f, 16ms) == false` but `isMissed(120f, 16ms) == true`, which is exactly
+  the failure the old instrumentation could not see.
+
+### Unchanged and must stay unchanged
+
+Filter kernels, geometry, border detection, PDF output, OCR, Magic Search ranking.
+`RGB_565` is opt-in by size and never reaches the editor or the lossless PNG bake.
+
+### Not done / verified on device
+
+- `preferredDisplayModeId` only helps where the panel exposes more than one mode at
+  the same resolution; the report now shows the rate that was actually granted, so
+  `hz=60` on a 120 Hz panel is visible rather than assumed.
+- The native cover pipeline (Rust) is still gated on a measurement showing decode,
+  not composition, as the bottleneck. No `jniLibs` change this round.
+
 ## 2026-10-26 (an) — Antigravity — Rounds 25–27 build verification & compilation fixes
 
 Verified Rounds 25 through 27 locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. Resolved 2 issues from Arena's commits:

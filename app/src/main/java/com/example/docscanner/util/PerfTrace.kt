@@ -9,7 +9,6 @@ import android.util.Log
 import android.view.Choreographer
 import android.view.FrameMetrics
 import android.view.Window
-import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,17 +24,34 @@ import kotlinx.coroutines.flow.asStateFlow
  * scheduled off the main thread that is now fighting for CPU* (image decoding) —
  * which are fixed in completely different ways.
  *
- * ```
+ * ```bash
  * adb logcat -s DocScannerPerf
  * ```
  *
- * A healthy fling on a 60 Hz device prints `p90≈17ms max≈30ms`; the counters show
- * whether covers came from the memory cache (the common case), from the stored
- * thumbnail, or from a full page decode (which should be near zero once a library
- * has been primed).
+ * # Budgets come from the panel, not from a constant
  *
- * The same two lines are mirrored into [lastGesture] and [lastWindow] and rendered
- * by Settings → Performance, because a number that needs `adb`, a cable and a
+ * The previous revision compared every frame against a **60 Hz** budget: a "slow"
+ * frame was anything over 24 ms and a janky window had a p90 over 18 ms. On a
+ * 120 Hz display the slot is 8.33 ms, so every frame between 8.3 and 16.6 ms — a
+ * dropped frame, twice as long as it should have been — was reported as `smooth`.
+ * The instrumentation could not see the problem it was pointed at.
+ *
+ * So the budget is now read from the display ([setDisplayRefreshRate], called by
+ * `MainActivity` after `FramePacing.apply`), and every number is reported relative
+ * to it:
+ *
+ * | metric | meaning |
+ * | :--- | :--- |
+ * | `hz` | the rate the panel is running at, as reported by the platform |
+ * | `fps` | 1e9 / mean frame interval — what was actually delivered |
+ * | `atBudget` | share of intervals that fitted in **1.5 x budget**, i.e. frames that did not miss a vsync |
+ * | `missed` | the complement: frames that took more than one and a half slots |
+ * | `p90` | 90th-percentile interval, from a 1 ms histogram |
+ *
+ * A perfect 120 Hz fling reads `hz=120 fps≈120 atBudget=100% missed=0 p90=8ms`.
+ *
+ * The same lines are mirrored into [lastGesture] and [lastWindow] and rendered by
+ * Settings → Performance, because a number that needs `adb`, a cable and a
  * computer to read is a number that never gets reported.
  *
  * Release builds never install the callback: [install] checks the debug flag, and
@@ -46,17 +62,27 @@ object PerfTrace {
 
     private const val TAG = "DocScannerPerf"
 
-    /** Frames per reported window: two seconds at 60 Hz. */
+    /** Frames per reported window: one second at 120 Hz, two at 60. */
     private const val WINDOW = 120
-
-    /** p90 above this means the scroll was visibly uneven. */
-    private const val JANK_P90_NS = 18_000_000L
-
-    /** A single frame over this is a dropped frame at 60 Hz. */
-    private const val JANK_MAX_NS = 30_000_000L
 
     @Volatile
     private var installed = false
+
+    /**
+     * The panel's rate. Set from the window's display; 60 until something says
+     * otherwise, because 60 is the one rate every Android device supports and a
+     * wrong-but-safe budget beats an optimistic one that hides jank.
+     */
+    @Volatile
+    private var refreshRateHz: Float = 60f
+
+    /** One vsync slot, in nanoseconds, for the current display. */
+    private val frameBudgetNs: Long
+        get() = FrameBudget.budgetNs(refreshRateHz)
+
+    /** The interval above which a frame missed its slot. */
+    private val missedThresholdNs: Long
+        get() = FrameBudget.missedThresholdNs(refreshRateHz)
 
     /**
      * The two lines the monitor would have printed, for the debug readout in
@@ -75,6 +101,9 @@ object PerfTrace {
 
     /** True when the frame monitor is running: debug builds only. */
     val isEnabled: Boolean get() = installed
+
+    /** The rate being budgeted against, for the Settings readout. */
+    val displayHz: Float get() = refreshRateHz
 
     /**
      * Where a frame's time went, per gesture.
@@ -107,6 +136,16 @@ object PerfTrace {
     private var lastFrameNanos = 0L
     private var windows = 0
 
+    /**
+     * Per-gesture interval histogram, in 1 ms buckets.
+     *
+     * A fling can deliver thousands of frames; storing each interval to sort them
+     * would mean a growing array on the frame path — the one thing that must not
+     * allocate. A fixed 100-bucket histogram gives an exact-enough p90 in O(1)
+     * memory, and `p90 = 8ms` is precise enough to act on.
+     */
+    private val gestureHistogram = IntArray(HISTOGRAM_BUCKETS)
+
     private val cacheHits = AtomicInteger()
     private val thumbDecodes = AtomicInteger()
     private val pageDecodes = AtomicInteger()
@@ -119,29 +158,55 @@ object PerfTrace {
     @Volatile
     private var scrolling = false
     private var gestureFrames = 0
-    private var gestureJank = 0
+    private var gestureMissed = 0
     private var gestureWorstNs = 0L
     private var gestureTotalNs = 0L
+    private var gestureAtBudget = 0
 
     /** Told by the list when a scroll gesture starts and ends. */
     fun setScrolling(value: Boolean) {
         if (!installed) return
         if (value == scrolling) return
         if (value) {
-            gestureFrames = 0
-            gestureJank = 0
-            gestureWorstNs = 0L
-            gestureTotalNs = 0L
-            gestureSyncNs = 0L
-            gestureLayoutNs = 0L
-            gestureDrawNs = 0L
-            gestureCommandNs = 0L
-            gestureGpuNs = 0L
-            gestureSamples = 0
+            resetGesture()
             scrolling = true
         } else {
             scrolling = false
             reportGesture()
+        }
+    }
+
+    private fun resetGesture() {
+        gestureFrames = 0
+        gestureMissed = 0
+        gestureWorstNs = 0L
+        gestureTotalNs = 0L
+        gestureAtBudget = 0
+        gestureSyncNs = 0L
+        gestureLayoutNs = 0L
+        gestureDrawNs = 0L
+        gestureCommandNs = 0L
+        gestureGpuNs = 0L
+        gestureSamples = 0
+        gestureHistogram.fill(0)
+    }
+
+    /**
+     * Sets the rate every frame is judged against.
+     *
+     * Called by `MainActivity` once `FramePacing` has asked the display for its
+     * fastest mode — the rate that comes back is the one the app actually gets, not
+     * the one the panel could theoretically do.
+     */
+    fun setDisplayRefreshRate(hz: Float) {
+        if (hz <= 1f) return
+        if (kotlin.math.abs(hz - refreshRateHz) < 0.5f) return
+        refreshRateHz = hz
+        if (installed) {
+            Log.i(
+                TAG,
+                "display ${hz.toInt()} Hz, frame budget ${decimalMs(frameBudgetNs)} ms"
+            )
         }
     }
 
@@ -155,6 +220,9 @@ object PerfTrace {
             if (installed) return
             installed = true
         }
+        // A best-effort rate before the Activity has a window; `MainActivity`
+        // refines it immediately afterwards with the real mode.
+        setDisplayRefreshRate(FramePacing.rateOf(context))
         val choreographer = Choreographer.getInstance()
         choreographer.postFrameCallback(object : Choreographer.FrameCallback {
             override fun doFrame(frameTimeNanos: Long) {
@@ -162,7 +230,10 @@ object PerfTrace {
                 choreographer.postFrameCallback(this)
             }
         })
-        Log.i(TAG, "frame monitor on, window = $WINDOW frames")
+        Log.i(
+            TAG,
+            "frame monitor on, window = $WINDOW frames, budget = ${decimalMs(frameBudgetNs)} ms"
+        )
     }
 
     /**
@@ -219,7 +290,7 @@ object PerfTrace {
         if (installed) thumbDecodes.incrementAndGet()
     }
 
-    /** A cover came from a full page decode: the path this round set out to remove. */
+    /** A cover came from a full page decode: the path the scroll work set out to remove. */
     fun onPageDecode() {
         if (installed) pageDecodes.incrementAndGet()
     }
@@ -238,20 +309,23 @@ object PerfTrace {
             gestureFrames++
             gestureTotalNs += delta
             if (delta > gestureWorstNs) gestureWorstNs = delta
-            // 24 ms is the threshold the Android runtime itself uses for a
-            // "slow frame" on a 60 Hz display.
-            if (delta > 24_000_000L) gestureJank++
+            if (delta <= missedThresholdNs) gestureAtBudget++ else gestureMissed++
+            gestureHistogram[FrameBudget.bucketOf(delta, HISTOGRAM_BUCKETS)]++
         }
     }
 
     /**
-     * One line per gesture. On a 60 Hz phone, `avg` should be ≈16.7 ms and `jank`
-     * should be 0; anything else is the thing to fix, and it says how much.
+     * One line per gesture.
+     *
+     * Read it as: `atBudget` is the score, `missed` is how many frames were late,
+     * and the stage breakdown says whose work those late frames were. On a 120 Hz
+     * phone the target is `fps≈120 atBudget=100% missed=0`.
      */
     private fun reportGesture() {
         if (gestureFrames == 0) return
         val average = gestureTotalNs / gestureFrames
-        val verdict = if (gestureJank == 0) "smooth" else "JANK"
+        val verdict = if (gestureMissed == 0) "smooth" else "JANK"
+        val atBudget = gestureAtBudget * 100 / gestureFrames
         // Where the frame went, averaged per frame. The first four add up to roughly
         // the frame's main-thread cost; a large `draw`/`gpu` with a small `sync`/
         // `layout` means the pixels are the problem, not the composition.
@@ -264,8 +338,10 @@ object PerfTrace {
         } else {
             ""
         }
-        val line = "$verdict scroll frames=$gestureFrames slow=$gestureJank " +
-            "avg=${ms(average)} worst=${ms(gestureWorstNs)}$stages " +
+        val line = "$verdict scroll hz=${refreshRateHz.toInt()} " +
+            "fps=${FrameBudget.decimal(FrameBudget.fpsOf(average))} " +
+            "frames=$gestureFrames atBudget=$atBudget% missed=$gestureMissed " +
+            "p90=${p90Label()} avg=${decimalMs(average)} worst=${decimalMs(gestureWorstNs)}$stages " +
             // Read, never reset: the two-second window report owns the reset,
             // so a gesture line must not steal its counts.
             "cacheHits=${cacheHits.get()} thumbs=${thumbDecodes.get()} " +
@@ -280,14 +356,19 @@ object PerfTrace {
         val p50 = sorted[WINDOW / 2]
         val p90 = sorted[(WINDOW * 9) / 10]
         val max = sorted[WINDOW - 1]
-        val janky = p90 >= JANK_P90_NS || max >= JANK_MAX_NS
+        // Both thresholds scale with the panel: 1.25 x budget at p90 is a window
+        // that visibly hitched, and one frame over two slots is a dropped frame
+        // whatever the refresh rate is.
+        val janky = FrameBudget.isJankyWindow(refreshRateHz, p90, max)
 
         // A clean window is only worth a line occasionally, so a healthy session
         // does not fill the log with noise that hides the interesting window.
         windows++
         if (!janky && windows % 5 != 0) return
 
-        val detail = "frames=$WINDOW p50=${ms(p50)} p90=${ms(p90)} max=${ms(max)} " +
+        val detail = "hz=${refreshRateHz.toInt()} frames=$WINDOW " +
+            "fps=${FrameBudget.decimal(FrameBudget.fpsOf(p50))} p50=${decimalMs(p50)} " +
+            "p90=${decimalMs(p90)} max=${decimalMs(max)} " +
             "cacheHits=${cacheHits.getAndSet(0)} thumbs=${thumbDecodes.getAndSet(0)} " +
             "pageDecodes=${pageDecodes.getAndSet(0)}"
         val line = if (janky) "JANK $detail" else "smooth $detail"
@@ -295,13 +376,29 @@ object PerfTrace {
         _lastWindow.value = line
     }
 
-    private fun ms(nanos: Long): String = "${nanos / 1_000_000}ms"
+    /**
+     * 90th-percentile frame interval for the gesture, from the 1 ms histogram.
+     *
+     * `8ms` for a p90 that lives in the 8 ms bucket is as precise as a frame time
+     * needs to be, and it costs no allocation on the frame path. Arithmetic lives in
+     * [FrameBudget] so it can be tested without a device.
+     */
+    private fun p90Label(): String {
+        val p90 = FrameBudget.percentile90Ms(gestureHistogram)
+        return when {
+            p90 < 0 -> "0ms"
+            p90 >= HISTOGRAM_BUCKETS -> ">${HISTOGRAM_BUCKETS - 1}ms"
+            else -> "${p90}ms"
+        }
+    }
 
     /**
      * One decimal place: a stage average of 0.4 ms must not print as `0ms`, or a
      * frame that spent its time in the GPU would look like a frame that spent
      * nothing anywhere. `Locale.US` so the separator is always a dot.
      */
-    private fun decimalMs(nanos: Long): String =
-        String.format(Locale.US, "%.1f", nanos / 1_000_000.0)
+    private fun decimalMs(nanos: Long): String = FrameBudget.decimalMs(nanos)
+
+    /** 1 ms buckets up to 99 ms; anything slower lands in the last one. */
+    private const val HISTOGRAM_BUCKETS = 100
 }

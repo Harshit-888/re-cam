@@ -217,12 +217,44 @@ fun DashboardScreen(
     var isSelecting by remember { mutableStateOf(false) }
     var selection by remember { mutableStateOf<List<String>>(emptyList()) }
     var mergeRequest by remember { mutableStateOf<List<Document>>(emptyList()) }
-    val toggleSelection: (String) -> Unit = { id ->
-        selection = if (selection.contains(id)) selection - id else selection + id
+    val endSelection: () -> Unit = remember {
+        {
+            isSelecting = false
+            selection = emptyList()
+        }
     }
-    val endSelection: () -> Unit = {
-        isSelecting = false
-        selection = emptyList()
+
+    // One instance of each callback, for the life of the screen.
+    //
+    // These used to be written inline inside the lazy item lambdas, which meant a
+    // *new* function object for every visible card on every recomposition of the
+    // list. Compose compares parameters by equality, so a fresh lambda is a changed
+    // parameter: the card could never be skipped and re-ran its body — thumbnail
+    // lookup, text layout — for the same unchanged document. Hoisting them to one
+    // stable instance is what lets a card that did not change cost nothing.
+    //
+    // They read the delegated states rather than capturing their values, so they
+    // always see the current selection and the current navigation callback without
+    // needing to be recreated.
+    val navigateToDetail by rememberUpdatedState(onNavigateToDetail)
+    val openDocument: (String) -> Unit = remember {
+        { id -> if (isSelecting) selection = toggle(selection, id) else navigateToDetail(id) }
+    }
+    val longPressDocument: (String) -> Unit = remember {
+        { id ->
+            if (isSelecting) {
+                selection = toggle(selection, id)
+            } else {
+                isSelecting = true
+                selection = listOf(id)
+            }
+        }
+    }
+    val deleteDocument: (String) -> Unit = remember {
+        { id -> repository.moveToTrash(id) }
+    }
+    val moveDocumentToFolder: (String) -> Unit = remember {
+        { id -> moveDocId = id }
     }
     // Back leaves selection, not the screen. Without this the gesture that
     // everyone uses to cancel a mode would navigate away from the library with
@@ -279,6 +311,23 @@ fun DashboardScreen(
     // so the card can emphasise the words instead of showing an unexplained sentence.
     val hitsByDocument = remember(searchHits) {
         searchHits.mapNotNull { hit -> hit.snippet?.let { hit.document.id to hit } }.toMap()
+    }
+
+    // Merge order as a lookup, not a scan.
+    //
+    // Every visible card asks "am I selected, and if so, which number?" while the
+    // user is scrolling. `selection.contains(id)` and `selection.indexOf(id)` are
+    // two linear scans of the selection list per card per recomposition; with a map
+    // built once per selection change, both are a hash lookup that allocates
+    // nothing.
+    val selectionOrderById = remember(selection) {
+        if (selection.isEmpty()) {
+            emptyMap<String, Int>()
+        } else {
+            HashMap<String, Int>(selection.size).apply {
+                selection.forEachIndexed { index, id -> put(id, index + 1) }
+            }
+        }
     }
 
     // Keyed on *whether* a query is active, not on the query text: while the user
@@ -678,22 +727,13 @@ fun DashboardScreen(
                             coverSize = coverSize,
                             snippet = hitsByDocument[doc.id]?.snippet,
                             snippetHighlights = hitsByDocument[doc.id]?.highlights.orEmpty(),
-                            onClick = {
-                                if (isSelecting) toggleSelection(doc.id) else onNavigateToDetail(doc.id)
-                            },
-                            onLongClick = {
-                                if (isSelecting) {
-                                    toggleSelection(doc.id)
-                                } else {
-                                    isSelecting = true
-                                    selection = listOf(doc.id)
-                                }
-                            },
-                            onDelete = { repository.moveToTrash(doc.id) },
-                            onMoveToFolder = { moveDocId = doc.id },
+                            onOpen = openDocument,
+                            onLongPress = longPressDocument,
+                            onDelete = deleteDocument,
+                            onMoveToFolder = moveDocumentToFolder,
                             selectionMode = isSelecting,
-                            selected = selection.contains(doc.id),
-                            selectionOrder = selection.indexOf(doc.id) + 1
+                            selected = selectionOrderById[doc.id] != null,
+                            selectionOrder = selectionOrderById[doc.id] ?: 0
                         )
                     }
                 }
@@ -714,22 +754,13 @@ fun DashboardScreen(
                             dateLabel = dateLabels[doc.id]?.long.orEmpty(),
                             snippet = hitsByDocument[doc.id]?.snippet,
                             snippetHighlights = hitsByDocument[doc.id]?.highlights.orEmpty(),
-                            onClick = {
-                                if (isSelecting) toggleSelection(doc.id) else onNavigateToDetail(doc.id)
-                            },
-                            onLongClick = {
-                                if (isSelecting) {
-                                    toggleSelection(doc.id)
-                                } else {
-                                    isSelecting = true
-                                    selection = listOf(doc.id)
-                                }
-                            },
-                            onDelete = { repository.moveToTrash(doc.id) },
-                            onMoveToFolder = { moveDocId = doc.id },
+                            onOpen = openDocument,
+                            onLongPress = longPressDocument,
+                            onDelete = deleteDocument,
+                            onMoveToFolder = moveDocumentToFolder,
                             selectionMode = isSelecting,
-                            selected = selection.contains(doc.id),
-                            selectionOrder = selection.indexOf(doc.id) + 1
+                            selected = selectionOrderById[doc.id] != null,
+                            selectionOrder = selectionOrderById[doc.id] ?: 0
                         )
                     }
                 }
@@ -946,6 +977,16 @@ private fun prefetchRow(
         scope.launch { PageImageLoader.prefetch(context, cover, size.width, size.height) }
     }
 }
+
+/**
+ * Adds [id] to the merge selection, or removes it.
+ *
+ * A pure function on the list so the callbacks above can be created once: `list +`
+ * and `list -` return a new list either way, and the order the user tapped is the
+ * order the pages land in the merged PDF.
+ */
+private fun toggle(selection: List<String>, id: String): List<String> =
+    if (selection.contains(id)) selection - id else selection + id
 
 /** Pre-formatted dates for one document, built once per library change. */
 private data class DateLabels(val short: String, val long: String)
@@ -1291,10 +1332,11 @@ fun DocumentGridCard(
     document: Document,
     dateLabel: String,
     coverSize: IntSize,
-    onClick: () -> Unit,
-    onDelete: () -> Unit,
-    onMoveToFolder: () -> Unit,
-    onLongClick: () -> Unit = {},
+    /** Tap: open, or toggle in selection mode. One instance for the whole screen. */
+    onOpen: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onMoveToFolder: (String) -> Unit,
+    onLongPress: (String) -> Unit,
     snippet: String? = null,
     /** Ranges inside [snippet] that matched, for emphasis. */
     snippetHighlights: List<IntRange> = emptyList(),
@@ -1331,8 +1373,8 @@ fun DocumentGridCard(
             .combinedClickable(
                 interactionSource = interactions,
                 indication = ripple(),
-                onClick = onClick,
-                onLongClick = onLongClick
+                onClick = { onOpen(document.id) },
+                onLongClick = { onLongPress(document.id) }
             )
     ) {
         Column {
@@ -1383,8 +1425,8 @@ fun DocumentGridCard(
                         DocumentMenu(
                             expanded = showMenu,
                             onDismiss = { showMenu = false },
-                            onMoveToFolder = onMoveToFolder,
-                            onDelete = onDelete
+                            onMoveToFolder = { onMoveToFolder(document.id) },
+                            onDelete = { onDelete(document.id) }
                         )
                     }
                 }
@@ -1432,10 +1474,11 @@ fun DocumentGridCard(
 fun DocumentListCard(
     document: Document,
     dateLabel: String,
-    onClick: () -> Unit,
-    onDelete: () -> Unit,
-    onMoveToFolder: () -> Unit,
-    onLongClick: () -> Unit = {},
+    /** Tap: open, or toggle in selection mode. One instance for the whole screen. */
+    onOpen: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onMoveToFolder: (String) -> Unit,
+    onLongPress: (String) -> Unit,
     snippet: String? = null,
     /** Ranges inside [snippet] that matched, for emphasis. */
     snippetHighlights: List<IntRange> = emptyList(),
@@ -1457,8 +1500,8 @@ fun DocumentListCard(
             .combinedClickable(
                 interactionSource = interactions,
                 indication = ripple(),
-                onClick = onClick,
-                onLongClick = onLongClick
+                onClick = { onOpen(document.id) },
+                onLongClick = { onLongPress(document.id) }
             )
     ) {
         Row(
@@ -1534,8 +1577,8 @@ fun DocumentListCard(
                     DocumentMenu(
                         expanded = showMenu,
                         onDismiss = { showMenu = false },
-                        onMoveToFolder = onMoveToFolder,
-                        onDelete = onDelete
+                        onMoveToFolder = { onMoveToFolder(document.id) },
+                        onDelete = { onDelete(document.id) }
                     )
                 }
             }

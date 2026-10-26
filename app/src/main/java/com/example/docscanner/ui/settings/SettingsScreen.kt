@@ -71,6 +71,7 @@ import com.example.docscanner.model.PaperSize
 import com.example.docscanner.model.ThemeMode
 import com.example.docscanner.util.NativeSearch
 import com.example.docscanner.util.PerfTrace
+import java.util.Locale
 
 /**
  * Preferences screen.
@@ -315,8 +316,11 @@ fun SettingsScreen(
                         )
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "avg ≈ 17 ms is one 60 Hz frame. Large sync/layout means the " +
-                                "app's own composition; large draw/cmd/gpu means pixels and " +
+                            "Panel: ${PerfTrace.displayHz.toInt()} Hz " +
+                                "(${String.format(Locale.US, "%.1f", 1000f / PerfTrace.displayHz)} ms " +
+                                "per frame). atBudget is the share of frames that did not miss " +
+                                "a vsync — that is the number to move. Large sync/layout means " +
+                                "the app's own composition; large draw/cmd/gpu means pixels and " +
                                 "textures. pageDecodes should be 0 once the library is warm.",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant

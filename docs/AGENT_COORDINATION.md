@@ -886,6 +886,86 @@ a user ever sees a wrong result.
 4. Type `-draft` after a word to confirm exclusion, and `2024` alone to confirm the
    year path.
 
+## 6s. Running at the panel's rate: FramePacing, FrameBudget and the draw-path cleanup (Arena, 2026-10-26, round 29)
+
+### What changed, and the one thing that did not
+
+The report said the app was not reaching 120 fps. Two independent causes, both fixed:
+
+1. **The instrumentation could not see it.** Every threshold in `PerfTrace` was a
+   60 Hz constant, so on a 120 Hz panel a frame could take 16 ms — twice its 8.33 ms
+   slot — and still count as on time. All of that maths now lives in
+   `util/FrameBudget.kt` and is derived from the rate the display actually gave us.
+2. **Nothing ever asked for the mode.** The window took whatever the system had
+   chosen, which on many panels is 60 Hz until an app asks otherwise.
+   `util/FramePacing.kt` now sets `preferredDisplayModeId` (fastest mode **at the same
+   physical resolution**) and `setFrameRate(hz, FRAME_RATE_COMPATIBILITY_DEFAULT)`.
+
+**No rendering changed.** Filters, geometry, colours, typography, PDF bytes, OCR and
+search ranking are byte-identical to round 28.
+
+### Files
+
+| file | what it is for |
+| :--- | :--- |
+| `util/FramePacing.kt` | chooses and requests the display mode; `apply`, `currentRate`, `rateOf` |
+| `util/FrameBudget.kt` | **pure JVM**, no Android types — budget, missed, jank, histogram p90, fps |
+| `util/PerfTrace.kt` | display-aware monitor; every threshold now comes from `FrameBudget` |
+| `MainActivity.kt` | `FramePacing.apply(window)` before the first frame, then `setDisplayRefreshRate` |
+| `theme/Theme.kt` | `colorScheme`/`accents` are `remember`ed instead of rebuilt per call |
+| `util/PageImageLoader.kt` | `configFor(w,h)`; `RGB_565` for tiles ≤ 1024 px |
+| `ui/dashboard/DashboardScreen.kt` | selection map, one stable callback set per screen |
+| `ui/detail/DocumentDetailScreen.kt` | date pill's `SimpleDateFormat` remembered |
+| `ui/settings/SettingsScreen.kt` | legend prints panel Hz and ms/frame |
+
+### The contract that must not drift
+
+| fact | where |
+| :--- | :--- |
+| budget = `1e9 / clamp(hz, 30, 240)` | `FrameBudget.budgetNs` |
+| missed = interval > **1.5×** budget | `FrameBudget.MISSED_FRAME_FACTOR` |
+| jank window = p90 ≥ **1.25×** budget **or** max ≥ 2× budget | `FrameBudget.isJankyWindow` |
+| the rate used for thresholds is the one **granted**, not the one requested | `MainActivity` → `PerfTrace.setDisplayRefreshRate` |
+| `RGB_565` only where `maxOf(w,h) ≤ 1024` | `PageImageLoader.OPAQUE_TILE_LIMIT` |
+| card callbacks are `(String) -> Unit`, one instance per screen | `DashboardScreen` |
+
+`isMissed(60f, 16ms) == false` and `isMissed(120f, 16ms) == true` is pinned in
+`FrameBudgetTest`: it is the exact blindness that made round 28 look smooth.
+
+### Do not undo
+
+- **`FRAME_RATE_COMPATIBILITY_DEFAULT`, never `FIXED_SOURCE`.** Fixed-source stops
+  the system from dropping the rate on a static screen and costs battery for nothing.
+- **Same-resolution modes only** in `FramePacing.fastestMode`. A different size
+  reallocates the window surface during launch.
+- **`RGB_565` must stay at ≤ 1024 px.** Scanned text is what bands in 565; the page
+  viewer (1600×2200), the editor and the lossless PNG bake must get `ARGB_8888`.
+- **The remembered theme palettes.** Rebuilding a `ColorScheme` per call invalidates
+  every colour-derived state in the app, which is most of it.
+- **The stable dashboard callbacks.** Inline lambdas in a `LazyVerticalGrid` item are a
+  changed parameter on every recomposition; the card then re-runs thumbnail lookup
+  and text layout for a document that did not change.
+
+### How to verify on a device
+
+1. `./gradlew testDebugUnitTest` — `FrameBudgetTest` is 12 pure-JVM tests, no device.
+2. `adb logcat -s DocScannerPerf` while flinging the library. A healthy line on a
+   120 Hz panel is `fps` within a frame or two of `hz`, `missed=0`, `atBudget` in the
+   high 90s. `hz=60` on a 120 Hz panel means the panel offered no other mode at the
+   same resolution — not a bug in this code.
+3. Settings → **Performance (debug)** shows the same numbers without adb, plus the
+   ms/frame the current rate implies.
+4. If `sync`/`layout` dominate the stage breakdown, it is still composition. If
+   `draw`/`cmd`/`gpu` dominate, it is pixels and textures — that is the only case
+   where the native cover pipeline is worth measuring.
+
+### Still open
+
+- `.entrance()` on the home header is not yet keyed to entry, so it can re-run.
+- Thumbnail **cache-miss** decode is still Kotlin; the Rust cover pipeline is
+  deliberately not written until a device report says decode is the bottleneck.
+- `ImageStore.loadBitmap` recycle audit is unfinished.
+
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-26 (`./gradlew assembleDebug testDebugUnitTest` passed).

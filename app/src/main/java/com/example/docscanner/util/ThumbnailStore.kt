@@ -130,7 +130,13 @@ object ThumbnailStore {
      * ignores the density hint, the result is simply what this method used to
      * return — the caller still scales, so this can only be faster, never wrong.
      */
-    fun read(context: Context, key: String, reqWidth: Int, reqHeight: Int): Bitmap? {
+    fun read(
+        context: Context,
+        key: String,
+        reqWidth: Int,
+        reqHeight: Int,
+        config: Bitmap.Config = Bitmap.Config.ARGB_8888
+    ): Bitmap? {
         val source = file(context, key)
         if (!source.isFile || source.length() == 0L) return null
         return runCatching {
@@ -146,7 +152,7 @@ object ThumbnailStore {
             val sampledLong = maxOf(bounds.outWidth, bounds.outHeight) / sample.coerceAtLeast(1)
             val options = BitmapFactory.Options().apply {
                 inSampleSize = sample
-                inPreferredConfig = Bitmap.Config.ARGB_8888
+                inPreferredConfig = config
                 if (sampledLong > targetLong && targetLong > 0) {
                     // Densities are just a ratio here: the source's own long edge
                     // against the long edge of the box the tile draws into.

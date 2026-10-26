@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.model.ThemeMode
 import com.example.docscanner.theme.DocScannerTheme
+import com.example.docscanner.util.FramePacing
 import com.example.docscanner.util.PerfTrace
 
 class MainActivity : ComponentActivity() {
@@ -38,11 +39,20 @@ class MainActivity : ComponentActivity() {
         // below, because the user can override the system light/dark setting.
         enableEdgeToEdge()
 
+        // Ask the display for its fastest mode *before* the first frame is laid
+        // out. A high-refresh panel does not hand 120 Hz to an app that never asks
+        // for it, and asking after the first frame would cost a mode switch in the
+        // middle of the launch animation. See util/FramePacing.kt.
+        val displayHz = FramePacing.apply(window)
+
         // Debug builds only: logs per-window frame times and how each cover was
         // obtained (memory / stored thumbnail / full page decode) under the
         // `DocScannerPerf` tag, plus the per-frame stage breakdown while a scroll is
         // running. A no-op in release. See util/PerfTrace.kt.
         PerfTrace.install(applicationContext)
+        // The budget every frame is judged against comes from the panel that was
+        // just selected — not from a 60 Hz constant.
+        PerfTrace.setDisplayRefreshRate(displayHz)
         // The stage breakdown needs a `Window`, which only the Activity has. Without
         // it the scroll line still reports frames and image work, just not where the
         // frame went.

@@ -10,6 +10,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -124,29 +125,47 @@ fun DocScannerTheme(
     accent: AccentColor = AccentColor.BLUE,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    // Read once per composition, not once per rebuild: the remember block below
+    // closes over it, and `LocalContext.current` is a cheap local read.
+    val context = LocalContext.current
+
+    // Remembered, not rebuilt.
+    //
+    // `withAccent` is a `ColorScheme.copy(...)`: a fresh instance with dozens of
+    // colour fields. Built unremembered in composition it was rebuilt every time
+    // this scope recomposed, and `MaterialTheme` hands the scheme down through a
+    // composition-local: a *new* instance invalidates every
+    // `MaterialTheme.colorScheme` read in the app.
+    // One recomposition above the theme (a settings change, a night-mode flip, the
+    // repository emitting) therefore re-read colours in every composable on screen,
+    // which is a whole-app measurement at 120 Hz. Keyed on exactly what changes the
+    // palette, so it is still rebuilt when it should be.
+    val colorScheme = remember(darkTheme, accent, dynamicColor) {
+        when {
+            dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+                if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+            }
+            darkTheme -> DarkColorScheme.withAccent(accent, dark = true)
+            else -> LightColorScheme.withAccent(accent, dark = false)
         }
-        darkTheme -> DarkColorScheme.withAccent(accent, dark = true)
-        else -> LightColorScheme.withAccent(accent, dark = false)
     }
 
-    val accents = if (darkTheme) {
-        DocAccents(
-            scan = ScanAccentDark,
-            onScan = OnScanAccentDark,
-            handleFill = colorScheme.primary,
-            handleRing = SurfaceContainerLowestDark
-        )
-    } else {
-        DocAccents(
-            scan = ScanAccentLight,
-            onScan = OnScanAccentLight,
-            handleFill = colorScheme.primary,
-            handleRing = Color.White
-        )
+    val accents = remember(darkTheme, colorScheme) {
+        if (darkTheme) {
+            DocAccents(
+                scan = ScanAccentDark,
+                onScan = OnScanAccentDark,
+                handleFill = colorScheme.primary,
+                handleRing = SurfaceContainerLowestDark
+            )
+        } else {
+            DocAccents(
+                scan = ScanAccentLight,
+                onScan = OnScanAccentLight,
+                handleFill = colorScheme.primary,
+                handleRing = Color.White
+            )
+        }
     }
 
     CompositionLocalProvider(LocalDocAccents provides accents) {

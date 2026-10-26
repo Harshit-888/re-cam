@@ -248,8 +248,9 @@ object PageImageLoader {
 
         // Fast path: a JPEG a few hundred pixels wide, written when the page was
         // saved. This is what a scroll should always hit.
+        val config = configFor(reqWidth, reqHeight)
         if (maxOf(reqWidth, reqHeight) <= ThumbnailStore.LONG_EDGE) {
-            ThumbnailStore.read(context, thumbKey, reqWidth, reqHeight)?.let { thumb ->
+            ThumbnailStore.read(context, thumbKey, reqWidth, reqHeight, config)?.let { thumb ->
                 val fitted = scaleToFit(thumb, reqWidth, reqHeight)
                 cache.put(key, fitted)
                 PerfTrace.onThumbnailDecode()
@@ -260,7 +261,7 @@ object PageImageLoader {
         // Slow path: no stored thumbnail (legacy or re-baked page, or a request
         // larger than a thumbnail should be). Decode the page and leave a
         // thumbnail behind so the next request — and every other screen — is fast.
-        val decoded = ImageStore.loadBitmap(context, imageUri, reqWidth, reqHeight)
+        val decoded = ImageStore.loadBitmap(context, imageUri, reqWidth, reqHeight, config)
             ?: return@withContext null
         PerfTrace.onPageDecode()
         if (maxOf(reqWidth, reqHeight) <= ThumbnailStore.LONG_EDGE) {
@@ -277,6 +278,27 @@ object PageImageLoader {
         cache.put(key, bitmap)
         bitmap
     }
+
+    /**
+     * The pixel format a request of this size gets.
+     *
+     * A cover is decoration: a few hundred pixels of photo under a ripple and a
+     * scrim on a card the user is scrolling past. `RGB_565` is visually
+     * indistinguishable there and it halves two things that cost frames at 120 Hz —
+     * the bytes the GPU uploads per tile, and the heap the collector has to walk
+     * when it pauses the render thread.
+     *
+     * The line is at [OPAQUE_TILE_LIMIT] rather than "always", because the viewer
+     * asks for 1600 x 2200 and a scanned document is exactly the content where 16-bit
+     * colour banding and green-fringed text would be visible. Everything that
+     * *reads* a page — viewer, editor, export — stays 32-bit.
+     */
+    private fun configFor(reqWidth: Int, reqHeight: Int): Bitmap.Config =
+        if (maxOf(reqWidth, reqHeight) <= OPAQUE_TILE_LIMIT) {
+            Bitmap.Config.RGB_565
+        } else {
+            Bitmap.Config.ARGB_8888
+        }
 
     /**
      * Shrinks [source] to fit inside [maxWidth] x [maxHeight], keeping its aspect
@@ -332,4 +354,13 @@ object PageImageLoader {
      * are what actually stutter a fling (they are what the GC has to clean up).
      */
     private const val NEAR_ENOUGH = 1.30f
+
+    /**
+     * Largest request that is treated as decoration and decoded as `RGB_565`.
+     *
+     * 768 is the stored thumbnail's long edge, so this covers every tile in the
+     * app — grid, list, detail thumbnails, the camera's last-page chip, the
+     * editor's page strip — and excludes the viewer's full-page request.
+     */
+    private const val OPAQUE_TILE_LIMIT = 1024
 }
