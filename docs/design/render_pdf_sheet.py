@@ -10,18 +10,61 @@ clipped and what is not.
 from PIL import Image, ImageDraw, ImageFont
 
 # ---------------------------------------------------------------- palette
-PRIMARY = (0, 97, 164)
-ON_PRIMARY = (255, 255, 255)
-PRIMARY_CONTAINER = (209, 228, 255)
-ON_PRIMARY_CONTAINER = (0, 29, 54)
-SURFACE = (253, 252, 255)
-ON_SURFACE = (26, 28, 30)
-ON_SURFACE_VARIANT = (67, 71, 78)
-SURFACE_LOW = (247, 249, 252)
-SURFACE_HIGHEST = (229, 233, 238)
-OUTLINE_VARIANT = (195, 199, 207)
-ERROR = (186, 26, 26)
-SCRIM = (26, 28, 30)
+#
+# Two palettes, because the sheet has to be judged in the theme people actually use.
+# The light values are `theme/Color.kt`'s LightColorScheme; the dark ones are the
+# DarkColorScheme in the same file, plus the purple tint a Material You wallpaper
+# hands back (which is what the phone in the report was showing).
+LIGHT = dict(
+    PRIMARY=(0, 97, 164),
+    ON_PRIMARY=(255, 255, 255),
+    PRIMARY_CONTAINER=(209, 228, 255),
+    ON_PRIMARY_CONTAINER=(0, 29, 54),
+    SURFACE=(253, 252, 255),
+    ON_SURFACE=(26, 28, 30),
+    ON_SURFACE_VARIANT=(67, 71, 78),
+    SURFACE_LOW=(247, 249, 252),
+    SURFACE_HIGHEST=(229, 233, 238),
+    OUTLINE_VARIANT=(195, 199, 207),
+    ERROR=(186, 26, 26),
+    SCRIM=(26, 28, 30),
+    BACKDROP=(222, 226, 231),
+    CARD=(236, 239, 243),
+    SHEET_HANDLE=(190, 195, 202),
+)
+
+DARK = dict(
+    PRIMARY=(208, 188, 255),
+    ON_PRIMARY=(50, 25, 92),
+    PRIMARY_CONTAINER=(76, 55, 122),
+    ON_PRIMARY_CONTAINER=(234, 221, 255),
+    SURFACE=(20, 18, 24),
+    ON_SURFACE=(230, 225, 229),
+    ON_SURFACE_VARIANT=(200, 194, 200),
+    SURFACE_LOW=(30, 27, 35),
+    SURFACE_HIGHEST=(52, 48, 60),
+    OUTLINE_VARIANT=(72, 68, 80),
+    ERROR=(255, 180, 171),
+    SCRIM=(10, 8, 12),
+    BACKDROP=(12, 11, 15),
+    CARD=(26, 24, 30),
+    SHEET_HANDLE=(120, 115, 125),
+)
+
+PALETTE = LIGHT
+DARK_MODE = False
+
+
+def use(dark: bool):
+    """Rebinds the palette globals used by every drawing helper below."""
+    global PALETTE, DARK_MODE
+    PALETTE = DARK if dark else LIGHT
+    DARK_MODE = dark
+    for key, value in PALETTE.items():
+        globals()[key] = value
+
+
+use(False)
 
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -36,8 +79,10 @@ def f(size, bold=False):
     return _cache[key]
 
 
-def text(d, xy, s, size=13, bold=False, fill=ON_SURFACE, anchor="la"):
-    d.text(xy, s, font=f(size, bold), fill=fill, anchor=anchor)
+def text(d, xy, s, size=13, bold=False, fill=None, anchor="la"):
+    # `fill=None` rather than `fill=ON_SURFACE`: a default argument is bound once,
+    # at definition time, so the light value would be baked into the dark render.
+    d.text(xy, s, font=f(size, bold), fill=ON_SURFACE if fill is None else fill, anchor=anchor)
 
 
 def ellipsis(d, s, size, max_w, bold=False):
@@ -56,18 +101,19 @@ def label(d, x, y, s):
     return y + 18
 
 
-def card(d, x, y, w, h, color=SURFACE_LOW, radius=20):
-    d.rounded_rectangle([x, y, x + w, y + h], radius=radius, fill=color)
+def card(d, x, y, w, h, color=None, radius=20):
+    d.rounded_rectangle([x, y, x + w, y + h], radius=radius,
+                        fill=SURFACE_LOW if color is None else color)
 
 
 def phone(w, h):
-    img = Image.new("RGB", (w, h), (222, 226, 231))
+    img = Image.new("RGB", (w, h), BACKDROP)
     d = ImageDraw.Draw(img, "RGBA")
     # what is behind the sheet: a card grid, dimmed by the scrim
     for i in range(6):
         yy = 20 + (i // 2) * 150
         xx = 16 + (i % 2) * 172
-        d.rounded_rectangle([xx, yy, xx + 156, yy + 138], radius=16, fill=(236, 239, 243))
+        d.rounded_rectangle([xx, yy, xx + 156, yy + 138], radius=16, fill=CARD)
     d.rectangle([0, 0, w, h], fill=(*SCRIM, 96))
     return img, d
 
@@ -76,7 +122,7 @@ def sheet_canvas(img, d, w, h, top):
     d.rounded_rectangle([0, top, w, h], radius=30, fill=SURFACE)
     d.rectangle([0, top + 30, w, h], fill=SURFACE)
     d.rounded_rectangle([w // 2 - 16, top + 12, w // 2 + 16, top + 16], radius=2,
-                        fill=(190, 195, 202))
+                        fill=SHEET_HANDLE)
 
 
 def draw_share(d, cx, cy, r=9):
@@ -89,9 +135,9 @@ def draw_share(d, cx, cy, r=9):
 
 
 def switch(d, x, y, on, w=44, h=26):
-    track = PRIMARY if on else (200, 204, 210)
+    track = PRIMARY if on else OUTLINE_VARIANT
     d.rounded_rectangle([x, y, x + w, y + h], radius=h // 2, fill=track)
-    knob = (255, 255, 255) if on else (250, 250, 252)
+    knob = ON_PRIMARY if on else SURFACE
     cx = x + (w - h / 2 - 3) if on else x + h / 2 + 3
     d.ellipse([cx - h / 2 + 3, y + 3, cx + h / 2 - 3, y + h - 3], fill=knob)
 
@@ -144,9 +190,9 @@ def render_before(w=360, h=1240):
         # annotation on the paper row, where eight options make it obvious
         if title == "Paper size":
             d.rounded_rectangle([x - 2, y - 2, x + cw + 2, y + 48], radius=24,
-                                outline=(226, 72, 72), width=2)
+                                outline=(226, 72, 72) if not DARK_MODE else (255, 138, 128), width=2)
             text(d, (x + cw, y + 52), "\u2190 8 options \u00f7 8 segments = every label clipped",
-                 10, False, (200, 40, 40), anchor="ra")
+                 10, False, (200, 40, 40) if not DARK_MODE else (255, 138, 128), anchor="ra")
             y += 18
         y += 46 + 22
 
@@ -371,18 +417,26 @@ def render_after(expanded=False, w=360, h=1240):
     return img
 
 
-def main():
-    tiles = [render_before(), render_after(False), render_after(True)]
+def compose(tiles, path):
     gap = 18
     total_w = sum(t.width for t in tiles) + gap * (len(tiles) - 1)
     total_h = max(t.height for t in tiles)
-    out = Image.new("RGB", (total_w, total_h), (233, 236, 240))
+    out = Image.new("RGB", (total_w, total_h), BACKDROP)
     ox = 0
     for t in tiles:
         out.paste(t, (ox, 0))
         ox += t.width + gap
-    out.save("docs/design/pdf_export_sheet.png", optimize=True)
-    print("wrote docs/design/pdf_export_sheet.png", out.size)
+    out.save(path, optimize=True)
+    print("wrote", path, out.size)
+
+
+def main():
+    use(False)
+    compose([render_before(), render_after(False), render_after(True)],
+            "docs/design/pdf_export_sheet.png")
+    use(True)
+    compose([render_before(), render_after(False), render_after(True)],
+            "docs/design/pdf_export_sheet_dark.png")
 
 
 if __name__ == "__main__":

@@ -274,6 +274,13 @@ fun DocumentDetailScreen(
                 // is quadratic in the only list a long scan makes long.
                 itemsIndexed(document.pages, key = { _, page -> page.id }) { index, page ->
                     PageGridItem(
+                        // Reorder and delete are animated by placement, not by content:
+                        // `animateItem()` moves the surviving tiles to their new slots
+                        // and fades the removed one, so a page move reads as a move
+                        // instead of as the whole grid blinking. The offset is applied
+                        // in the placement phase, which is a layer translation — it
+                        // never re-runs the tile's layout.
+                        modifier = Modifier.animateItem(),
                         page = page,
                         canMoveBackward = index > 0,
                         canMoveForward = index >= 0 && index < document.pages.lastIndex,
@@ -482,7 +489,8 @@ fun PageGridItem(
     onDeleteClick: () -> Unit,
     onRotateClick: () -> Unit,
     onMoveBackward: () -> Unit,
-    onMoveForward: () -> Unit
+    onMoveForward: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -490,7 +498,7 @@ fun PageGridItem(
     Surface(
         shape = DocShapes.cardSmall,
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .pressScale(interactions, pressedScale = 0.97f)
             .clip(DocShapes.cardSmall)

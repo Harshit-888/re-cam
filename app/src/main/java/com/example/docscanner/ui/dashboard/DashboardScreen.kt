@@ -6,13 +6,22 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -71,9 +80,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
@@ -84,9 +93,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -95,6 +104,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -102,10 +112,10 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.example.docscanner.data.ScannerRepository
@@ -115,6 +125,7 @@ import com.example.docscanner.model.Folder
 import com.example.docscanner.model.PdfCompression
 import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.theme.DocShapes
+import com.example.docscanner.theme.Motion
 import com.example.docscanner.theme.entrance
 import com.example.docscanner.theme.pressScale
 import com.example.docscanner.ui.common.InfoPill
@@ -561,79 +572,94 @@ fun DashboardScreen(
             // Selection replaces the bar rather than adding a second one: the title
             // slot becomes the count, the only action that matters (select all) moves
             // into it, and the app name comes back the moment selection ends.
-            if (isSelecting) {
-                SelectionTopBar(
-                    count = selection.size,
-                    allSelected = activeDocs.isNotEmpty() && selection.size == activeDocs.size,
-                    onCancel = endSelection,
-                    onToggleAll = {
-                        selection = if (activeDocs.isNotEmpty() && selection.size == activeDocs.size) {
-                            emptyList()
-                        } else {
-                            activeDocs.map { it.id }
+            //
+            // `AnimatedContent`, not a bare `if`: both bars are the same height, so
+            // the swap is a 180 ms fade with a 12 dp lift on the incoming bar and
+            // nothing re-measures. The lambda's *parameter* decides which bar to
+            // draw, not `isSelecting` — reading the state directly would render the
+            // new bar underneath the old one for the length of the transition.
+            AnimatedContent(
+                targetState = isSelecting,
+                transitionSpec = {
+                    (fadeIn(tween(180)) + slideInVertically(tween(180)) { height -> -height / 6 })
+                        .togetherWith(fadeOut(tween(120)))
+                },
+                label = "topBarMode"
+            ) { selecting ->
+                if (selecting) {
+                    SelectionTopBar(
+                        count = selection.size,
+                        allSelected = activeDocs.isNotEmpty() && selection.size == activeDocs.size,
+                        onCancel = endSelection,
+                        onToggleAll = {
+                            selection = if (activeDocs.isNotEmpty() && selection.size == activeDocs.size) {
+                                emptyList()
+                            } else {
+                                activeDocs.map { it.id }
+                            }
                         }
-                    }
-                )
-            } else {
-                TopAppBar(
-                    title = {
-                        Text(
-                            "Doc Scanner",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                    },
-                    actions = {
-                        IconButton(onClick = { isGridView = !isGridView }) {
-                            Icon(
-                                if (isGridView) Icons.Outlined.ViewList else Icons.Outlined.GridView,
-                                contentDescription = if (isGridView) "Show as list" else "Show as grid"
+                    )
+                } else {
+                    TopAppBar(
+                        title = {
+                            Text(
+                                "Doc Scanner",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
                             )
-                        }
-                        Box {
-                            IconButton(onClick = { showSortMenu = true }) {
-                                Icon(Icons.Outlined.Sort, contentDescription = "Sort")
+                        },
+                        actions = {
+                            IconButton(onClick = { isGridView = !isGridView }) {
+                                Icon(
+                                    if (isGridView) Icons.Outlined.ViewList else Icons.Outlined.GridView,
+                                    contentDescription = if (isGridView) "Show as list" else "Show as grid"
+                                )
                             }
-                            DropdownMenu(
-                                expanded = showSortMenu,
-                                onDismissRequest = { showSortMenu = false }
-                            ) {
-                                DocumentSortOption.entries.forEach { option ->
-                                    DropdownMenuItem(
-                                        text = { Text(option.label) },
-                                        trailingIcon = if (option == sortOption) {
-                                            { Icon(Icons.Default.Check, contentDescription = null) }
-                                        } else {
-                                            null
-                                        },
-                                        onClick = {
-                                            sortOption = option
-                                            showSortMenu = false
-                                        }
-                                    )
+                            Box {
+                                IconButton(onClick = { showSortMenu = true }) {
+                                    Icon(Icons.Outlined.Sort, contentDescription = "Sort")
                                 }
-                            }
-                        }
-                        IconButton(onClick = onNavigateToSettings) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings")
-                        }
-                        IconButton(onClick = onNavigateToTrash) {
-                            BadgedBox(
-                                badge = {
-                                    if (trashCount > 0) {
-                                        Badge { Text("$trashCount") }
+                                DropdownMenu(
+                                    expanded = showSortMenu,
+                                    onDismissRequest = { showSortMenu = false }
+                                ) {
+                                    DocumentSortOption.entries.forEach { option ->
+                                        DropdownMenuItem(
+                                            text = { Text(option.label) },
+                                            trailingIcon = if (option == sortOption) {
+                                                { Icon(Icons.Default.Check, contentDescription = null) }
+                                            } else {
+                                                null
+                                            },
+                                            onClick = {
+                                                sortOption = option
+                                                showSortMenu = false
+                                            }
+                                        )
                                     }
                                 }
-                            ) {
-                                Icon(Icons.Default.Delete, contentDescription = "Trash")
                             }
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        titleContentColor = MaterialTheme.colorScheme.onSurface
+                            IconButton(onClick = onNavigateToSettings) {
+                                Icon(Icons.Default.Settings, contentDescription = "Settings")
+                            }
+                            IconButton(onClick = onNavigateToTrash) {
+                                BadgedBox(
+                                    badge = {
+                                        if (trashCount > 0) {
+                                            Badge { Text("$trashCount") }
+                                        }
+                                    }
+                                ) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Trash")
+                                }
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            titleContentColor = MaterialTheme.colorScheme.onSurface
+                        )
                     )
-                )
+                }
             }
         },
         bottomBar = {
@@ -665,7 +691,15 @@ fun DashboardScreen(
             // An extended FAB that reads as the app's one primary verb. The pill
             // shape and the amber-free primary keep it distinct from the cards.
             // Hidden while selecting so two competing actions never share a corner.
-            if (!isSelecting) {
+            AnimatedVisibility(
+                visible = !isSelecting,
+                // The FAB does not add content padding, so scaling it in and out
+                // costs the grid nothing. It used to vanish between frames, which
+                // reads as a flicker in the corner of the eye while the bar above is
+                // still animating.
+                enter = fadeIn(tween(160)) + scaleIn(tween(220), initialScale = 0.8f),
+                exit = fadeOut(tween(120)) + scaleOut(tween(160), targetScale = 0.8f)
+            ) {
                 CaptureFab(onClick = startScan)
             }
         }
@@ -908,6 +942,19 @@ private fun SelectionActionBar(
     mergeEnabled: Boolean,
     onMerge: () -> Unit
 ) {
+    // The bar arrives with its contents, not with its height.
+    //
+    // The obvious implementation — `AnimatedVisibility` around the whole bar inside
+    // Scaffold's `bottomBar` — animates the bar's *measured height*, and the Scaffold
+    // hands that height to the grid as content padding. Every frame of a 200 ms
+    // entrance would therefore re-measure and re-place the library. So the bar is
+    // laid out at its final size immediately and only its contents move: 18 dp up
+    // and a fade, both read inside a graphics layer, so the entrance costs one
+    // recomposition and no layout at all.
+    val reveal = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        reveal.animateTo(1f, tween(durationMillis = 220, easing = Motion.EaseOut))
+    }
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
@@ -916,6 +963,10 @@ private fun SelectionActionBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .graphicsLayer {
+                    alpha = reveal.value
+                    translationY = (1f - reveal.value) * 18.dp.toPx()
+                }
                 .navigationBarsPadding()
                 .padding(start = 22.dp, end = 20.dp, top = 14.dp, bottom = 14.dp),
             verticalAlignment = Alignment.CenterVertically

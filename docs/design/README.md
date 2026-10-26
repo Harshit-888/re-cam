@@ -7,7 +7,8 @@ drawables put on screen without building the app.
 | :--- | :--- | :--- |
 | `app_icon.png` | the launcher icon: the page, its ink lines and the amber scan line on the brand gradient | `app/src/main/res/drawable/ic_launcher_foreground.xml`, `ic_launcher_background.xml` |
 | `launch_screen.png` | the launch screen as composed: mark, "Doc Scanner", tagline, progress bar | `app/src/main/java/com/example/docscanner/ui/common/LaunchSplash.kt`, `res/drawable/launch_background.xml` |
-| `pdf_export_sheet.png` | the PDF export sheet, before and after Round 34 — three tiles: the old layout, the new one collapsed, the new one with the paper grid open | `app/src/main/java/com/example/docscanner/ui/pdf/PdfExportSheet.kt` |
+| `pdf_export_sheet.png` | the PDF export sheet, before and after Round 34 — three tiles: the old layout, the new one collapsed, the new one with the paper grid open (light) | `app/src/main/java/com/example/docscanner/ui/pdf/PdfExportSheet.kt` |
+| `pdf_export_sheet_dark.png` | the same three tiles in the dark palette (Material You purple, matching the phone in the bug report) | same, plus `theme/Color.kt` |
 
 All PNGs are **previews only** — the app draws the icon and the launch screen from
 vectors, at every density, and the sheet mock is a drawing of a Compose layout, not a
@@ -25,7 +26,8 @@ Colours, kept in step with `res/values/colors.xml`:
 
 ## `pdf_export_sheet.png`
 
-Regenerate with `python3 docs/design/render_pdf_sheet.py` (Pillow). The script mirrors
+Regenerate with `python3 docs/design/render_pdf_sheet.py` (Pillow); it writes both the
+light and the dark file from one source of truth. The script mirrors
 the dp values and the light palette so the drawing stays honest: 1 px = 1 dp, the same
 20 dp sheet padding, 16 dp card padding, 40 dp chips, 54 dp paper cards, 76 dp
 compression cards and 56 dp CTA. It is a *layout* drawing — real type metrics differ by

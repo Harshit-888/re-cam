@@ -98,6 +98,7 @@ Keep this table short. Delete your row when the change lands.
 | Antigravity | ✅ merged & verified (Round 30) | `app/src/main/rust/src/kernels.rs`, `app/src/main/rust/src/lib.rs`, `util/NativeFilters.kt`, `util/DocumentFilters.kt` | Rust acceleration of 6 more expensive filter loops: `meanPool` (paper map), `applyLut` (Lighten), `rec601InPlace` (Grayscale), `gaussianBlur3`, `boxBlur3`, `boxBlurInPlace` — all behind byte-for-byte parity gates with Kotlin reference fallbacks. ABI bumped to 2. `verifyNativeFilters` now checks all 9 kernels. All unit tests pass, `app-debug.apk` built (65,687,518 bytes). Reviewed in §6u. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 33) | `data/LibraryViewModel.kt` (new), `MainActivity.kt`, `Navigation.kt`, `data/ScannerRepository.kt`, `theme/Motion.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/editor/CropAndFilterScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `ui/signature/SignaturePadDialog.kt`, `ui/common/Expressive.kt`, docs | Six behaviour bugs (empty documents, unconfirmed page delete, detail dead-end, stale selection/no-op merge, silent rename discard, per-rotation repository rebuild), five hot paths moved to draw-phase reads / layer transforms / coalesced IPC, four motion corrections. Fixed compilation issues in DashboardScreen, DocumentDetailScreen, and PageViewerScreen. All unit tests pass, `app-debug.apk` built. See §6v. |
 | Arena.ai | ✅ committed (Round 34) | `ui/pdf/PdfExportSheet.kt` (rebuilt), `docs/design/pdf_export_sheet.png` + `render_pdf_sheet.py` (new), docs | Export sheet UI/UX rebuilt: paper as a collapsible grid, file size as 2 × 2 cards, margins as a 2 × 2 of chips, whole-row toggles, a CTA caption that names the output, no swipe-dismiss mid-export, and `selectable`/`toggleable` semantics for TalkBack. Scrolling segmented controls removed from this sheet; `SegmentedPill` itself untouched. Signature unchanged. See §6w. |
+| Arena.ai | ✅ committed (Round 35) | `ui/common/Expressive.kt`, `ui/camera/ScannerCameraScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/trash/TrashScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `docs/design/*` | `SegmentedPill` made the only segmented selector (camera's private copy deleted; palette parameters added), motion on every state change that had none (top bar swap, FAB, selection-bar contents, `animateItem()` in two lists, viewer crossfade, camera chrome/shutter/flash/count), and an Undo on the camera's page counter. Dark-mode sheet render added. See §6x. |
 
 ## 5. File ownership map
 
@@ -1247,6 +1248,67 @@ choices is identical.
   identical buttons with no announced state.
 - **Still uncompiled here.** The `PdfExportSheet` rewrite is source-only in this
   sandbox; `./gradlew testDebugUnitTest assembleDebug` is the gate.
+
+## 6x. Round 35: one segmented control, motion on every state change, camera polish (Arena, 2026-10-26, round 35)
+
+### The shared control changed shape
+
+`ui/common/Expressive.kt › SegmentedPill` is now the app's **only** small segmented
+selector, and it takes its palette as parameters:
+
+```
+SegmentedPill(options, selectedIndex, onSelect, modifier,
+              segmentHeight = 38.dp, container, thumbColor,
+              selectedContent, content, thumbElevation)
+```
+
+The camera used to carry a private copy (`ModeToggle`/`ModeSegment`) that faded a
+background in and out under each label instead of moving a thumb. It is deleted; the
+camera calls `SegmentedPill` with its glass colours. **If you add a two- or three-state
+selector, use this one** — and if you need different colours, add parameters, not a
+second implementation.
+
+Behaviour now, for everyone: the thumb travels on `spring(dampingRatio = 0.78f,
+stiffness = 520f)` as a layer translation, labels cross-fade over 180 ms, each segment
+has a 0.96 press-scale, and each is `selectable(..., Role.RadioButton)`.
+
+### Motion inventory added this round
+
+All draw-phase or placement; none of them re-measures.
+
+| Screen | Animation |
+| :--- | :--- |
+| Dashboard top bar | `AnimatedContent` swap between the app bar and the selection bar (180 ms fade + 1/6-height lift) |
+| Dashboard FAB | scale 0.8 → 1 in, back out, instead of appearing between frames |
+| Dashboard selection bar | **contents** rise 18 dp and fade; the bar's height is deliberately not animated, because Scaffold passes it to the grid as content padding |
+| Detail page grid, recycle bin | `Modifier.animateItem()` — a moved page moves, a removed row closes the gap |
+| Viewer | page change crossfades 180 ms |
+| Camera | chrome entrance (top −10 dp, bottom +14 dp), shutter dip 0.985 → 1, flash icon morph, rolling page count, spring-in finish button |
+
+### Camera: one functional change
+
+The page-counter pill now carries an **Undo** segment
+(`repository.discardPages(last)`, plus haptic and a status line). Do not put a
+confirmation dialog on it: it is a one-page, local, instantly repeatable action, and the
+close dialog still guards the *whole* session (`capturedPages` non-empty).
+
+### Design artifacts
+
+`docs/design/render_pdf_sheet.py` now renders **both** palettes
+(`pdf_export_sheet.png`, `pdf_export_sheet_dark.png`). Two bugs in that script were
+fixed and are worth knowing if you extend it: colour defaults were bound at import time
+(so a palette switch had no effect — pass `None` and resolve inside the function), and
+the backdrop was hard-coded to the light tone.
+
+### Do not undo
+
+- **Do not animate a `bottomBar`'s height on the dashboard.** Scaffold turns it into
+  content padding; the grid re-places every frame. Animate the contents.
+- **Do not add a second segmented control implementation.** See above.
+- **Do not make `animateItem()` opt-in per screen** for lists whose items move or
+  disappear; it is two words and the placement phase absorbs it.
+- **Still uncompiled in this sandbox** (no JDK/SDK). Round 34's sheet and everything in
+  this round want `./gradlew testDebugUnitTest assembleDebug` on a machine that has one.
 
 ## 7. Known-good state
 

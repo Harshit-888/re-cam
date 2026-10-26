@@ -112,6 +112,10 @@ fun TrashScreen(
             ) {
                 items(trashDocs, key = { it.id }) { doc ->
                     TrashDocumentItem(
+                        // Restoring or deleting a row closes the gap instead of
+                        // snapping the list up by one card: placement animation, so
+                        // nothing re-measures.
+                        modifier = Modifier.animateItem(),
                         document = doc,
                         onRestore = { repository.restoreFromTrash(doc.id) },
                         onDeletePermanent = { repository.deletePermanently(doc.id) }
@@ -213,12 +217,13 @@ private fun TrashEmptyState(modifier: Modifier = Modifier) {
 fun TrashDocumentItem(
     document: Document,
     onRestore: () -> Unit,
-    onDeletePermanent: () -> Unit
+    onDeletePermanent: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Surface(
         shape = DocShapes.cardSmall,
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = Modifier.fillMaxWidth()
+        modifier = modifier.fillMaxWidth()
     ) {
         Row(
             modifier = Modifier

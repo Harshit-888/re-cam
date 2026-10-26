@@ -4,6 +4,83 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-26 (night, 3) — Arena.ai — Round 35: one segmented control everywhere, motion in every state change, and the sheet verified in the dark
+
+Two things were reported: the export sheet "is still not fixed", and the app wants small
+motion everywhere — the animation the size selector has, in the Borders/Filters control
+too, and a camera that looks and works better.
+
+### First, an honest note on "still not fixed"
+
+The screenshot was of the **old** sheet: it still shows PAPER SIZE as eight equal
+segments with the labels colliding ("A4…", "'210 × …", "US… / Letter"). Round 34
+replaced that with a collapsible grid and it is in `12d2c3a`; the build in the screenshot
+predates it. That is not a defence, though — the *dark* render had never been checked,
+and the sheet is where a dark mistake hides. So this round re-rendered every tile in the
+dark palette as well (`docs/design/pdf_export_sheet_dark.png`): the structure holds, and
+the difference between adjacent sections (`surfaceContainerLow` over `surface`) is
+present but quiet, which is correct for a sheet that is mostly type.
+
+The renderer had two real bugs that hid this: every colour default was bound at import
+time, so switching palettes left the old values in place, and `phone()` painted the
+backdrop in the light tone. Both fixed; the script now renders both themes from one
+source of truth.
+
+### One segmented control, one behaviour
+
+`SegmentedPill` is now the only two-or-three-state selector in the app, and it is
+parameterised instead of copied:
+
+| | before | after |
+| :--- | :--- | :--- |
+| Editor Borders / Filters | thumb slid on a spring | unchanged behaviour, now shared |
+| Camera Single / Batch | a **private copy** (`ModeToggle`/`ModeSegment`) that faded a white background in and out under each label | the same `SegmentedPill`: the thumb *travels*, which is what the size selector does and what was asked for |
+| Thumb | `spring(0.78, 520)` on the layer | same curve, now the app's only one |
+| Label colour | snapped | cross-fades over 180 ms, so it does not flip mid-travel |
+| Press | ripple only | 0.96 press-scale and ripple |
+
+`SegmentedPill` gained parameters — `segmentHeight`, `container`, `thumbColor`,
+`selectedContent`, `content`, `thumbElevation` — so the camera can keep its glass palette
+without a second implementation. The editor and the camera now cannot drift apart.
+
+### Motion, added where a state changes
+
+Every one of these is a draw-phase or placement animation: none of them re-measures a
+list, and none writes state per frame.
+
+| Where | What now animates | Why |
+| :--- | :--- | :--- |
+| Home → selection mode | top bar cross-fades and lifts 1/6 of its height in (`AnimatedContent`), FAB scales 0.8 → 1 and back | Selection replaced the bar between frames; the two bars are the same height so nothing re-measures |
+| Home → selection bar | contents rise 18 dp and fade, **the bar does not animate its height** | `AnimatedVisibility` around the bar would animate Scaffold's bottom-bar height, i.e. re-place the whole grid every frame |
+| Page grid, recycle bin | `Modifier.animateItem()` | a moved page *moves*, a restored or deleted row closes the gap instead of snapping up |
+| Viewer | page change is a 180 ms crossfade | at 120 Hz a hard cut is 8 ms of nothing, which reads as a glitch |
+| Camera, on open | chrome fades in and rises (top 10 dp, bottom 14 dp) over 260 ms | a camera that opens with controls already flat on screen feels like a settings page |
+| Camera, shutter | the viewfinder dips to 0.985 and springs back | the mirror-dip of a physical shutter; the flash then looks intentional |
+| Camera, flash mode | icon cross-fades and scales between off/auto/on | it is a three-state control on a screen where everything else answers |
+| Camera, page count | the number rolls (`AnimatedContent`), finish button scales in | the count is the only progress feedback on a screen with no progress bar |
+| Camera, mode | thumb travels (see above) | consistency with Borders/Filters |
+
+### The camera's one functional addition: undo
+
+The page counter pill is now also the escape hatch. Capturing is committed the moment the
+file exists and the only way back used to be "finish the scan → open the document → delete
+the page"; a bad shot is noticed while the camera is still pointed at the desk. The pill
+carries an **Undo** segment that removes the last page and its files
+(`repository.discardPages`, the same call the close dialog uses) with no confirmation,
+because the action is small, local and immediately repeatable.
+
+### Files
+
+`ui/common/Expressive.kt` (`SegmentedPill` parameters, press-scale, label cross-fade,
+`selectable` + `Role.RadioButton`), `ui/camera/ScannerCameraScreen.kt` (mode toggle
+replaced, undo, chrome entrance, shutter dip, flash morph, count roll),
+`ui/dashboard/DashboardScreen.kt` (animated top bar, FAB, selection-bar reveal),
+`ui/detail/DocumentDetailScreen.kt` + `ui/trash/TrashScreen.kt` (`animateItem`),
+`ui/viewer/PageViewerScreen.kt` (page crossfade), `docs/design/render_pdf_sheet.py`
+(two palettes) and `pdf_export_sheet_dark.png`.
+
+No filter, geometry, PDF, OCR or search code touched. Nothing was compiled here.
+
 ## 2026-10-26 (night, 2) — Arena.ai — Round 34: the export sheet rebuilt, and the review that justified each change
 
 Reported as "the export pdf page where all the size and password settings are listed is

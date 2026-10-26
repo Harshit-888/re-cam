@@ -1,6 +1,7 @@
 package com.example.docscanner.ui.common
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -43,6 +45,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -268,10 +271,16 @@ fun SegmentedPill(
     options: List<String>,
     selectedIndex: Int,
     onSelect: (Int) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    segmentHeight: Dp = 38.dp,
+    container: Color = MaterialTheme.colorScheme.surfaceContainerHighest,
+    thumbColor: Color = MaterialTheme.colorScheme.surface,
+    selectedContent: Color = MaterialTheme.colorScheme.onSurface,
+    content: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    thumbElevation: Dp = 1.dp
 ) {
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        color = container,
         shape = DocShapes.pill,
         modifier = modifier
     ) {
@@ -286,43 +295,56 @@ fun SegmentedPill(
             // Animating a layout property is the one thing motion must never do.
             val density = LocalDensity.current
             val segmentWidthPx = with(density) { segmentWidth.toPx() }
+            // Slightly under-damped on purpose: the thumb arrives with a hint of
+            // overshoot, which is what makes a two-state control feel physical rather
+            // than like a colour being set. 0.78 at this stiffness settles in ~200 ms
+            // — fast enough to follow a thumb through both options.
             val thumbOffsetPx by animateFloatAsState(
                 targetValue = segmentWidthPx * selectedIndex,
-                animationSpec = spring(dampingRatio = 0.75f, stiffness = 500f),
+                animationSpec = spring(dampingRatio = 0.78f, stiffness = 520f),
                 label = "segmentedThumb"
             )
             Surface(
-                color = MaterialTheme.colorScheme.surface,
+                color = thumbColor,
                 shape = DocShapes.pill,
-                shadowElevation = 1.dp,
+                shadowElevation = thumbElevation,
                 modifier = Modifier
                     .width(segmentWidth)
-                    .height(38.dp)
+                    .height(segmentHeight)
                     .graphicsLayer { translationX = thumbOffsetPx }
             ) {}
             Row(Modifier.fillMaxWidth()) {
                 options.forEachIndexed { index, label ->
+                    val selected = index == selectedIndex
+                    val interactions = remember { MutableInteractionSource() }
+                    // The label fades between its two weights' colours instead of
+                    // snapping: under a thumb that is still travelling, an instant
+                    // colour flip is the one thing that gives the animation away.
+                    val labelColor by animateColorAsState(
+                        targetValue = if (selected) selectedContent else content,
+                        animationSpec = tween(durationMillis = 180),
+                        label = "segmentLabel$index"
+                    )
                     Box(
                         modifier = Modifier
                             .width(segmentWidth)
-                            .height(38.dp)
+                            .height(segmentHeight)
                             .clip(DocShapes.pill)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null
-                            ) { onSelect(index) },
+                            .pressScale(interactions, pressedScale = 0.96f)
+                            .selectable(
+                                selected = selected,
+                                interactionSource = interactions,
+                                indication = null,
+                                role = Role.RadioButton,
+                                onClick = { onSelect(index) }
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
-                        val selected = index == selectedIndex
                         Text(
                             label,
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                            color = if (selected) {
-                                MaterialTheme.colorScheme.onSurface
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
+                            color = labelColor
                         )
                     }
                 }

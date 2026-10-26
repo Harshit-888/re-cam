@@ -16,6 +16,7 @@ import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
@@ -32,6 +33,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -45,6 +47,7 @@ import com.example.docscanner.theme.Motion
 import com.example.docscanner.theme.pressScale
 import com.example.docscanner.ui.common.PageThumbnail
 import com.example.docscanner.ui.common.PillButton
+import com.example.docscanner.ui.common.SegmentedPill
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -69,6 +72,7 @@ import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
@@ -378,6 +382,24 @@ fun ScannerCameraScreen(
     val haptics = LocalHapticFeedback.current
     val flashAlpha = remember { Animatable(0f) }
     val galleryBump = remember { Animatable(1f) }
+    // The viewfinder dips and settles on every shutter press, the way a physical
+    // shutter's mirror does: a 1.5 % scale, eight frames, read inside a graphics
+    // layer so it never touches composition. It is the cheapest possible "we heard
+    // you" and it makes the flash look intentional rather than like a rendering
+    // glitch.
+    val viewfinderDip = remember { Animatable(1f) }
+
+    // The chrome arrives a beat after the preview does, rising into place.
+    //
+    // A camera that opens with every control already flat on screen feels like a
+    // settings page; the eye has nothing to follow. One 260 ms entrance — 10 dp of
+    // rise and a fade, read in a graphics layer so it never re-measures — is the
+    // difference between "the screen appeared" and "the camera opened". It runs once
+    // per screen, not per frame of anything.
+    val chromeIn = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        chromeIn.animateTo(1f, tween(durationMillis = 260, delayMillis = 60, easing = Motion.EaseOut))
+    }
     LaunchedEffect(capturedPages.size) {
         // A page just landed: the gallery tile takes it with a small spring, so
         // the newest page announces itself without a toast.
@@ -419,6 +441,13 @@ fun ScannerCameraScreen(
         scope.launch {
             flashAlpha.snapTo(FLASH_PEAK_ALPHA)
             flashAlpha.animateTo(0f, tween(durationMillis = FLASH_MS, easing = LinearEasing))
+        }
+        scope.launch {
+            viewfinderDip.animateTo(
+                targetValue = 0.985f,
+                animationSpec = tween(durationMillis = 90, easing = Motion.EaseOut)
+            )
+            viewfinderDip.animateTo(1f, spring(dampingRatio = 0.55f, stiffness = 420f))
         }
 
         // Settings → Scan → Shutter sound. Many devices play their own click that
@@ -515,6 +544,10 @@ fun ScannerCameraScreen(
                     .align(Alignment.Center)
                     .fillMaxWidth()
                     .aspectRatio(3f / 4f)
+                    .graphicsLayer {
+                        scaleX = viewfinderDip.value
+                        scaleY = viewfinderDip.value
+                    }
                     .pointerInput(maxZoomRatio) {
                         if (maxZoomRatio <= 1.0001f) return@pointerInput
                         detectTransformGestures(panZoomLock = true) { _, _, zoomChange, _ ->
@@ -583,6 +616,10 @@ fun ScannerCameraScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .graphicsLayer {
+                    alpha = chromeIn.value
+                    translationY = (1f - chromeIn.value) * -10.dp.toPx()
+                }
                 .statusBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -605,26 +642,39 @@ fun ScannerCameraScreen(
 
             Spacer(Modifier.weight(1f))
 
-            GlassButton(
-                icon = when (flashMode) {
-                    FlashMode.ON -> Icons.Default.FlashOn
-                    FlashMode.OFF -> Icons.Default.FlashOff
-                    FlashMode.AUTO -> Icons.Default.FlashAuto
+            // The icon cross-fades as the mode cycles instead of swapping between
+            // frames: flash is a three-state control on a screen where every other
+            // control gives feedback, and a glyph that pops is the one thing that
+            // reads as unresponsive.
+            AnimatedContent(
+                targetState = flashMode,
+                transitionSpec = {
+                    (fadeIn(tween(140)) + scaleIn(tween(140), initialScale = 0.86f))
+                        .togetherWith(fadeOut(tween(90)) + scaleOut(tween(90), targetScale = 0.86f))
                 },
-                contentDescription = when (flashMode) {
-                    FlashMode.ON -> "Flash on"
-                    FlashMode.OFF -> "Flash off"
-                    FlashMode.AUTO -> "Flash auto"
-                },
-                tint = if (flashMode == FlashMode.ON) accents.scan else Color.White,
-                onClick = {
-                    flashMode = when (flashMode) {
-                        FlashMode.AUTO -> FlashMode.ON
-                        FlashMode.ON -> FlashMode.OFF
-                        FlashMode.OFF -> FlashMode.AUTO
+                label = "flashMode"
+            ) { mode ->
+                GlassButton(
+                    icon = when (mode) {
+                        FlashMode.ON -> Icons.Default.FlashOn
+                        FlashMode.OFF -> Icons.Default.FlashOff
+                        FlashMode.AUTO -> Icons.Default.FlashAuto
+                    },
+                    contentDescription = when (mode) {
+                        FlashMode.ON -> "Flash on"
+                        FlashMode.OFF -> "Flash off"
+                        FlashMode.AUTO -> "Flash auto"
+                    },
+                    tint = if (mode == FlashMode.ON) accents.scan else Color.White,
+                    onClick = {
+                        flashMode = when (mode) {
+                            FlashMode.AUTO -> FlashMode.ON
+                            FlashMode.ON -> FlashMode.OFF
+                            FlashMode.OFF -> FlashMode.AUTO
+                        }
                     }
-                }
-            )
+                )
+            }
         }
 
         // ---- page counter / first-run hint ------------------------------------
@@ -648,12 +698,74 @@ fun ScannerCameraScreen(
                     contentColor = accents.onScan,
                     shadowElevation = 8.dp
                 ) {
-                    Text(
-                        text = "${capturedPages.size} ${if (capturedPages.size == 1) "page" else "pages"} scanned",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // The count rolls rather than swaps: one digit changing is a
+                        // 30 ms animation, and it is the only progress feedback on a
+                        // screen with no progress bar.
+                        AnimatedContent(
+                            targetState = capturedPages.size,
+                            transitionSpec = {
+                                // The default `sizeTransform` clips and animates the
+                                // box as the label changes width ("9 pages" → "10
+                                // pages"), which is exactly what is wanted here.
+                                (slideInVertically { height -> height } + fadeIn())
+                                    .togetherWith(slideOutVertically { height -> -height } + fadeOut())
+                            },
+                            label = "pageCount"
+                        ) { count ->
+                            Text(
+                                text = "$count ${if (count == 1) "page" else "pages"} scanned",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp)
+                            )
+                        }
+                        // Undo, right where the count is.
+                        //
+                        // A capture is committed to the session the moment the file
+                        // exists, and the only way back used to be: finish the scan,
+                        // open the document, delete the page. A bad shot is noticed
+                        // *now*, while the camera is still pointed at the desk — so
+                        // the escape hatch belongs here. It removes the file as well;
+                        // `discardPages` is the same call the close dialog uses.
+                        // Hairline between the count and the action, so the pill
+                        // reads as one object with two parts rather than two pills
+                        // that happen to touch.
+                        Box(
+                            modifier = Modifier
+                                .width(1.dp)
+                                .height(18.dp)
+                                .background(accents.onScan.copy(alpha = 0.28f))
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(DocShapes.pill)
+                                .clickable(
+                                    onClickLabel = "Remove the last page",
+                                    role = Role.Button,
+                                    onClick = {
+                                        val last = capturedPages.removeLastOrNull() ?: return@clickable
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        repository.discardPages(listOf(last))
+                                        statusMessage = "Last page removed"
+                                    }
+                                )
+                                .padding(start = 12.dp, end = 14.dp, top = 8.dp, bottom = 8.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Undo,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                "Undo",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
                 }
             }
 
@@ -736,6 +848,10 @@ fun ScannerCameraScreen(
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
+                    .graphicsLayer {
+                        alpha = chromeIn.value
+                        translationY = (1f - chromeIn.value) * 14.dp.toPx()
+                    }
                     .navigationBarsPadding()
                     .padding(bottom = 18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -797,10 +913,23 @@ fun ScannerCameraScreen(
                     // The right slot mirrors the gallery tile's footprint, which is
                     // what keeps the shutter on the exact centre line. A wide
                     // labelled button here would visibly shove it left.
-                    if (capturedPages.isNotEmpty()) {
-                        FinishButton(onClick = { commitScan() })
-                    } else {
-                        Spacer(Modifier.size(54.dp))
+                    // The finish affordance appears the moment there is something to
+                    // finish, and it pops in with the same scale the shutter uses. The
+                    // slot itself never changes size, so the shutter cannot drift off
+                    // centre while it animates.
+                    Box(contentAlignment = Alignment.Center) {
+                        AnimatedVisibility(
+                            visible = capturedPages.isNotEmpty(),
+                            // `spring()` as a *scale* enter spec wants
+                            // `Animatable`-style visibility thresholds, which the
+                            // default `SpringSpec` does not provide for
+                            // `EnterTransition`; a fast tween is the honest choice
+                            // here and settles in the same 140 ms.
+                            enter = fadeIn(tween(120)) + scaleIn(tween(180), initialScale = 0.6f),
+                            exit = fadeOut(tween(100)) + scaleOut(tween(140), targetScale = 0.6f)
+                        ) {
+                            FinishButton(onClick = { commitScan() })
+                        }
                     }
                 }
             }
@@ -850,64 +979,26 @@ fun ScannerCameraScreen(
  * Two states that change what the shutter does, so they are shown as one control
  * with a moving selection rather than as a button that cycles: a cycle makes the
  * user read the label every time to know what the next tap will do.
+ *
+ * It is the app's [SegmentedPill], not a camera-shaped copy of it. The copy that
+ * used to live here faded a white background in and out under each label — the same
+ * job, done without the thumb travelling, so switching modes read as two separate
+ * colour changes rather than one object moving. One control, one behaviour, and the
+ * glass palette comes in as parameters.
  */
 @Composable
 private fun ModeToggle(isBatch: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .height(40.dp)
-            .clip(DocShapes.pill)
-            .background(Color.Black.copy(alpha = 0.44f))
-            .padding(3.dp)
-    ) {
-        ModeSegment(
-            label = "Single",
-            selected = !isBatch,
-            onClick = { onChange(false) }
-        )
-        ModeSegment(
-            label = "Batch",
-            selected = isBatch,
-            onClick = { onChange(true) }
-        )
-    }
-}
-
-@Composable
-private fun ModeSegment(label: String, selected: Boolean, onClick: () -> Unit) {
-    val interactions = remember { MutableInteractionSource() }
-    val container by animateColorAsState(
-        targetValue = if (selected) Color.White.copy(alpha = 0.94f) else Color.Transparent,
-        animationSpec = tween(durationMillis = 180),
-        label = "modeSegmentContainer"
+    SegmentedPill(
+        options = listOf("Single", "Batch"),
+        selectedIndex = if (isBatch) 1 else 0,
+        onSelect = { index -> onChange(index == 1) },
+        segmentHeight = 34.dp,
+        container = Color.Black.copy(alpha = 0.44f),
+        thumbColor = Color.White.copy(alpha = 0.94f),
+        selectedContent = Color.Black,
+        content = Color.White.copy(alpha = 0.82f),
+        thumbElevation = 0.dp
     )
-    val content by animateColorAsState(
-        targetValue = if (selected) Color.Black else Color.White.copy(alpha = 0.82f),
-        animationSpec = tween(durationMillis = 180),
-        label = "modeSegmentContent"
-    )
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .height(34.dp)
-            .clip(DocShapes.pill)
-            .background(container)
-            .clickable(
-                interactionSource = interactions,
-                indication = ripple(),
-                role = Role.RadioButton,
-                onClick = onClick
-            )
-            .padding(horizontal = 13.dp)
-    ) {
-        Text(
-            text = label,
-            color = content,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
-        )
-    }
 }
 
 /** One tap target per zoom stop. Selected state is a filled accent, not a tint. */

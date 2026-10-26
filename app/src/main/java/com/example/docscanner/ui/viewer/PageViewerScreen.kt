@@ -5,6 +5,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.Image
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -181,14 +183,28 @@ fun PageViewerScreen(
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    Image(
-                        bitmap = pageImage,
-                        contentDescription = "Page ${safeIndex + 1}",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 6.dp, vertical = 68.dp)
-                    )
+                    // Pages swap with a crossfade rather than a cut.
+                    //
+                    // Tapping next used to replace one bitmap with another in a
+                    // single frame; at 120 Hz that is 8 ms of nothing, which reads as
+                    // a glitch rather than a page turn. 180 ms of crossfade is the
+                    // whole transition — no slide, because the pager is a tap, and a
+                    // slide would imply the pages are side by side when they are not.
+                    Crossfade(
+                        targetState = pageImage,
+                        animationSpec = tween(durationMillis = 180),
+                        label = "pageSwap",
+                        modifier = Modifier.fillMaxSize()
+                    ) { bitmap ->
+                        Image(
+                            bitmap = bitmap,
+                            contentDescription = "Page ${safeIndex + 1}",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 6.dp, vertical = 68.dp)
+                        )
+                    }
                 }
             }
         }
