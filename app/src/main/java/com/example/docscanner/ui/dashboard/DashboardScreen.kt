@@ -313,25 +313,6 @@ fun DashboardScreen(
         searchHits.mapNotNull { hit -> hit.snippet?.let { hit.document.id to hit } }.toMap()
     }
 
-    // The selection only ever refers to what is on screen.
-    //
-    // It used to survive anything: search for something, filter to another folder,
-    // or delete a document from elsewhere, and `selection` kept ids that are no
-    // longer listed. That produced two visible bugs — a selection count that
-    // disagreed with what the user could see, and a Merge button that did nothing
-    // at all, because it rebuilt the document list from the ids and quietly found
-    // fewer than two. Pruning is the honest behaviour: the count is what will be
-    // merged, and if nothing selected is still visible, selection ends.
-    val visibleIds = remember(activeDocs) {
-        activeDocs.mapTo(HashSet<String>(activeDocs.size)) { it.id }
-    }
-    LaunchedEffect(visibleIds) {
-        if (!isSelecting || selection.isEmpty()) return@LaunchedEffect
-        val pruned = selection.filter { it in visibleIds }
-        if (pruned.size != selection.size) selection = pruned
-        if (pruned.isEmpty()) isSelecting = false
-    }
-
     // Merge order as a lookup, not a scan.
     //
     // Every visible card asks "am I selected, and if so, which number?" while the
@@ -377,6 +358,25 @@ fun DashboardScreen(
                     }
                 }
             }
+    }
+
+    // The selection only ever refers to what is on screen.
+    //
+    // It used to survive anything: search for something, filter to another folder,
+    // or delete a document from elsewhere, and `selection` kept ids that are no
+    // longer listed. That produced two visible bugs — a selection count that
+    // disagreed with what the user could see, and a Merge button that did nothing
+    // at all, because it rebuilt the document list from the ids and quietly found
+    // fewer than two. Pruning is the honest behaviour: the count is what will be
+    // merged, and if nothing selected is still visible, selection ends.
+    val visibleIds = remember(activeDocs) {
+        activeDocs.mapTo(HashSet<String>(activeDocs.size)) { it.id }
+    }
+    LaunchedEffect(visibleIds) {
+        if (!isSelecting || selection.isEmpty()) return@LaunchedEffect
+        val pruned = selection.filter { it in visibleIds }
+        if (pruned.size != selection.size) selection = pruned
+        if (pruned.isEmpty()) isSelecting = false
     }
 
     // One formatted label per document per library change, instead of one per

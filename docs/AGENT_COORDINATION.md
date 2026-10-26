@@ -9,7 +9,7 @@
 
 ## 1. The three rules
 
-1. **Claim before you edit.** Add a row to §4 *In-flight changes* naming the
+1. **Claim before you edit.** Add a row to §4 _In-flight changes_ naming the
    files you are about to touch, **before** you touch them. Remove the row when
    your change is committed or abandoned.
 2. **Never reformat a file you did not claim.** No "clean up imports across the
@@ -22,11 +22,11 @@
 
 ## 2. Branch & handoff mechanics
 
-| | Arena.ai | Antigravity |
-| :--- | :--- | :--- |
-| Writes to | the current `arena/*` branch, pushed to `origin` | local working tree |
-| Verifies by | code review only — **no JDK / Android SDK in the Arena sandbox** | `./gradlew assembleDebug` + device install |
-| Must do before pulling | — | `git stash` or commit local work first |
+|                        | Arena.ai                                                         | Antigravity                                |
+| :--------------------- | :--------------------------------------------------------------- | :----------------------------------------- |
+| Writes to              | the current `arena/*` branch, pushed to `origin`                 | local working tree                         |
+| Verifies by            | code review only — **no JDK / Android SDK in the Arena sandbox** | `./gradlew assembleDebug` + device install |
+| Must do before pulling | —                                                                | `git stash` or commit local work first     |
 
 **Arena cannot compile.** Every Arena change is reviewed-by-eye only. Antigravity
 is the build authority: if `./gradlew assembleDebug` fails, that failure is the
@@ -42,44 +42,44 @@ These are the shared seams between the two agents. **Do not rename, re-order
 parameters of, or change the return type of** anything in this table without
 adding a changelog entry and updating every caller in the same commit.
 
-| Symbol | Kind | Semantics |
-| :--- | :--- | :--- |
-| `ScannerRepository(context)` | ctor | Reads `library.json` on construction. No global singleton. |
-| `ScannerRepository.documents` / `.folders` | `StateFlow` | Single source of truth for the whole UI |
-| `ScannerRepository.movePage(docId, from, to)` | fun | Page reordering |
-| `ScannedPage.imageUri` | field | **Absolute filesystem path** of the display JPEG (may be the edited bake) |
-| `ScannedPage.originalImageUri` | field | Pristine original JPEG; set on first bake. `null` = never edited |
-| `ImageStore.resolveFile(ctx, imageUri)` | fun | Tolerant resolver (abs path / `file://` / bare filename). `null` for un-imported `content://` |
-| `ImageStore.pageFile(ctx, pageId)` | fun | Canonical `filesDir/pages/<pageId>.jpg` |
-| `ImageStore.loadBitmap(ctx, imageUri, w, h)` | fun | Sampled decode, orientation-corrected |
-| `rememberPageImage(imageUri, w, h)` | `@Composable` | Async decode → `ImageBitmap?` |
-| `PageThumbnail(page, modifier)` | `@Composable` | Standard page preview with icon fallback |
-| `ImageProcessingUtils.applyEnhancements(src, filter, rotation, corners)` | fun | warp → rotate → filter, in that order |
-| `DocumentFilters.apply(src, filter, maxDimension)` | fun | The real filter pipeline. Returns `src` for ORIGINAL/failure — compare identity before recycling |
-| `DocumentFilters.applyPreview(src, filter)` | fun | Same pipeline at preview resolution (WYSIWYG) |
-| `DocumentDetector.detect(bitmap)` | fun | **Preferred.** `Detection(corners, confident)` — boundary-scan + RANSAC; never throws |
-| `DocumentDetector.detectQuad(bitmap)` | fun | Compatibility shim for `detect().corners` |
-| `DocumentFilters.stretchPoints(hist)` | fun | Clamped black/white points; the blow-out guard |
-| `PerspectiveWarp.detectQuad(bitmap)` | fun | Thin delegate to `DocumentDetector` (kept for compatibility) |
-| `PerspectiveWarp.warp(src, corners)` | fun | `Matrix.setPolyToPoly` projective warp |
-| `PdfGenerator.generatePdf(ctx, doc, config, bitmapProvider)` | fun | Blocking; **call from `Dispatchers.IO` only** |
-| `SignaturePadDialog(onDismiss, onSignatureConfirmed)` | `@Composable` | Callback receives a **PNG path**, not an opaque token |
-| `CropAndFilterScreen(docId, pageId, repository, onDone, reviewMode)` | `@Composable` | `reviewMode = true` opens on **Borders** with auto-detection and walks the document page by page |
-| `DocumentNaming.defaultScanTitle()` | fun | **The only** sanctioned source of scan titles — it quotes pattern literals |
-| `QuadCorners.FULL_FRAME` | const | Means "no warp". Auto-detect falls back to it rather than cropping |
-| ~~`ImageProcessingUtils.getColorMatrix`~~ | **removed** | Was a global `ColorMatrix`; superseded by `DocumentFilters` |
-| ~~`ImageProcessingUtils.getComposeColorFilter`~~ | **removed** | Editor now previews a real filtered bitmap |
+| Symbol                                                                   | Kind          | Semantics                                                                                        |
+| :----------------------------------------------------------------------- | :------------ | :----------------------------------------------------------------------------------------------- |
+| `ScannerRepository(context)`                                             | ctor          | Reads `library.json` on construction. No global singleton.                                       |
+| `ScannerRepository.documents` / `.folders`                               | `StateFlow`   | Single source of truth for the whole UI                                                          |
+| `ScannerRepository.movePage(docId, from, to)`                            | fun           | Page reordering                                                                                  |
+| `ScannedPage.imageUri`                                                   | field         | **Absolute filesystem path** of the display JPEG (may be the edited bake)                        |
+| `ScannedPage.originalImageUri`                                           | field         | Pristine original JPEG; set on first bake. `null` = never edited                                 |
+| `ImageStore.resolveFile(ctx, imageUri)`                                  | fun           | Tolerant resolver (abs path / `file://` / bare filename). `null` for un-imported `content://`    |
+| `ImageStore.pageFile(ctx, pageId)`                                       | fun           | Canonical `filesDir/pages/<pageId>.jpg`                                                          |
+| `ImageStore.loadBitmap(ctx, imageUri, w, h)`                             | fun           | Sampled decode, orientation-corrected                                                            |
+| `rememberPageImage(imageUri, w, h)`                                      | `@Composable` | Async decode → `ImageBitmap?`                                                                    |
+| `PageThumbnail(page, modifier)`                                          | `@Composable` | Standard page preview with icon fallback                                                         |
+| `ImageProcessingUtils.applyEnhancements(src, filter, rotation, corners)` | fun           | warp → rotate → filter, in that order                                                            |
+| `DocumentFilters.apply(src, filter, maxDimension)`                       | fun           | The real filter pipeline. Returns `src` for ORIGINAL/failure — compare identity before recycling |
+| `DocumentFilters.applyPreview(src, filter)`                              | fun           | Same pipeline at preview resolution (WYSIWYG)                                                    |
+| `DocumentDetector.detect(bitmap)`                                        | fun           | **Preferred.** `Detection(corners, confident)` — boundary-scan + RANSAC; never throws            |
+| `DocumentDetector.detectQuad(bitmap)`                                    | fun           | Compatibility shim for `detect().corners`                                                        |
+| `DocumentFilters.stretchPoints(hist)`                                    | fun           | Clamped black/white points; the blow-out guard                                                   |
+| `PerspectiveWarp.detectQuad(bitmap)`                                     | fun           | Thin delegate to `DocumentDetector` (kept for compatibility)                                     |
+| `PerspectiveWarp.warp(src, corners)`                                     | fun           | `Matrix.setPolyToPoly` projective warp                                                           |
+| `PdfGenerator.generatePdf(ctx, doc, config, bitmapProvider)`             | fun           | Blocking; **call from `Dispatchers.IO` only**                                                    |
+| `SignaturePadDialog(onDismiss, onSignatureConfirmed)`                    | `@Composable` | Callback receives a **PNG path**, not an opaque token                                            |
+| `CropAndFilterScreen(docId, pageId, repository, onDone, reviewMode)`     | `@Composable` | `reviewMode = true` opens on **Borders** with auto-detection and walks the document page by page |
+| `DocumentNaming.defaultScanTitle()`                                      | fun           | **The only** sanctioned source of scan titles — it quotes pattern literals                       |
+| `QuadCorners.FULL_FRAME`                                                 | const         | Means "no warp". Auto-detect falls back to it rather than cropping                               |
+| ~~`ImageProcessingUtils.getColorMatrix`~~                                | **removed**   | Was a global `ColorMatrix`; superseded by `DocumentFilters`                                      |
+| ~~`ImageProcessingUtils.getComposeColorFilter`~~                         | **removed**   | Editor now previews a real filtered bitmap                                                       |
 
 ## 4. In-flight changes
 
 Keep this table short. Delete your row when the change lands.
 
-| Agent | Status | Files | Intent |
-| :--- | :--- | :--- | :--- |
-| Antigravity | ✅ committed | `docs/ORIGINAL_APP_FILTER_SPEC.md`, `docs/AGENTS_CHANGELOG.md` | Reverse-engineered native filter spec & decompiled algorithms |
-| Arena.ai | ✅ committed | `util/DocumentNaming.kt`, `ui/editor/CropAndFilterScreen.kt`, `Navigation.kt`, `NavigationKeys.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/PerspectiveWarp.kt`, `app/build.gradle.kts`, tests + docs | Done-button crash fix, post-capture review flow, folder move, note editing |
-| Arena.ai | ✅ merged (1.7) | `util/DocumentFilters.kt`, `ui/editor/CropAndFilterScreen.kt`, `DocumentFiltersTest.kt`, `app/build.gradle.kts`, docs | Magic Color made uniform (mean-pooled estimator, soft knee), Clear B&W gets a clamped Sauvola refinement, Borders tap auto-detects, preview is warped+filtered. No public signature changed; `saturateGain`/`softKnee`/`boxMeanAndStd`/`sauvolaWindow` are new and `internal`. |
-| Arena.ai | ✅ merged (1.8) | `util/DocumentFilters.kt`, `ui/editor/CropAndFilterScreen.kt`, `util/PageRenderer.kt`, `util/ImageProcessingUtils.kt`, `DocumentFiltersTest.kt`, `app/build.gradle.kts`, docs | 1.8 — Clear B&W: 3 % decision ramp on a sharpened, noise-gated plane; editor preview now renders at the *bake* dimension on the *warped* bitmap, which also fixes the recycled-bitmap blank preview and the stale (uncropped) photo after editing borders. **Additive signature change:** `bake`/`bakeBlocking`/`applyEnhancements` gained `maxDimension` with a default; `bakeDimension(quality)` added. `gatedUnsharp`/`noiseEstimate`/`adaptiveSharpenAmount` are new and `internal`. |
+| Agent       | Status          | Files                                                                                                                                                                                                                                                                           | Intent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Antigravity | ✅ committed    | `docs/ORIGINAL_APP_FILTER_SPEC.md`, `docs/AGENTS_CHANGELOG.md`                                                                                                                                                                                                                  | Reverse-engineered native filter spec & decompiled algorithms                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Arena.ai    | ✅ committed    | `util/DocumentNaming.kt`, `ui/editor/CropAndFilterScreen.kt`, `Navigation.kt`, `NavigationKeys.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/PerspectiveWarp.kt`, `app/build.gradle.kts`, tests + docs | Done-button crash fix, post-capture review flow, folder move, note editing                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Arena.ai    | ✅ merged (1.7) | `util/DocumentFilters.kt`, `ui/editor/CropAndFilterScreen.kt`, `DocumentFiltersTest.kt`, `app/build.gradle.kts`, docs                                                                                                                                                           | Magic Color made uniform (mean-pooled estimator, soft knee), Clear B&W gets a clamped Sauvola refinement, Borders tap auto-detects, preview is warped+filtered. No public signature changed; `saturateGain`/`softKnee`/`boxMeanAndStd`/`sauvolaWindow` are new and `internal`.                                                                                                                                                                                                           |
+| Arena.ai    | ✅ merged (1.8) | `util/DocumentFilters.kt`, `ui/editor/CropAndFilterScreen.kt`, `util/PageRenderer.kt`, `util/ImageProcessingUtils.kt`, `DocumentFiltersTest.kt`, `app/build.gradle.kts`, docs                                                                                                   | 1.8 — Clear B&W: 3 % decision ramp on a sharpened, noise-gated plane; editor preview now renders at the _bake_ dimension on the _warped_ bitmap, which also fixes the recycled-bitmap blank preview and the stale (uncropped) photo after editing borders. **Additive signature change:** `bake`/`bakeBlocking`/`applyEnhancements` gained `maxDimension` with a default; `bakeDimension(quality)` added. `gatedUnsharp`/`noiseEstimate`/`adaptiveSharpenAmount` are new and `internal`. |
 
 | Arena.ai | ✅ merged & verified (1.9) | `util/DocumentFilters.kt`, `util/ImageStore.kt`, `util/PageRenderer.kt`, `util/ImageProcessingUtils.kt`, `model/AppSettings.kt`, `model/Models.kt`, `ui/editor/CropAndFilterScreen.kt`, `DocumentFiltersTest.kt`, `app/build.gradle.kts`, docs | 1.9 — saved pages and exported PDFs are **3200 px ≈ 299 DPI** instead of 187 (capture cap, bake cap and export cap all moved to 3200), Clear B&W is cut with 3 × 3 coverage anti-aliasing instead of a level ramp, and bi-level pages are saved as PNG so the PDF has no JPEG ringing. **Touches four constants that must move together:** `ImageStore.MAX_CAPTURE_DIMENSION`, `DocumentFilters.MAX_PROCESS_DIMENSION`, `ImageQuality.HIGH.maxDimension`, `ExportResolution.HIGH.maxImageDimensionPx`. `saveEditedPage` gained `lossless` (default false); new internal helpers `bands`/`coverageCut`/`bilinearAt`/`medianOf9InPlace`/`boxBlurInPlace`/`noiseFromResidual`; `BW_RAMP_FRACTION`/`BW_MIN_RAMP` deleted. No public signature broken. |
 | Arena.ai | ✅ merged & verified | `util/DocumentFilters.kt`, `util/DocumentFiltersTest.kt`, docs | Native divide table fix from `libimageproc.so` (`0x105e0`–`0x10734`): signed row difference, complemented response byte, 56 tests passing. |
@@ -96,7 +96,7 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai & Antigravity | ✅ merged & verified (Round 27) | `util/DocumentSearch.kt`, `util/NativeSearch.kt` (new), `app/src/main/rust/src/search.rs` + `lib.rs`, `ui/dashboard/DashboardScreen.kt`, `ui/settings/SettingsScreen.kt`, `app/src/test/.../MagicSearchTest.kt` (new), docs | "Magic Search": typo/prefix/stem/synonym/phrase/year matching with highlighted snippets, and the vocabulary walk in Rust behind a parity gate. **`SearchBarField` renamed to `MagicSearchField`.** Fixed `vocabulary.asList()` on `expandReference`. See §6r. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 29) | `util/FramePacing.kt`, `util/FrameBudget.kt`, `util/PerfTrace.kt`, `MainActivity.kt`, `theme/Theme.kt`, `util/PageImageLoader.kt`, `ui/dashboard/DashboardScreen.kt`, `app/src/test/.../FrameBudgetTest.kt`, docs | Dynamic high-refresh display pacing (fastest same-resolution mode), display-aware frame budgets & jank detection, stable card callbacks, and RGB_565 tile decodes. Fixed `FramePacing.kt` display mode/refresh rate application. See §6s. |
 | Antigravity | ✅ merged & verified (Round 30) | `app/src/main/rust/src/kernels.rs`, `app/src/main/rust/src/lib.rs`, `util/NativeFilters.kt`, `util/DocumentFilters.kt` | Rust acceleration of 6 more expensive filter loops: `meanPool` (paper map), `applyLut` (Lighten), `rec601InPlace` (Grayscale), `gaussianBlur3`, `boxBlur3`, `boxBlurInPlace` — all behind byte-for-byte parity gates with Kotlin reference fallbacks. ABI bumped to 2. `verifyNativeFilters` now checks all 9 kernels. All unit tests pass, `app-debug.apk` built (65,687,518 bytes). Reviewed in §6u. |
-| Arena.ai | ✅ committed (Round 33) | `data/LibraryViewModel.kt` (new), `MainActivity.kt`, `Navigation.kt`, `data/ScannerRepository.kt`, `theme/Motion.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/editor/CropAndFilterScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `ui/signature/SignaturePadDialog.kt`, `ui/common/Expressive.kt`, docs | Six behaviour bugs (empty documents, unconfirmed page delete, detail dead-end, stale selection/no-op merge, silent rename discard, per-rotation repository rebuild), five hot paths moved to draw-phase reads / layer transforms / coalesced IPC, four motion corrections. `deletePage` now removes an emptied document; the repository moved to a ViewModel. See §6v. |
+| Arena.ai & Antigravity | ✅ merged & verified (Round 33) | `data/LibraryViewModel.kt` (new), `MainActivity.kt`, `Navigation.kt`, `data/ScannerRepository.kt`, `theme/Motion.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/editor/CropAndFilterScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `ui/signature/SignaturePadDialog.kt`, `ui/common/Expressive.kt`, docs | Six behaviour bugs (empty documents, unconfirmed page delete, detail dead-end, stale selection/no-op merge, silent rename discard, per-rotation repository rebuild), five hot paths moved to draw-phase reads / layer transforms / coalesced IPC, four motion corrections. Fixed compilation issues in DashboardScreen, DocumentDetailScreen, and PageViewerScreen. All unit tests pass, `app-debug.apk` built. See §6v. |
 
 ## 5. File ownership map
 
@@ -148,6 +148,7 @@ Touched by the same change, all committed together:
   `AndroidManifest.xml`.
 
 Rules for this area:
+
 1. New preference → add the field to `AppSettings` **and** a reader in the same
    commit. `AGENTS.md` §2.7: no row may persist a value nothing consumes.
 2. Screens read `repository.settings` (StateFlow) or
@@ -190,7 +191,7 @@ saving/export paths are untouched, so nothing in §6d or spec §13 moves.
   `sheet`, **`dialog`** (new), `fab`, `field`, `iconButton`, `thumbnail`,
   `pressed()`).
 - `theme/Motion.kt` — `Motion.*` specs, `Modifier.pressScale(interactionSource,
-  pressedScale)`, `Modifier.entrance(index)`.
+pressedScale)`, `Modifier.entrance(index)`.
 - `ui/common/Expressive.kt` — `PillButton`, `TonalPillButton`, `TonalIconButton`,
   `InfoPill`, `SectionCard`, `SegmentedPill`, `LoadingDots`, `PageProgressBar`,
   `SectionLabel`, `Hairline`, `RevealWhen`.
@@ -198,7 +199,7 @@ saving/export paths are untouched, so nothing in §6d or spec §13 moves.
 ### Conventions a new screen must follow
 
 1. `TopAppBar` colours from `TopAppBarDefaults.topAppBarColors(containerColor =
-   surface, titleContentColor = onSurface)`; no tonal elevation app bars.
+surface, titleContentColor = onSurface)`; no tonal elevation app bars.
 2. Content sits on `surfaceContainerLow` cards with `DocShapes.cardSmall`/`card`.
 3. Every tappable surface: `remember { MutableInteractionSource() }` +
    `pressScale(source)` + `clip(shape)` + `clickable(source, ripple())`.
@@ -263,12 +264,12 @@ changes; `PageImageLoader.clear()` gained an optional `Context` parameter
 (`clear()` still compiles unchanged).
 
 - `DashboardScreen` no longer uses `LargeTopAppBar`, `TopAppBarDefaults.exitUntil
-  CollapsedScrollBehavior` or `nestedScroll`. **Do not reintroduce a scroll
+CollapsedScrollBehavior` or `nestedScroll`. **Do not reintroduce a scroll
   behavior on the home screen** — it re-measures the app bar every frame and it
   animates the app name, which the user explicitly asked to stop.
 - The title is **"Doc Scanner"**. It is the product name now; `README`/Play listing
   references to "Library" mean the list, not the screen title.
-- Lazy items must not use `Modifier.entrance(...)`: it composes an animation *and*
+- Lazy items must not use `Modifier.entrance(...)`: it composes an animation _and_
   an alpha layer per item and re-runs whenever a card scrolls into view. Use it on
   static header content only.
 - `PageImageLoader` maintains a disk thumbnail cache for requests ≤ its stored
@@ -289,7 +290,7 @@ Files: `util/DocumentDetector.kt` (rewritten internals, same public API),
 - **Do not** reintroduce a "first strong gradient from the frame edge" scan to this
   file. That is the algorithm that produced confident crops through the middle of
   a page. The invariant the current one depends on:
-  - sides are found on a *closed + blurred* background image, never on raw
+  - sides are found on a _closed + blurred_ background image, never on raw
     gradients, because ink must not look like paper;
   - a side with no candidate means the page runs off the frame → frame edge;
   - an unchanged `confident = false` means "invite manual adjustment".
@@ -308,7 +309,7 @@ Files: `util/DocumentDetector.kt` (rewritten internals, same public API),
 Search over a scan's own words is implemented: pages are recognised on device
 right after they are saved (`util/OcrEngine.kt`, `ScannerRepository.indexTextInBackground`),
 and the home screen ranks results from an inverted index (`util/DocumentSearch.kt`).
-Everything below is what the *environment* needs — no code changes.
+Everything below is what the _environment_ needs — no code changes.
 
 ### 1. Rust toolchain — native filter kernels (optional, but wanted)
 
@@ -339,7 +340,7 @@ I DocumentFilters: Rust kernels verified byte-identical to the Kotlin reference
 ```
 
 If it says "unavailable or mismatched", the app silently keeps using Kotlin. That
-is a *correct* app, not a broken one, but it means the `.so` was not loaded (wrong
+is a _correct_ app, not a broken one, but it means the `.so` was not loaded (wrong
 ABI, missing NDK) or a kernel drifted. **Never** "fix" a mismatch by loosening the
 comparison — the byte-for-byte check is the entire safety argument.
 
@@ -370,7 +371,7 @@ implements the re-rank it needs one asset:
   (confirm the URL on the MediaPipe model page; it should be a ~6 MB `.tflite` —
   if the size is wildly different, stop and ask instead of guessing)
 - record `sha256sum` of the downloaded file in this section before it is used
-- `app/src/main/assets/models/` is git-ignored: the asset is *produced*, never
+- `app/src/main/assets/models/` is git-ignored: the asset is _produced_, never
   committed (AGENTS.md §2.5)
 - the build will also need `androidResources { noCompress += "tflite" }` so the
   file can be memory-mapped, plus a MediaPipe Tasks Text dependency. Both land in
@@ -410,7 +411,7 @@ changed in this round.
    OCR backfill emits one library snapshot per page, so a `remember(documents)`
    index would rebuild the whole thing up to 24 times at startup.
 3. **`PageImageLoader.load` is single-flight and must stay that way.** Waiters must
-   await *outside* the `decodeDispatcher` limiter — `limitedParallelism` holds its
+   await _outside_ the `decodeDispatcher` limiter — `limitedParallelism` holds its
    permit for the whole coroutine body, so a waiter that parks inside it can
    deadlock the decoder it is waiting for.
 4. **`PageImageLoader` returns shared, already-downscaled bitmaps.** Callers must
@@ -440,7 +441,7 @@ the scroll path has no pixel loop, and `BitmapFactory` is already C++.)
 ### The diagnosis, in one line
 
 The library was decoding **whole pages to draw thumbnails**, because nothing had
-ever written a thumbnail. PNG pages (*Clear B&W*, *Grayscale*) have no cheap
+ever written a thumbnail. PNG pages (_Clear B&W_, _Grayscale_) have no cheap
 sampled decode, so each tile cost tens of milliseconds and ~30 MB of transient
 allocation while the user scrolled — and background OCR plus ~24 full-library
 emissions were running through the same first scroll.
@@ -508,12 +509,12 @@ No dependencies, no assets, no native changes, no APIs.
    re-stats on purpose). Anything that rewrites a page file outside `ImageStore`
    has to call `ThumbnailStore.invalidate(uri)`.
 5. **The prefetch loop is quantised to rows and uses `collect`.** Keying it on the
-   last visible *item* with `collectLatest` restarts it constantly and cancels its
+   last visible _item_ with `collectLatest` restarts it constantly and cancels its
    own decodes.
 
 ### Rule of thumb for this screen
 
-If a change adds work — any work — to the *first frame of a tile*, it is a
+If a change adds work — any work — to the _first frame of a tile_, it is a
 regression on this screen even if it looks nicer. The user's benchmark is the
 settings list, which does none.
 
@@ -573,13 +574,13 @@ Read it in this order: `slow` (frames > 24 ms) → `pageDecodes` → `worst`. An
 
 ### The flow, as it now behaves
 
-1. Camera → *Done* → review opens on page 1 with its borders already detected.
+1. Camera → _Done_ → review opens on page 1 with its borders already detected.
 2. ~450 ms later a background pass detects **every other page that has never been
    cropped** (≤ `AUTO_DETECT_LIMIT = 40`), writing them in one repository update.
 3. The page strip shows three states: filled = the user confirmed it, accent = the
    detector was confident, amber **"!"** = it was not. Work the exclamation marks,
    not the page numbers.
-4. *Continue to filters* → one filter → one bake over all pages, with progress.
+4. _Continue to filters_ → one filter → one bake over all pages, with progress.
 
 ### Rules that make it safe (do not break these)
 
@@ -590,13 +591,13 @@ Read it in this order: `slow` (frames > 24 ms) → `pageDecodes` → `worst`. An
   emit one library snapshot per page (the lesson from the OCR backfill).
 - **The pass decodes at `DETECT_ALL_DIMENSION = 720`** and recycles each bitmap in a
   `finally`. Do not raise it to preview size: the detector only reads 360 px.
-- **`PageChip(needsReview = …)` must keep distinguishing *confident* from *user
-  confirmed*.** Showing an unconfident detection as "done" is a lie the user only
+- **`PageChip(needsReview = …)` must keep distinguishing _confident_ from _user
+  confirmed_.** Showing an unconfident detection as "done" is a lie the user only
   finds in the exported PDF.
 - **Leaving a page is signing it off** (`persistGeometry` → `borderedPages[id] =
-  true`). That is the only way a flagged page becomes clean, which is why the
-  primary button routes *to* flagged pages instead of past them: `everyPageBordered
-  -> "Continue to filters"`, otherwise `"Check page N"` for the first page still
+true`). That is the only way a flagged page becomes clean, which is why the
+  primary button routes _to_ flagged pages instead of past them: `everyPageBordered
+-> "Continue to filters"`, otherwise `"Check page N"` for the first page still
   flagged, otherwise `"Next page (i of N)"`. Do not let a flagged page be marked
   done by the batch pass — a page the detector was unsure about and nobody looked
   at must still show amber.
@@ -606,7 +607,7 @@ Read it in this order: `slow` (frames > 24 ms) → `pageDecodes` → `worst`. An
 
 Per-page filters (a different filter per page within one batch) are **not**
 implemented: one filter is applied to the document. That matches the requested flow
-("… *then* apply filters") and the single bake pass. If per-page filters are wanted,
+("… _then_ apply filters") and the single bake pass. If per-page filters are wanted,
 the bake loop in `applyFilterToPages` already iterates pages, so it is a UI change,
 not a pipeline change.
 
@@ -624,7 +625,7 @@ not a pipeline change.
 3. **At launch:** the first four rows are warmed into the memory cache 180 ms after
    the library appears (`WARM_ROWS` / `WARM_START_DELAY_MS`), so the first fling is
    not the one empty fling of the session.
-4. **On disk:** one 768 px JPEG per page; `ThumbnailStore.read` scales *inside* the
+4. **On disk:** one 768 px JPEG per page; `ThumbnailStore.read` scales _inside_ the
    decode (`inDensity`/`inTargetDensity`), so no intermediate full-size bitmap.
 
 ### Rules (do not break these)
@@ -710,13 +711,13 @@ adb install -r app/build/outputs/apk/benchmark/app-benchmark.apk
 
 Order of events on a cold start, and what each step is allowed to cost:
 
-| when | work | thread |
-| :--- | :--- | :--- |
-| composition | first screen's tiles request covers | main, then decode (2 slots) |
-| +48 ms | `WARM_ROWS = 6` rows warmed into the memory cache | decode (1 slot) |
-| +1.2 s, idle | stored thumbnails built for pages that predate the store | IO |
-| +3 s, idle | ML Kit text backfill (pauses the moment a scroll starts) | IO |
-| +5 s | orphan page-file sweep | IO |
+| when         | work                                                     | thread                      |
+| :----------- | :------------------------------------------------------- | :-------------------------- |
+| composition  | first screen's tiles request covers                      | main, then decode (2 slots) |
+| +48 ms       | `WARM_ROWS = 6` rows warmed into the memory cache        | decode (1 slot)             |
+| +1.2 s, idle | stored thumbnails built for pages that predate the store | IO                          |
+| +3 s, idle   | ML Kit text backfill (pauses the moment a scroll starts) | IO                          |
+| +5 s         | orphan page-file sweep                                   | IO                          |
 
 None of it touches the main thread, and everything after the first row is cancellable
 the moment a gesture begins.
@@ -736,22 +737,22 @@ hiding it. It cannot be produced in this sandbox: it needs `adb` and real hardwa
 ### Nothing to provision
 
 No new dependency, no new asset, no new binary. `pypdf`/`pypdfium2` were used in
-Arena's sandbox to *validate the file format* and are not part of the app.
+Arena's sandbox to _validate the file format_ and are not part of the app.
 
 ### Why there is a second PDF engine
 
 `android.graphics.pdf.PdfDocument` cannot encrypt, and it always embeds page
 images losslessly — which is exactly why a photographed page becomes a
 multi-megabyte attachment. There is also no PDF library anywhere in the original
-APK (`classes*.dex` contains only `com.shockwave.pdfium`, a *viewer*), so there was
+APK (`classes*.dex` contains only `com.shockwave.pdfium`, a _viewer_), so there was
 nothing to copy: `util/PdfWriter.kt` is written from the specification.
 
 The platform engine is still the default. `PdfGenerator.generatePdf` picks:
 
-| condition | engine | why |
-| :--- | :--- | :--- |
-| no password, `compression == ORIGINAL` | `PdfDocument` | byte-identical to every previous round — no regression on the ordinary export |
-| password, or any lossy level, or a merge | `PdfWriter` | it can encrypt and it chooses the image encoding |
+| condition                                | engine        | why                                                                           |
+| :--------------------------------------- | :------------ | :---------------------------------------------------------------------------- |
+| no password, `compression == ORIGINAL`   | `PdfDocument` | byte-identical to every previous round — no regression on the ordinary export |
+| password, or any lossy level, or a merge | `PdfWriter`   | it can encrypt and it chooses the image encoding                              |
 
 **Do not "simplify" this by deleting the platform path.** It is the only output
 that a device has actually been tested against at 300 DPI, and it is the reason a
@@ -791,7 +792,7 @@ not composition; `sync`/`layout` dominating means our own composition.
 ### What Antigravity should check
 
 1. `./gradlew testDebugUnitTest` — the two new test files are pure JVM and need no
-   device. `PdfSecurityTest` pins the *exact* `/O`, `/U` and per-object key bytes
+   device. `PdfSecurityTest` pins the _exact_ `/O`, `/U` and per-object key bytes
    that PDFium, MuPDF and pypdf all accepted; if a refactor changes them the export
    stops opening, and the test says so first. `PdfWriterTest` writes a real file and
    walks its cross-reference table, because a PDF is a format with offsets in it and
@@ -803,7 +804,7 @@ not composition; `sync`/`layout` dominating means our own composition.
      real file size, and `Balanced` should be dramatically smaller than `Original`;
    - long-press a card on the library screen → pick two → `Merge PDF` → the sheet
      lists the order → the output is one PDF with both documents' pages.
-3. Anything that looks wrong in the *new* path only: the platform path is
+3. Anything that looks wrong in the _new_ path only: the platform path is
    untouched, so compare against an `Original`/no-password export.
 
 ### Deliberate limitations
@@ -841,7 +842,7 @@ the job: one `Vec<i32>` per call, `std` only.
 
 ### Why this one is worth native code
 
-Search has exactly one loop whose cost grows with the *library* rather than with the
+Search has exactly one loop whose cost grows with the _library_ rather than with the
 query: expanding each typed word into the index's vocabulary (prefixes and
 near-spellings). On a 3,000-page library that vocabulary is tens of thousands of
 words. Everything else in a query is postings lookups that already scale with the
@@ -849,14 +850,14 @@ number of matches.
 
 ### The contract that must not drift
 
-| fact | where |
-| :--- | :--- |
-| `DocumentSearch.expandReference` is the **definition** of the walk | `util/DocumentSearch.kt` |
-| `search.rs::expand` must produce the **same triples in the same order** | `app/src/main/rust/src/search.rs` |
-| order is **vocabulary outer, query inner** | both |
-| codes: `0` exact, `-1` prefix, `1`/`2` edit distance | both |
-| an entry matches at most one code per query, priority exact → prefix → distance | both |
-| `SEARCH_ABI_VERSION` (1) is versioned **separately** from the pixel `ABI_VERSION` | `lib.rs`, `NativeSearch.kt` |
+| fact                                                                              | where                             |
+| :-------------------------------------------------------------------------------- | :-------------------------------- |
+| `DocumentSearch.expandReference` is the **definition** of the walk                | `util/DocumentSearch.kt`          |
+| `search.rs::expand` must produce the **same triples in the same order**           | `app/src/main/rust/src/search.rs` |
+| order is **vocabulary outer, query inner**                                        | both                              |
+| codes: `0` exact, `-1` prefix, `1`/`2` edit distance                              | both                              |
+| an entry matches at most one code per query, priority exact → prefix → distance   | both                              |
+| `SEARCH_ABI_VERSION` (1) is versioned **separately** from the pixel `ABI_VERSION` | `lib.rs`, `NativeSearch.kt`       |
 
 The golden triple vector (`invoce`/`invoi`/`aadhar`/`dob`/`totl` over an 18-word
 vocabulary) is asserted in **both** `search.rs`'s `#[cfg(test)]` module and
@@ -866,9 +867,8 @@ a user ever sees a wrong result.
 
 ### Do not undo
 
-- **The length gates on fuzzy matching.** One edit needs a 5-character word, two need
-  8. Without them "tax" matches "toy" and the search stops being trustworthy.
-- **The `stem()` pairing.** The index and the query are stemmed by the *same*
+- **The length gates on fuzzy matching.** One edit needs a 5-character word, two need 8. Without them "tax" matches "toy" and the search stops being trustworthy.
+- **The `stem()` pairing.** The index and the query are stemmed by the _same_
   function; changing one side silently halves recall.
 - **Postings for titles and tags.** They used to be an O(documents) `contains` scan per
   term per keystroke — the reason a big library felt slow while typing.
@@ -881,7 +881,7 @@ a user ever sees a wrong result.
 
 1. `./gradlew testDebugUnitTest` — 20 new tests, all pure JVM, no device.
 2. Settings → **Performance (debug)** prints `Search kernel: Rust (verified against
-   the Kotlin reference)` when the `.so` loaded *and* the parity check passed, and
+the Kotlin reference)` when the `.so` loaded _and_ the parity check passed, and
    `Kotlin reference` otherwise. Both are correct; the first is faster.
 3. Type `invoce`, `invoi`, `invoices`, `aadhaar` and `"pan card"` against a library
    that contains the correct spellings — each should find the document, and the
@@ -909,28 +909,28 @@ search ranking are byte-identical to round 28.
 
 ### Files
 
-| file | what it is for |
-| :--- | :--- |
-| `util/FramePacing.kt` | chooses and requests the display mode; `apply`, `currentRate`, `rateOf` |
-| `util/FrameBudget.kt` | **pure JVM**, no Android types — budget, missed, jank, histogram p90, fps |
-| `util/PerfTrace.kt` | display-aware monitor; every threshold now comes from `FrameBudget` |
-| `MainActivity.kt` | `FramePacing.apply(window)` before the first frame, then `setDisplayRefreshRate` |
-| `theme/Theme.kt` | `colorScheme`/`accents` are `remember`ed instead of rebuilt per call |
-| `util/PageImageLoader.kt` | `configFor(w,h)`; `RGB_565` for tiles ≤ 1024 px |
-| `ui/dashboard/DashboardScreen.kt` | selection map, one stable callback set per screen |
-| `ui/detail/DocumentDetailScreen.kt` | date pill's `SimpleDateFormat` remembered |
-| `ui/settings/SettingsScreen.kt` | legend prints panel Hz and ms/frame |
+| file                                | what it is for                                                                   |
+| :---------------------------------- | :------------------------------------------------------------------------------- |
+| `util/FramePacing.kt`               | chooses and requests the display mode; `apply`, `currentRate`, `rateOf`          |
+| `util/FrameBudget.kt`               | **pure JVM**, no Android types — budget, missed, jank, histogram p90, fps        |
+| `util/PerfTrace.kt`                 | display-aware monitor; every threshold now comes from `FrameBudget`              |
+| `MainActivity.kt`                   | `FramePacing.apply(window)` before the first frame, then `setDisplayRefreshRate` |
+| `theme/Theme.kt`                    | `colorScheme`/`accents` are `remember`ed instead of rebuilt per call             |
+| `util/PageImageLoader.kt`           | `configFor(w,h)`; `RGB_565` for tiles ≤ 1024 px                                  |
+| `ui/dashboard/DashboardScreen.kt`   | selection map, one stable callback set per screen                                |
+| `ui/detail/DocumentDetailScreen.kt` | date pill's `SimpleDateFormat` remembered                                        |
+| `ui/settings/SettingsScreen.kt`     | legend prints panel Hz and ms/frame                                              |
 
 ### The contract that must not drift
 
-| fact | where |
-| :--- | :--- |
-| budget = `1e9 / clamp(hz, 30, 240)` | `FrameBudget.budgetNs` |
-| missed = interval > **1.5×** budget | `FrameBudget.MISSED_FRAME_FACTOR` |
-| jank window = p90 ≥ **1.25×** budget **or** max ≥ 2× budget | `FrameBudget.isJankyWindow` |
+| fact                                                                       | where                                              |
+| :------------------------------------------------------------------------- | :------------------------------------------------- |
+| budget = `1e9 / clamp(hz, 30, 240)`                                        | `FrameBudget.budgetNs`                             |
+| missed = interval > **1.5×** budget                                        | `FrameBudget.MISSED_FRAME_FACTOR`                  |
+| jank window = p90 ≥ **1.25×** budget **or** max ≥ 2× budget                | `FrameBudget.isJankyWindow`                        |
 | the rate used for thresholds is the one **granted**, not the one requested | `MainActivity` → `PerfTrace.setDisplayRefreshRate` |
-| `RGB_565` only where `maxOf(w,h) ≤ 1024` | `PageImageLoader.OPAQUE_TILE_LIMIT` |
-| card callbacks are `(String) -> Unit`, one instance per screen | `DashboardScreen` |
+| `RGB_565` only where `maxOf(w,h) ≤ 1024`                                   | `PageImageLoader.OPAQUE_TILE_LIMIT`                |
+| card callbacks are `(String) -> Unit`, one instance per screen             | `DashboardScreen`                                  |
 
 `isMissed(60f, 16ms) == false` and `isMissed(120f, 16ms) == true` is pinned in
 `FrameBudgetTest`: it is the exact blindness that made round 28 look smooth.
@@ -1187,9 +1187,129 @@ change behaviour other screens can see; they are flagged first.
 
 ## 7. Known-good state
 
-Last verified build: **Verified by Antigravity** on 2026-10-26 (`./gradlew testDebugUnitTest assembleDebug` passed — Round 30).
-Round 33 (Arena, 2026-10-26) is **source-only and uncompiled**: no JDK/SDK/`cargo` in
-that sandbox. It adds `data/LibraryViewModel.kt` and changes `MainActivity`'s
-ownership of the repository, so the first machine that can build should treat
-`./gradlew testDebugUnitTest assembleDebug` as the gate for it.
+Last verified build: **Verified by Antigravity** on 2026-10-26 (`./gradlew testDebugUnitTest assembleDebug` passed — Round 33).
+Round 33 (Arena & Antigravity, 2026-10-26): Verified Round 33 source changes. Fixed 3 compilation errors: `DashboardScreen.kt` (moved `visibleIds` after `activeDocs` declaration), `DocumentDetailScreen.kt` (added missing `LaunchedEffect` import), and `PageViewerScreen.kt` (added missing `@Composable` annotation to `ViewerPageStep`). All unit tests pass (`BUILD SUCCESSFUL in 24s`), `app-debug.apk` built (66,209,649 bytes).
 Round 30: Added 6 new Rust kernels (meanPool, applyLut, rec601InPlace, gaussianBlur3, boxBlur3, boxBlurInPlace), bumped ABI to 2, and wired Kotlin dispatch with reference fallback for every kernel. All unit tests pass, `app-debug.apk` built (65,687,518 bytes).
+
+## 8. Performance Optimization Analysis (GitHub Copilot, 2026-10-27)
+
+> **Note**: This section documents optimization opportunities identified during a full workspace review. These are **analysis only** — no implementation has been done. Per user request, these thoughts are recorded here for other agents to review before any changes are made.
+
+### 8a. REA (Reverse Engineering Agent) — TypeScript/Node.js MCP Server
+
+**Architecture**: Worker-process isolation for JavaScript/web analysis, lazy provider loading, binary session composition with multiple providers (Hopper, Ghidra, IDA, Kuna).
+
+#### High-Impact Opportunities
+
+| Area                               | Current State                                                                                                                   | Optimization Opportunity                                                                                                                                                                                 | Risk                                                                              |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| **Worker Request Handling**        | Sequential processing in `JavaScriptAnalysisWorkerServer.ts` — one job at a time with `serveJavaScriptAnalysisWorker` loop      | Add a small worker pool (2-4 workers) behind a request queue. The `analyzeJob` function is already stateless per-request.                                                                                | Low — worker protocol already supports concurrent requests via separate processes |
+| **Memory Pressure Management**     | Manual `gc()` calls + heap monitoring in `JavaScriptAnalysisWorkerServer.ts:180-200`                                            | Replace reactive GC with proactive memory budgeting: track allocation rate, pre-emptively yield before pressure spikes. The `checkpointJavaScriptAnalysis` (8ms deadline) already provides yield points. | Low — uses existing checkpoint infrastructure                                     |
+| **Transfer Protocol Byte Budgets** | Conservative retention: `bytes * 8 + records * 64` in `JavaScriptAnalysisTransfer.ts:45`                                        | Profile actual retention ratios; the 8x multiplier may over-provision by 2-4x. Consider adaptive budget based on observed compression ratios.                                                            | Medium — affects transfer admission; needs benchmarking                           |
+| **Provider Lazy Loading**          | `LazyAnalysisProvider` loads on first client creation; `AnalysisProviderRegistry` uses `SharedStartupAttempt` for deduplication | Add provider warm-up for known target types (e.g., pre-load Hopper for Mach-O, Ghidra for ELF). Registry already tracks capabilities — can predict likely providers.                                     | Low — additive, preserves lazy-loading fallback                                   |
+| **Turbo Build Cache**              | 7-day / 500MB cache in `turbo.json`                                                                                             | Increase cache TTL for stable tasks (typecheck, lint); add remote cache (S3/GCS) for CI. Current local-only cache misses on fresh clones.                                                                | Low — configuration only                                                          |
+| **Vitest Parallelism**             | `maxWorkers: 2` in `vitest.config.ts`                                                                                           | Increase to logical CPU count for CPU-bound test suites (domain, services). Keep low for integration tests that spawn processes.                                                                         | Low — test-only change                                                            |
+
+#### Medium-Impact Opportunities
+
+- **Binary Session Composition**: `createBinarySession` in `composition/binary.ts` creates providers sequentially. Could parallelize provider discovery (`candidates()` calls) since they're independent.
+- **Artifact Extraction**: `mcp_rea_extract_artifact` used in pipeline — consider streaming extraction for large APKs instead of full temp directory.
+- **TypeScript Compilation**: `tsc --noEmit` for typecheck — consider `--incremental` with composite projects for faster incremental checks.
+
+---
+
+### 8b. doc-scanner — Android Document Scanner (Kotlin/Gradle)
+
+**Architecture**: Jetpack Compose, Material 3 Expressive, CameraX, ML Kit, Rust kernels via JNI. Gradle 9.1.0, AGP 9.0.1, Kotlin 2.3.20.
+
+#### High-Impact Opportunities
+
+| Area                          | Current State                                                          | Optimization Opportunity                                                                                                                                     | Risk                                |
+| ----------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
+| **Gradle Parallel Execution** | `org.gradle.parallel=true` **commented out** in `gradle.properties:22` | Enable parallel project execution. The project is decoupled (single `:app` module + root), so this is safe. Expected 20-30% configuration+execution speedup. | Low — standard Gradle feature       |
+| **JVM Heap for Daemon**       | `-Xmx1536m` in `gradle.properties:6`                                   | Increase to `-Xmx3g` or `-Xmx4g` for large builds (Rust + Kotlin + Compose). Current heap may cause GC thrashing during `:app:compileDebugKotlin`.           | Low — more memory, faster builds    |
+| **Configuration Cache**       | Already enabled (`org.gradle.configuration-cache=true`)                | Good — keep enabled. Verify all tasks are cache-compatible (no `doLast` with file I/O).                                                                      |
+| **Kotlin Daemon**             | `-Xmx768m` in `gradle.properties:7`                                    | Increase to `-Xmx1536m` — Kotlin compilation is memory-intensive with Compose compiler.                                                                      |
+| **Rust Kernel Build**         | `buildRustKernels` task runs on every `preBuild`                       | Cache Rust artifacts via `cargo` cache + Gradle build cache. Current: re-compiles on every clean. Add `cargo` cache directory to Gradle cache.               | Medium — requires cargo cache setup |
+| **Benchmark Build Type**      | `benchmark` type exists (non-debuggable, debug-signed)                 | Excellent — already implemented. Ensure CI uses `assembleBenchmark` for performance validation.                                                              |
+
+#### Medium-Impact Opportunities
+
+- **Compose Compiler Reports**: Enable `-Pcompose.compiler.metrics=true` to identify recomposition hotspots.
+- **Baseline Profile**: §6m notes this as "biggest lever" — requires physical device. Add `:baselineprofile` module when device available.
+- **RGB_565 for Thumbnails**: Already implemented in Round 29 (`PageImageLoader.OPAQUE_TILE_LIMIT = 1024`). Verify it's active in release builds.
+- **Thumbnail Prefetch**: Round 24 added warm-up rows — consider increasing `WARM_ROWS` from 6 to 8-10 for larger screens.
+
+#### Already Optimized (Rounds 20-30)
+
+- ✅ Thumbnail cache (`ThumbnailStore`) — 768px JPEG, written at save time
+- ✅ Frame pacing for 120Hz displays (`FramePacing.kt`, `FrameBudget.kt`)
+- ✅ Rust acceleration of 9 filter kernels (ABI v2)
+- ✅ Single-flight image loader with memory cache
+- ✅ Row-quantised prefetch, memoised thumbnail keys
+- ✅ Overdraw elimination (transparent Scaffold, footer-only backgrounds)
+- ✅ Stable callbacks in `LazyVerticalGrid` (no inline lambdas)
+- ✅ Atomic library writes, debounced persistence
+
+---
+
+### 8c. re-workspace — APK Reverse Engineering Pipeline (PowerShell/Bash)
+
+**Architecture**: 8-step sequential pipeline in `re_pipeline.ps1` — archive → JADX → apktool → native extraction → REA analysis → Ghidra decompilation.
+
+#### High-Impact Opportunities
+
+| Area                         | Current State                                                                | Optimization Opportunity                                                                                                                                                                                                             | Risk                               |
+| ---------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
+| **Pipeline Parallelization** | Steps 1-4 sequential; Steps 5-7 (REA + Ghidra per `.so`) sequential per file | **Embarrassingly parallel**: each `.so` analysis is independent. Run REA + Ghidra for all `.so` files in parallel (PowerShell `Start-Job` or `ForEach-Object -Parallel`). Expected 4-8x speedup on multi-core for native-heavy APKs. | Low — independent operations       |
+| **JADX + apktool Parallel**  | Step 2 (JADX) then Step 3 (apktool)                                          | These are independent — run concurrently. Both read the APK, write to separate output dirs.                                                                                                                                          | Low — no shared outputs            |
+| **REA Analysis Caching**     | REA re-analyzes same `.so` on every run                                      | Cache REA reports keyed by `.so` SHA-256. Skip if unchanged. REA already outputs deterministic YAML.                                                                                                                                 | Low — additive caching layer       |
+| **Ghidra Headless Reuse**    | New Ghidra project per `.so` (`temp_proj` deleted after)                     | Reuse single Ghidra project for all `.so` files in one APK. Ghidra supports multiple programs per project. Avoids JVM startup overhead per file.                                                                                     | Medium — Ghidra project management |
+| **Temp Directory Cleanup**   | `$tempZipDir` created/deleted per run                                        | Use persistent temp with cleanup policy; avoid repeated `tar.exe` extraction for unchanged APKs.                                                                                                                                     | Low                                |
+
+#### Medium-Impact Opportunities
+
+- **PowerShell 7+ / pwsh**: Migrate from Windows PowerShell 5.1 to PowerShell 7+ for `ForEach-Object -Parallel`, better performance, cross-platform.
+- **Structured Logging**: Replace `Write-Host` with structured JSON logs for pipeline observability and CI integration.
+- **Incremental APK Analysis**: Track APK hash; skip entire pipeline if APK unchanged (unless forced).
+
+---
+
+### 8d. Cross-Project Synergies
+
+| Synergy                | Description                                                                                                           |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **REA ↔ re-workspace** | re-workspace calls `rea` CLI as subprocess. REA's worker pool (8a) would directly accelerate re-workspace Steps 5-6.  |
+| **doc-scanner ↔ REA**  | doc-scanner's Rust kernels could be analyzed by REA for verification/parity checking (Ghidra decompilation of `.so`). |
+| **Shared Tooling**     | All three use JDK 21, Android SDK. Centralize tool versions in one place (e.g., `tools/versions.toml`).               |
+
+---
+
+### 8e. Prioritized Action Plan (If Implementation Approved)
+
+| Priority | Task                                          | Project      | Effort        | Expected Gain                |
+| -------- | --------------------------------------------- | ------------ | ------------- | ---------------------------- |
+| 1        | Enable `org.gradle.parallel=true`             | doc-scanner  | 1 line        | 20-30% build speedup         |
+| 2        | Increase Gradle/Kotlin daemon heaps           | doc-scanner  | 2 lines       | Reduced GC pauses            |
+| 3        | Parallelize `.so` analysis in re_pipeline.ps1 | re-workspace | ~30 lines     | 4-8x native analysis speedup |
+| 4        | Add REA worker pool (2-4 workers)             | REA          | ~50 lines     | 2-4x JS analysis throughput  |
+| 5        | Cache REA/Ghidra results by SHA-256           | re-workspace | ~40 lines     | Skip unchanged analyses      |
+| 6        | Adaptive transfer byte budgets                | REA          | ~20 lines     | Reduced memory pressure      |
+| 7        | Baseline Profile for doc-scanner              | doc-scanner  | New module    | 20-40% first-run frame time  |
+| 8        | Cargo cache for Rust kernels                  | doc-scanner  | Gradle config | Faster Rust builds           |
+
+---
+
+### 8f. Validation Requirements
+
+Before any optimization lands:
+
+1. **REA**: Run `npm run test:ci` (full test suite + coverage) + `npm run verify:javascript:retained-facts`
+2. **doc-scanner**: `./gradlew testDebugUnitTest assembleBenchmark` + device scroll test (`adb logcat -s DocScannerPerf`)
+3. **re-workspace**: Run pipeline on 3+ APKs (small/medium/large native lib count) and compare wall time
+
+---
+
+**Recorded by**: GitHub Copilot (Nemotron 3 Ultra)  
+**Date**: 2026-10-27  
+**Status**: Analysis only — awaiting review by Arena.ai and Antigravity before any implementation

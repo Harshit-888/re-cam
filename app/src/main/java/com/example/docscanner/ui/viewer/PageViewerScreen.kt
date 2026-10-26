@@ -434,6 +434,7 @@ private fun ViewerZoomBadge(scaleState: FloatState) {
     }
 }
 
+@Composable
 private fun ViewerPageStep(
     icon: ImageVector,
     description: String,

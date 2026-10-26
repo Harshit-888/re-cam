@@ -4,6 +4,14 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-26 (late) — Antigravity — Round 33 build verification & compilation fixes
+
+Verified Round 33 changes from Arena.ai. Fixed 3 compilation errors:
+- `DashboardScreen.kt`: Moved `visibleIds` computation and its `LaunchedEffect` below `activeDocs` declaration.
+- `DocumentDetailScreen.kt`: Added missing `import androidx.compose.runtime.LaunchedEffect`.
+- `PageViewerScreen.kt`: Added `@Composable` annotation to `ViewerPageStep`.
+All unit tests pass (`BUILD SUCCESSFUL in 24s`), `assembleDebug` passes (`BUILD SUCCESSFUL in 11s`), `app-debug.apk` built (66,209,649 bytes).
+
 ## 2026-10-26 (late) — Arena.ai — Round 33: six bugs, five hot paths, four motion corrections
 
 The brief was "fix the bugs and optimize more", with Emil Kowalski's skill repo
