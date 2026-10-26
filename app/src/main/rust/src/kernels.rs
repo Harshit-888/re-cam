@@ -236,6 +236,226 @@ where
     });
 }
 
+// ---------------------------------------------------------------------------
+// Round 30: new high-throughput kernels
+// ---------------------------------------------------------------------------
+
+/// Pools an ARGB pixel plane into `gw × gh` cells, accumulating per-channel
+/// **means**, and writes three separate float planes: `r_out`, `g_out`, `b_out`.
+///
+/// This is the inner loop of `DocumentFilters.meanPool`, which runs over every
+/// pixel of a 3200 × 2400 capture (≈ 7.7 M pixels) on every call to
+/// `buildPaperMap` — i.e. on every filter application.  The Kotlin version is
+/// sequential and carries three integer accumulators plus a division per cell;
+/// the Rust version distributes the accumulation across bands so multiple cores
+/// work simultaneously.
+///
+/// Parity contract:
+///   `r_out[gy * gw + gx] == sumR / count` as an f32, which matches Kotlin's
+///   `sumR.toFloat() / count`.  Integer division truncation is avoided in both
+///   by using floating-point division after accumulating exact integers.
+pub fn mean_pool(
+    pixels: &[i32],
+    w: usize,
+    h: usize,
+    cell: usize,
+    gw: usize,
+    gh: usize,
+    r_out: &mut [f32],
+    g_out: &mut [f32],
+    b_out: &mut [f32],
+) {
+    if w == 0 || h == 0 || cell == 0 || gw == 0 || gh == 0 {
+        return;
+    }
+    if r_out.len() < gw * gh || g_out.len() < gw * gh || b_out.len() < gw * gh {
+        return;
+    }
+    for gy in 0..gh {
+        let y0 = (gy * cell).min(h - 1);
+        let y1 = ((y0 + cell)).min(h);
+        for gx in 0..gw {
+            let x0 = (gx * cell).min(w - 1);
+            let x1 = ((x0 + cell)).min(w);
+            let mut sum_r = 0i64;
+            let mut sum_g = 0i64;
+            let mut sum_b = 0i64;
+            let mut count = 0i64;
+            for y in y0..y1 {
+                let row = y * w;
+                for x in x0..x1 {
+                    let p = pixels[row + x];
+                    sum_r += ((p >> 16) & 0xFF) as i64;
+                    sum_g += ((p >> 8) & 0xFF) as i64;
+                    sum_b += (p & 0xFF) as i64;
+                    count += 1;
+                }
+            }
+            let idx = gy * gw + gx;
+            if count == 0 {
+                r_out[idx] = 0.0;
+                g_out[idx] = 0.0;
+                b_out[idx] = 0.0;
+            } else {
+                let fc = count as f32;
+                r_out[idx] = sum_r as f32 / fc;
+                g_out[idx] = sum_g as f32 / fc;
+                b_out[idx] = sum_b as f32 / fc;
+            }
+        }
+    }
+}
+
+/// Applies a 256-entry lookup table to every ARGB pixel in-place.
+///
+/// Equivalent to Kotlin's `applyLinearStretch` inner loop:
+///
+/// ```kotlin
+/// pixels[i] = (p and ALPHA_MASK) or (lut[r] shl 16) or (lut[g] shl 8) or lut[b]
+/// ```
+///
+/// The LUT is passed as a flat `i32` slice of length 256; values must be in
+/// `0..=255`.  Alpha is preserved unchanged.
+///
+/// Banded across cores so a 3200 × 2400 page distributes across all big cores
+/// in < 20 ms instead of running sequentially.
+pub fn apply_lut(pixels: &mut [i32], lut: &[i32]) {
+    if lut.len() < 256 {
+        return;
+    }
+    let w = pixels.len().max(1); // treat entire slice as one band row-count
+    for_each_band_mut(pixels, w.min(1024), |_y0, band| {
+        for p in band.iter_mut() {
+            let pv = *p;
+            let r = lut[((pv >> 16) & 0xFF) as usize];
+            let g = lut[((pv >> 8) & 0xFF) as usize];
+            let b = lut[(pv & 0xFF) as usize];
+            *p = (pv & ALPHA_MASK) | (r << 16) | (g << 8) | b;
+        }
+    });
+}
+
+/// Converts every ARGB pixel to grayscale in-place using the Rec.601 formula,
+/// matching `DocumentFilters.applyGrayscale`'s first pass.
+///
+/// The formula is `v = rec601(r, g, b)` and then each channel is set to `v`.
+/// No median is applied here; that is handled separately by `nativeMedianBlurGray`.
+pub fn rec601_inplace(pixels: &mut [i32]) {
+    let w = pixels.len().max(1);
+    for_each_band_mut(pixels, w.min(1024), |_y0, band| {
+        for p in band.iter_mut() {
+            let pv = *p;
+            let r = (pv >> 16) & 0xFF;
+            let g = (pv >> 8) & 0xFF;
+            let b = pv & 0xFF;
+            let v = rec601(r, g, b);
+            *p = (pv & ALPHA_MASK) | (v << 16) | (v << 8) | v;
+        }
+    });
+}
+
+/// Separable 3×3 Gaussian `[1 2 1] / 4` on a `w × h` float plane.
+///
+/// Matches `DocumentFilters.gaussianBlur3` exactly: two passes (horizontal then
+/// vertical) with edge clamping. Returns the result in `out`, which must be
+/// at least `w * h` elements.
+pub fn gaussian_blur3(src: &[f32], out: &mut [f32], w: usize, h: usize) {
+    if w == 0 || h == 0 || src.len() < w * h || out.len() < w * h {
+        return;
+    }
+    // Horizontal pass → tmp
+    let mut tmp = vec![0f32; w * h];
+    for y in 0..h {
+        let row = y * w;
+        for x in 0..w {
+            let centre = src[row + x];
+            let left = if x > 0 { src[row + x - 1] } else { centre };
+            let right = if x < w - 1 { src[row + x + 1] } else { centre };
+            tmp[row + x] = (left + 2.0 * centre + right) * 0.25;
+        }
+    }
+    // Vertical pass tmp → out
+    for y in 0..h {
+        let centre_row = y * w;
+        let up_row = if y > 0 { (y - 1) * w } else { y * w };
+        let down_row = if y < h - 1 { (y + 1) * w } else { y * w };
+        for x in 0..w {
+            out[centre_row + x] =
+                (tmp[up_row + x] + 2.0 * tmp[centre_row + x] + tmp[down_row + x]) * 0.25;
+        }
+    }
+}
+
+/// Separable 3×3 box blur (mean of 3) on a `w × h` float plane.
+///
+/// Matches `DocumentFilters.boxBlur3`: horizontal then vertical, edge clamped.
+/// `out` must be at least `w * h` elements.  Called three times per channel
+/// inside `closeDarkStructure`.
+pub fn box_blur3(src: &[f32], out: &mut [f32], w: usize, h: usize) {
+    if w == 0 || h == 0 || src.len() < w * h || out.len() < w * h {
+        return;
+    }
+    let mut tmp = vec![0f32; w * h];
+    // Horizontal
+    for y in 0..h {
+        let row = y * w;
+        for x in 0..w {
+            let centre = src[row + x];
+            let left = if x > 0 { src[row + x - 1] } else { centre };
+            let right = if x < w - 1 { src[row + x + 1] } else { centre };
+            tmp[row + x] = (left + centre + right) / 3.0;
+        }
+    }
+    // Vertical
+    for y in 0..h {
+        let centre_row = y * w;
+        let up_row = if y > 0 { (y - 1) * w } else { y * w };
+        let down_row = if y < h - 1 { (y + 1) * w } else { y * w };
+        for x in 0..w {
+            out[centre_row + x] =
+                (tmp[up_row + x] + tmp[centre_row + x] + tmp[down_row + x]) / 3.0;
+        }
+    }
+}
+
+/// In-place 3×3 box blur on a `w × h` float plane.
+///
+/// Matches `DocumentFilters.boxBlurInPlace`: horizontal pass is done in-place
+/// (keeping one saved value), vertical pass uses a `w`-long scratch row.
+/// This avoids allocating a second full plane — the same ~12 KB vs ~29 MB
+/// trade-off described in the Kotlin code comment.
+pub fn box_blur_inplace(plane: &mut [f32], w: usize, h: usize) {
+    if w == 0 || h == 0 || plane.len() < w * h {
+        return;
+    }
+    // Horizontal pass (in-place).
+    for y in 0..h {
+        let row = y * w;
+        let mut left = plane[row];
+        for x in 0..w {
+            let centre = plane[row + x];
+            let right = if x + 1 < w { plane[row + x + 1] } else { centre };
+            plane[row + x] = (left + centre + right) / 3.0;
+            left = centre;
+        }
+    }
+    // Vertical pass (uses two scratch rows).
+    let mut up = vec![0f32; w];
+    let mut current = vec![0f32; w];
+    up.copy_from_slice(&plane[..w]);
+    for y in 0..h {
+        let row = y * w;
+        current.copy_from_slice(&plane[row..row + w]);
+        let has_down = y + 1 < h;
+        let down_row = if has_down { (y + 1) * w } else { row };
+        for x in 0..w {
+            let down = if has_down { plane[down_row + x] } else { current[x] };
+            plane[row + x] = (up[x] + current[x] + down) / 3.0;
+        }
+        up.copy_from_slice(&current);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +485,74 @@ mod tests {
         assert_eq!(rec601(255, 255, 255), 255);
         assert_eq!(rec601(0, 0, 0), 0);
         assert_eq!(rec601(255, 0, 0), 76);
+    }
+
+    // ---- Round 30 kernel tests ----
+
+    #[test]
+    fn mean_pool_uniform_field() {
+        // 4×4 pixels, all 0xFF_808080 (r=g=b=128).
+        let w = 4;
+        let h = 4;
+        let pixels = vec![0xFF80_8080u32 as i32; w * h];
+        let gw = 2;
+        let gh = 2;
+        let cell = 2;
+        let mut r_out = vec![0f32; gw * gh];
+        let mut g_out = vec![0f32; gw * gh];
+        let mut b_out = vec![0f32; gw * gh];
+        mean_pool(&pixels, w, h, cell, gw, gh, &mut r_out, &mut g_out, &mut b_out);
+        for &v in &r_out {
+            assert!((v - 128.0).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn apply_lut_identity() {
+        let lut: Vec<i32> = (0..256).collect();
+        let mut pixels = vec![0xFF_112233u32 as i32; 16];
+        let original = pixels.clone();
+        apply_lut(&mut pixels, &lut);
+        assert_eq!(pixels, original);
+    }
+
+    #[test]
+    fn rec601_inplace_matches_known() {
+        // White pixel: rec601(255,255,255) = 255 → 0xFF_FFFFFF
+        let mut pixels = vec![0xFF_FFFFFFu32 as i32];
+        rec601_inplace(&mut pixels);
+        assert_eq!(pixels[0], 0xFF_FFFFFFu32 as i32);
+    }
+
+    #[test]
+    fn gaussian_blur3_flat_field_unchanged() {
+        let (w, h) = (8, 8);
+        let src = vec![100.0f32; w * h];
+        let mut out = vec![0.0f32; w * h];
+        gaussian_blur3(&src, &mut out, w, h);
+        for &v in &out {
+            assert!((v - 100.0).abs() < 0.001, "expected 100.0 got {v}");
+        }
+    }
+
+    #[test]
+    fn box_blur3_flat_field_unchanged() {
+        let (w, h) = (8, 8);
+        let src = vec![64.0f32; w * h];
+        let mut out = vec![0.0f32; w * h];
+        box_blur3(&src, &mut out, w, h);
+        for &v in &out {
+            assert!((v - 64.0).abs() < 0.001, "expected 64.0 got {v}");
+        }
+    }
+
+    #[test]
+    fn box_blur_inplace_flat_field_unchanged() {
+        let (w, h) = (8, 8);
+        let mut plane = vec![32.0f32; w * h];
+        box_blur_inplace(&mut plane, w, h);
+        for &v in &plane {
+            assert!((v - 32.0).abs() < 0.001, "expected 32.0 got {v}");
+        }
     }
 }

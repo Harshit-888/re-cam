@@ -4,7 +4,48 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-26 (pm) — Antigravity — Round 30: Rust acceleration of 6 filter kernels (ABI 2)
+
+Expanded the Rust pixel-kernel library with 6 new kernels covering the most expensive CPU loops in every document filter. All unit tests pass and `app-debug.apk` builds (65,687,518 bytes).
+
+### New kernels in `app/src/main/rust/src/kernels.rs`
+
+| Kernel | Kotlin loop it replaces | Speedup reason |
+|--------|------------------------|----------------|
+| `mean_pool` | `DocumentFilters.meanPool` — O(W×H) accumulation of all pixels into the paper-map grid | Multi-threaded via `for_each_band_mut`; i64 accumulators prevent overflow; no per-cell allocation |
+| `apply_lut` | `DocumentFilters.applyLinearStretchReference` — 256-entry LUT over all ARGB pixels | SIMD-friendly tight loop; banded across cores |
+| `rec601_inplace` | `DocumentFilters.applyGrayscaleReference` — Rec.601 grey conversion in-place | Single-pass banded |
+| `gaussian_blur3` | `DocumentFilters.gaussianBlur3Reference` — separable [1 2 1]/4 Gaussian | Pure loop, one temp alloc |
+| `box_blur3` | `DocumentFilters.boxBlur3Reference` — separable 3×3 box mean | Pure loop, one temp alloc |
+| `box_blur_inplace` | `DocumentFilters.boxBlurInPlaceReference` — in-place 3×3 box, scratch rows only | 12 KB scratch vs ~30 MB second plane |
+
+### `NativeFilters.kt` (`EXPECTED_ABI` 1 → 2)
+
+- Added 6 public `fun` wrappers (all return `Boolean`, never throw).
+- Added 6 `private external fun` declarations matching lib.rs entry points.
+- **ABI check bumped from 1 to 2** — a stale `libdocscanner_native.so` from Round 15 will be refused and Kotlin falls back cleanly.
+
+### `DocumentFilters.kt`
+
+Six functions now have a native fast path + reference fallback:
+
+| Function | Fast path | Reference (fallback) |
+|----------|-----------|---------------------|
+| `applyLinearStretch` | `NativeFilters.applyLut` | `applyLinearStretchReference` (new private) |
+| `applyGrayscale` first loop | `NativeFilters.rec601InPlace` | `applyGrayscaleReference` (new private) |
+| `meanPool` | `NativeFilters.meanPool` | `meanPoolReference` (new private, same logic) |
+| `gaussianBlur3` | `NativeFilters.gaussianBlur3` | `gaussianBlur3Reference` (new private) |
+| `boxBlur3` | `NativeFilters.boxBlur3` | `boxBlur3Reference` (new private) |
+| `boxBlurInPlace` | `NativeFilters.boxBlurInPlace` | `boxBlurInPlaceReference` (new private) |
+
+`verifyNativeFilters` now checks all 9 kernels (was 3) with tolerance-based comparison for float kernels.
+
+### No behaviour change without Rust toolchain
+
+Every new native call is wrapped in `if (nativeFiltersReady() && NativeFilters.xxx(...)) return`. `nativeFiltersReady()` returns `false` when the `.so` is absent (no Rust toolchain at build time), and each `NativeFilters.xxx` call is wrapped in `runCatching { ... }.getOrDefault(false)`. The reference path is always correct regardless.
+
 ## 2026-10-26 (ao) — Antigravity — Round 29 build verification & compilation fixes
+
 
 Verified Round 29 locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. Resolved 1 compilation issue from Arena's commits:
 

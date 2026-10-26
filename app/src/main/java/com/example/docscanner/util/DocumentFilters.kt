@@ -653,6 +653,11 @@ object DocumentFilters {
      */
     private fun applyLinearStretch(pixels: IntArray, estimation: Estimation) {
         val lut = linearStretchLut(estimation.blackPoint, estimation.whitePoint)
+        if (nativeFiltersReady() && NativeFilters.applyLut(pixels, lut)) return
+        applyLinearStretchReference(pixels, lut)
+    }
+
+    private fun applyLinearStretchReference(pixels: IntArray, lut: IntArray) {
         for (i in pixels.indices) {
             val p = pixels[i]
             val r = lut[(p ushr 16) and 0xFF]
@@ -674,6 +679,13 @@ object DocumentFilters {
         // **`medianBlur(…, 9)`** — a 9-tap median, not the 3-tap used inside level 1.
         // The port had no median at all, which is why our "Grayscale" was grainier
         // than the original's.
+        if (!nativeFiltersReady() || !NativeFilters.rec601InPlace(pixels)) {
+            applyGrayscaleReference(pixels)
+        }
+        medianBlurGray(pixels, w, h, 9)
+    }
+
+    private fun applyGrayscaleReference(pixels: IntArray) {
         for (i in pixels.indices) {
             val p = pixels[i]
             val v = rec601(
@@ -683,7 +695,6 @@ object DocumentFilters {
             )
             pixels[i] = (p and ALPHA_MASK) or (v shl 16) or (v shl 8) or v
         }
-        medianBlurGray(pixels, w, h, 9)
     }
 
     /**
@@ -1099,6 +1110,23 @@ object DocumentFilters {
         val outR = FloatArray(gw * gh)
         val outG = FloatArray(gw * gh)
         val outB = FloatArray(gw * gh)
+        if (nativeFiltersReady() && NativeFilters.meanPool(pixels, w, h, cell, gw, gh, outR, outG, outB)) {
+            return arrayOf(outR, outG, outB)
+        }
+        return meanPoolReference(pixels, w, h, cell, gw, gh, outR, outG, outB)
+    }
+
+    private fun meanPoolReference(
+        pixels: IntArray,
+        w: Int,
+        h: Int,
+        cell: Int,
+        gw: Int,
+        gh: Int,
+        outR: FloatArray,
+        outG: FloatArray,
+        outB: FloatArray
+    ): Array<FloatArray> {
         for (gy in 0 until gh) {
             val y0 = min(h - 1, gy * cell)
             val y1 = min(h, y0 + cell)
@@ -1196,6 +1224,12 @@ object DocumentFilters {
      * and which the unsharp mask needs as its low-pass term.
      */
     internal fun gaussianBlur3(src: FloatArray, w: Int, h: Int): FloatArray {
+        val out = FloatArray(src.size)
+        if (nativeFiltersReady() && NativeFilters.gaussianBlur3(src, out, w, h)) return out
+        return gaussianBlur3Reference(src, w, h)
+    }
+
+    private fun gaussianBlur3Reference(src: FloatArray, w: Int, h: Int): FloatArray {
         val horizontal = FloatArray(src.size)
         for (y in 0 until h) {
             val row = y * w
@@ -1270,6 +1304,12 @@ object DocumentFilters {
     }
 
     private fun boxBlur3(src: FloatArray, w: Int, h: Int): FloatArray {
+        val out = FloatArray(src.size)
+        if (nativeFiltersReady() && NativeFilters.boxBlur3(src, out, w, h)) return out
+        return boxBlur3Reference(src, w, h)
+    }
+
+    private fun boxBlur3Reference(src: FloatArray, w: Int, h: Int): FloatArray {
         val horizontal = FloatArray(src.size)
         for (y in 0 until h) {
             val row = y * w
@@ -1599,6 +1639,11 @@ object DocumentFilters {
      * reason the page size can be raised at all.
      */
     internal fun boxBlurInPlace(plane: FloatArray, w: Int, h: Int) {
+        if (nativeFiltersReady() && NativeFilters.boxBlurInPlace(plane, w, h)) return
+        boxBlurInPlaceReference(plane, w, h)
+    }
+
+    private fun boxBlurInPlaceReference(plane: FloatArray, w: Int, h: Int) {
         for (y in 0 until h) {
             val row = y * w
             var left = plane[row]
@@ -1830,7 +1875,65 @@ object DocumentFilters {
             if (!NativeFilters.laplacian3x3(referenceSmoothed, nativeEdge, w, h)) {
                 return@runCatching false
             }
-            nativeEdge.contentEquals(referenceEdge)
+            if (!nativeEdge.contentEquals(referenceEdge)) return@runCatching false
+
+            // 4. LUT stretch (Lighten filter).
+            val lut = linearStretchLut(40, 215)
+            val refLutPixels = page.copyOf()
+            val natLutPixels = page.copyOf()
+            applyLinearStretchReference(refLutPixels, lut)
+            if (!NativeFilters.applyLut(natLutPixels, lut)) return@runCatching false
+            if (!natLutPixels.contentEquals(refLutPixels)) return@runCatching false
+
+            // 5. Rec.601 in-place (Grayscale first pass).
+            val refGrayPixels = page.copyOf()
+            val natGrayPixels = page.copyOf()
+            applyGrayscaleReference(refGrayPixels)
+            if (!NativeFilters.rec601InPlace(natGrayPixels)) return@runCatching false
+            if (!natGrayPixels.contentEquals(refGrayPixels)) return@runCatching false
+
+            // 6. Mean pool (paper map accumulation).
+            val cell = 8
+            val gw = w / cell
+            val gh = h / cell
+            val refPool = meanPoolReference(page, w, h, cell, gw, gh, FloatArray(gw * gh), FloatArray(gw * gh), FloatArray(gw * gh))
+            val natR = FloatArray(gw * gh)
+            val natG = FloatArray(gw * gh)
+            val natB = FloatArray(gw * gh)
+            if (!NativeFilters.meanPool(page, w, h, cell, gw, gh, natR, natG, natB)) return@runCatching false
+            for (i in 0 until gw * gh) {
+                if (abs(refPool[0][i] - natR[i]) > 0.01f ||
+                    abs(refPool[1][i] - natG[i]) > 0.01f ||
+                    abs(refPool[2][i] - natB[i]) > 0.01f
+                ) return@runCatching false
+            }
+
+            // 7. Gaussian blur 3x3.
+            val refGauss = gaussianBlur3Reference(luma, w, h)
+            val natGauss = FloatArray(w * h)
+            if (!NativeFilters.gaussianBlur3(luma, natGauss, w, h)) return@runCatching false
+            for (i in luma.indices) {
+                if (abs(refGauss[i] - natGauss[i]) > 0.01f) return@runCatching false
+            }
+
+            // 8. Box blur 3x3.
+            val refBox = boxBlur3Reference(luma, w, h)
+            val natBox = FloatArray(w * h)
+            if (!NativeFilters.boxBlur3(luma, natBox, w, h)) return@runCatching false
+            for (i in luma.indices) {
+                if (abs(refBox[i] - natBox[i]) > 0.01f) return@runCatching false
+            }
+
+            // 9. Box blur in-place.
+            val refBoxInPlace = luma.copyOf()
+            val natBoxInPlace = luma.copyOf()
+            boxBlurInPlaceReference(refBoxInPlace, w, h)
+            if (!NativeFilters.boxBlurInPlace(natBoxInPlace, w, h)) return@runCatching false
+            for (i in luma.indices) {
+                if (abs(refBoxInPlace[i] - natBoxInPlace[i]) > 0.01f) return@runCatching false
+            }
+
+            true
         }.getOrDefault(false)
 
         Log.i(

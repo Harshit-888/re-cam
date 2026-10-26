@@ -36,7 +36,7 @@ internal object NativeFilters {
      * `src/main/jniLibs/` from an older checkout reports the old number and is
      * refused, instead of silently producing different pixels.
      */
-    private const val EXPECTED_ABI = 1
+    private const val EXPECTED_ABI = 2
 
     /**
      * True only when the shared object loaded *and* reports the ABI this Kotlin
@@ -68,6 +68,44 @@ internal object NativeFilters {
     fun laplacian3x3(plane: FloatArray, out: FloatArray, w: Int, h: Int): Boolean =
         runCatching { nativeLaplacian3x3(plane, out, w, h) == 0 }.getOrDefault(false)
 
+    /**
+     * Pools ARGB `pixels` into `gw × gh` cells and writes per-channel means to
+     * `rOut`, `gOut`, `bOut`.
+     */
+    fun meanPool(
+        pixels: IntArray,
+        w: Int,
+        h: Int,
+        cell: Int,
+        gw: Int,
+        gh: Int,
+        rOut: FloatArray,
+        gOut: FloatArray,
+        bOut: FloatArray
+    ): Boolean = runCatching {
+        nativeMeanPool(pixels, w, h, cell, gw, gh, rOut, gOut, bOut) == 0
+    }.getOrDefault(false)
+
+    /** Applies a 256-entry lookup table to every ARGB pixel in `pixels` in-place. */
+    fun applyLut(pixels: IntArray, lut: IntArray): Boolean =
+        runCatching { nativeApplyLut(pixels, lut) == 0 }.getOrDefault(false)
+
+    /** Converts every ARGB pixel in `pixels` to Rec.601 grayscale in-place. */
+    fun rec601InPlace(pixels: IntArray): Boolean =
+        runCatching { nativeRec601InPlace(pixels) == 0 }.getOrDefault(false)
+
+    /** Separable [1 2 1]/4 Gaussian blur on a `w × h` float plane. */
+    fun gaussianBlur3(src: FloatArray, out: FloatArray, w: Int, h: Int): Boolean =
+        runCatching { nativeGaussianBlur3(src, out, w, h) == 0 }.getOrDefault(false)
+
+    /** Separable 3×3 box blur on a `w × h` float plane. */
+    fun boxBlur3(src: FloatArray, out: FloatArray, w: Int, h: Int): Boolean =
+        runCatching { nativeBoxBlur3(src, out, w, h) == 0 }.getOrDefault(false)
+
+    /** In-place 3×3 box blur on a `w × h` float plane. */
+    fun boxBlurInPlace(plane: FloatArray, w: Int, h: Int): Boolean =
+        runCatching { nativeBoxBlurInPlace(plane, w, h) == 0 }.getOrDefault(false)
+
     // ---- JNI ---------------------------------------------------------------
     // Names must match `Java_com_example_docscanner_util_NativeFilters_*` in
     // lib.rs. The receiver is the singleton instance, not a class reference.
@@ -79,4 +117,26 @@ internal object NativeFilters {
     private external fun nativeMedian3x3(src: FloatArray, out: FloatArray, w: Int, h: Int): Int
 
     private external fun nativeLaplacian3x3(plane: FloatArray, out: FloatArray, w: Int, h: Int): Int
+
+    private external fun nativeMeanPool(
+        pixels: IntArray,
+        w: Int,
+        h: Int,
+        cell: Int,
+        gw: Int,
+        gh: Int,
+        rOut: FloatArray,
+        gOut: FloatArray,
+        bOut: FloatArray
+    ): Int
+
+    private external fun nativeApplyLut(pixels: IntArray, lut: IntArray): Int
+
+    private external fun nativeRec601InPlace(pixels: IntArray): Int
+
+    private external fun nativeGaussianBlur3(src: FloatArray, out: FloatArray, w: Int, h: Int): Int
+
+    private external fun nativeBoxBlur3(src: FloatArray, out: FloatArray, w: Int, h: Int): Int
+
+    private external fun nativeBoxBlurInPlace(plane: FloatArray, w: Int, h: Int): Int
 }

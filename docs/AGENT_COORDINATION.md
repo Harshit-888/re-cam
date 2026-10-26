@@ -95,6 +95,7 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai & Antigravity | ✅ merged & verified (Round 26) | `model/Models.kt`, `util/PdfGenerator.kt` (rewritten), `util/PdfWriter.kt` (new), `util/PdfSecurity.kt` (new), `ui/pdf/PdfExportSheet.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `app/src/test/.../PdfWriterTest.kt` + `PdfSecurityTest.kt` (new), docs | Password-protected PDFs, choose-the-size compression, rename at share time, and multi-select → merge from the library. **`PdfExportSheet` and `PdfGenerator.generatePdf` signatures changed** — see the changelog. See §6q. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 27) | `util/DocumentSearch.kt`, `util/NativeSearch.kt` (new), `app/src/main/rust/src/search.rs` + `lib.rs`, `ui/dashboard/DashboardScreen.kt`, `ui/settings/SettingsScreen.kt`, `app/src/test/.../MagicSearchTest.kt` (new), docs | "Magic Search": typo/prefix/stem/synonym/phrase/year matching with highlighted snippets, and the vocabulary walk in Rust behind a parity gate. **`SearchBarField` renamed to `MagicSearchField`.** Fixed `vocabulary.asList()` on `expandReference`. See §6r. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 29) | `util/FramePacing.kt`, `util/FrameBudget.kt`, `util/PerfTrace.kt`, `MainActivity.kt`, `theme/Theme.kt`, `util/PageImageLoader.kt`, `ui/dashboard/DashboardScreen.kt`, `app/src/test/.../FrameBudgetTest.kt`, docs | Dynamic high-refresh display pacing (fastest same-resolution mode), display-aware frame budgets & jank detection, stable card callbacks, and RGB_565 tile decodes. Fixed `FramePacing.kt` display mode/refresh rate application. See §6s. |
+| Antigravity | ✅ merged & verified (Round 30) | `app/src/main/rust/src/kernels.rs`, `app/src/main/rust/src/lib.rs`, `util/NativeFilters.kt`, `util/DocumentFilters.kt` | Rust acceleration of 6 more expensive filter loops: `meanPool` (paper map), `applyLut` (Lighten), `rec601InPlace` (Grayscale), `gaussianBlur3`, `boxBlur3`, `boxBlurInPlace` — all behind byte-for-byte parity gates with Kotlin reference fallbacks. ABI bumped to 2. `verifyNativeFilters` now checks all 9 kernels. All unit tests pass, `app-debug.apk` built (65,687,518 bytes). See §6t. |
 
 ## 5. File ownership map
 
@@ -969,7 +970,5 @@ search ranking are byte-identical to round 28.
 
 ## 7. Known-good state
 
-Last verified build: **Verified by Antigravity** on 2026-10-26 (`./gradlew assembleDebug testDebugUnitTest` passed).
-Verified Round 29: Fixed `FramePacing.kt` display mode and refresh rate application on window attributes. All 121 unit tests passed. APK built successfully at `app/build/outputs/apk/debug/app-debug.apk` (65,685,492 bytes).
-
-
+Last verified build: **Verified by Antigravity** on 2026-10-26 (`./gradlew testDebugUnitTest assembleDebug` passed — Round 30).
+Round 30: Added 6 new Rust kernels (meanPool, applyLut, rec601InPlace, gaussianBlur3, boxBlur3, boxBlurInPlace), bumped ABI to 2, and wired Kotlin dispatch with reference fallback for every kernel. All unit tests pass, `app-debug.apk` built (65,687,518 bytes).
