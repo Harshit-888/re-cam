@@ -313,6 +313,25 @@ fun DashboardScreen(
         searchHits.mapNotNull { hit -> hit.snippet?.let { hit.document.id to hit } }.toMap()
     }
 
+    // The selection only ever refers to what is on screen.
+    //
+    // It used to survive anything: search for something, filter to another folder,
+    // or delete a document from elsewhere, and `selection` kept ids that are no
+    // longer listed. That produced two visible bugs — a selection count that
+    // disagreed with what the user could see, and a Merge button that did nothing
+    // at all, because it rebuilt the document list from the ids and quietly found
+    // fewer than two. Pruning is the honest behaviour: the count is what will be
+    // merged, and if nothing selected is still visible, selection ends.
+    val visibleIds = remember(activeDocs) {
+        activeDocs.mapTo(HashSet<String>(activeDocs.size)) { it.id }
+    }
+    LaunchedEffect(visibleIds) {
+        if (!isSelecting || selection.isEmpty()) return@LaunchedEffect
+        val pruned = selection.filter { it in visibleIds }
+        if (pruned.size != selection.size) selection = pruned
+        if (pruned.isEmpty()) isSelecting = false
+    }
+
     // Merge order as a lookup, not a scan.
     //
     // Every visible card asks "am I selected, and if so, which number?" while the
@@ -626,8 +645,18 @@ fun DashboardScreen(
                     count = selection.size,
                     mergeEnabled = selection.size >= 2,
                     onMerge = {
-                        val docs = selection.mapNotNull { id -> documents.firstOrNull { it.id == id } }
-                        if (docs.size >= 2) mergeRequest = docs
+                        // Pruned above, so this can only fail if the library changed
+                        // between the tap and this line. Order follows the tap order,
+                        // which is the order the pages land in the merged PDF.
+                        val byId = documents.associateBy { it.id }
+                        val docs = selection.mapNotNull { byId[it] }
+                        if (docs.size >= 2) {
+                            mergeRequest = docs
+                        } else {
+                            // Never leave a tap with no effect: if the set shrank
+                            // under us, close the mode rather than doing nothing.
+                            endSelection()
+                        }
                     }
                 )
             }

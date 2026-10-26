@@ -252,21 +252,27 @@ class ScannerRepository(context: Context) {
     fun deletePage(docId: String, pageId: String) {
         var deleted: ScannedPage? = null
         _documents.update { docs ->
-            docs.map { doc ->
-                if (doc.id == docId) {
-                    val page = doc.pages.find { it.id == pageId }
-                    if (page != null) deleted = page
-                    doc.copy(
-                        pages = doc.pages
-                            .filterNot { it.id == pageId }
-                            .mapIndexed { index, p -> p.copy(pageIndex = index) },
-                        modifiedDate = System.currentTimeMillis()
-                    )
+            docs.mapNotNull { doc ->
+                if (doc.id != docId) return@mapNotNull doc
+                val page = doc.pages.find { it.id == pageId }
+                if (page != null) deleted = page
+                val remaining = doc.pages
+                    .filterNot { it.id == pageId }
+                    .mapIndexed { index, p -> p.copy(pageIndex = index) }
+                // Deleting the last page used to leave the document behind with an
+                // empty page list: a husk that still took a card in the library, had
+                // no cover, could not be exported to PDF, and could only be removed
+                // by trashing it by hand. A document is its pages, so it goes too.
+                if (remaining.isEmpty()) {
+                    null
                 } else {
-                    doc
+                    doc.copy(pages = remaining, modifiedDate = System.currentTimeMillis())
                 }
             }
         }
+        // `deletePageFiles` removes all three names a page can occupy (capture,
+        // JPEG bake, lossless bake), so an emptied document has nothing left to
+        // clean up beyond the record this update already removed.
         deleted?.let { page -> scope.launch { ImageStore.deletePageFiles(appContext, page) } }
     }
 

@@ -42,8 +42,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.FloatState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -102,7 +104,11 @@ fun PageViewerScreen(
     val safeIndex = currentPageIndex.coerceIn(0, (pages.size - 1).coerceAtLeast(0))
     val currentPage = pages.getOrNull(safeIndex)
 
-    var scale by remember { mutableFloatStateOf(1f) }
+    // Held as the state object as well as the delegated value: the zoom badge needs
+    // to observe it *by reference* so it can subscribe on its own without the parent
+    // reading the float (and therefore recomposing on every pinch frame).
+    val scaleState = remember { mutableFloatStateOf(1f) }
+    var scale by scaleState
     var offset by remember { mutableStateOf(Offset.Zero) }
     var showOcrSheet by remember { mutableStateOf(false) }
 
@@ -159,12 +165,20 @@ fun PageViewerScreen(
                                 }
                             }
                         }
-                        .graphicsLayer(
-                            scaleX = scale,
-                            scaleY = scale,
-                            translationX = offset.x,
+                        // The **lambda** form of `graphicsLayer`.
+                        //
+                        // `graphicsLayer(scaleX = scale, …)` reads `scale` and
+                        // `offset` during composition, so every frame of a pinch
+                        // recomposed this screen, and a changed parameter also makes
+                        // Compose rebuild the layer. Reading them inside the block
+                        // instead defers both to the draw phase: the gesture now
+                        // updates a layer and nothing above it is recomposed at all.
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = offset.x
                             translationY = offset.y
-                        ),
+                        },
                     contentAlignment = Alignment.Center
                 ) {
                     Image(
@@ -270,13 +284,12 @@ fun PageViewerScreen(
                             style = MaterialTheme.typography.labelLarge,
                             color = Color.White
                         )
-                        if (scale > 1.01f) {
-                            Text(
-                                "${(scale * 100).toInt()}%",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
+                        // Nothing in this composable reads `scale` any more, so a
+                        // pinch recomposes none of it. The badge subscribes to the
+                        // state object itself and re-reads only when the whole
+                        // percentage changes — a few times a pinch instead of once
+                        // a frame.
+                        ViewerZoomBadge(scaleState = scaleState)
                     }
                     ViewerPageStep(
                         icon = Icons.Default.ChevronRight,
@@ -398,7 +411,29 @@ private fun ViewerGlassButton(
     }
 }
 
+/**
+ * The live zoom percentage, shown only while the page is actually zoomed.
+ *
+ * Split out of the viewer so the state read is *its* state read: a read inside a
+ * bigger composable invalidates that whole composable, and a pinch would have
+ * recomposed the top chrome, the bottom bar and the page subtree with it. The
+ * `derivedStateOf` narrows it further — a pinch produces hundreds of scale values
+ * per second but only a handful of distinct whole percentages.
+ */
 @Composable
+private fun ViewerZoomBadge(scaleState: FloatState) {
+    val shown by remember(scaleState) {
+        derivedStateOf { (scaleState.floatValue * 100).toInt() }
+    }
+    if (shown > 101) {
+        Text(
+            "$shown%",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+    }
+}
+
 private fun ViewerPageStep(
     icon: ImageVector,
     description: String,

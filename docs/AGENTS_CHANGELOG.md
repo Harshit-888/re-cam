@@ -4,6 +4,113 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-26 (late) — Arena.ai — Round 33: six bugs, five hot paths, four motion corrections
+
+The brief was "fix the bugs and optimize more", with Emil Kowalski's skill repo
+(`animation-performance`, `review-animations`, `break-ui`) as a reference. Nothing
+here was compiled — this sandbox has no JDK, no Android SDK, no `cargo`. Every claim
+below is a claim about the source, not about a build.
+
+Three groups: **six real bugs** the code could be shown to have, **five hot paths**
+moved onto the mechanisms the skill puts first (draw-phase reads, the right property,
+no per-event work), and **four motion corrections** — the wrong curve, a duplicated
+layer, an over-bouncy press, and one symmetric transition that should have been two.
+
+### Bugs
+
+1. **Deleting the last page left a husk.** `ScannerRepository.deletePage` filtered the
+   page out of the list and wrote the document back, so a document could reach zero
+   pages and stay in the library: a card with no cover, a page count of 0, a PDF
+   export that produced nothing and no way to remove it except trashing it by hand.
+   The document now goes with its last page. Files were already handled —
+   `deletePageFiles` removes all three names a page can occupy (capture, JPEG bake,
+   lossless bake) **and** its thumbnails.
+2. **A page delete had no confirmation and no undo.** One tap on a menu item deleted
+   the capture, the bake and the thumbnail permanently. It now opens a dialog that
+   names the page and the document, and says plainly when the last page means the
+   whole scan is going. (Same shape as the existing "Empty recycle bin?" dialog.)
+3. **The detail screen could dead-end.** If the document disappeared while it was
+   open — the last page deleted, trashed from elsewhere, purged — the screen showed
+   "Document not found" and stayed there. It now navigates back once.
+4. **Selection could describe things that were not there.** `selection` survived a
+   search, a folder change or an external delete, so the bar could say "3 selected"
+   over two visible cards, and **Merge could do nothing at all**: the handler rebuilt
+   the document list from the ids, quietly found fewer than two, and returned without
+   a word. Selection is now pruned to what is on screen; if nothing survives, the mode
+   ends; and the merge handler can no longer return silently.
+5. **Rename could silently discard a title.** Save closed the dialog, saved the notes,
+   and threw away the title if it was blank — after the user had cleared the field on
+   purpose. Save is disabled while the title is blank, and the saved title is trimmed.
+6. **Every rotation rebuilt the app.** The repository was created in `onCreate`, so a
+   rotation re-read and re-parsed `library.json`, re-decoded covers, replayed the
+   launch screen — and, because it was only closed when `isFinishing`, left the
+   previous repository's scope and debounced writes running forever, one per rotation.
+   It now lives in `data/LibraryViewModel.kt`: it survives a configuration change, is
+   flushed and cancelled in `onCleared()` (a real finish), and construction is still
+   on `Dispatchers.IO` with `NonCancellable`.
+
+### Performance
+
+7. **`BorderCanvas` no longer recomposes on a corner drag.** `corners` was a
+   parameter, so every pointer move hoisted a new quad into the editor's state — which
+   recomposed the whole screen (header, the `LazyRow` page strip, action rows,
+   banners) 60–120 times a second, re-ran `LaunchedEffect(previewSource, …)` and
+   re-baked the preview per frame. The live quad is now local: written only inside the
+   gesture, read only inside the draw lambda (so a move invalidates draw and nothing
+   else), and handed up **once**, when the finger lifts. The preview now renders once
+   per completed drag instead of continuously during it.
+8. **`PageViewerScreen` uses the lambda form of `graphicsLayer`.** The parameter form
+   reads `scale`/`offset` during composition, so a pinch recomposed the screen per
+   frame and rebuilt the layer. Reads moved into the block. The zoom badge became its
+   own composable fed the `FloatState` itself, with a `derivedStateOf` on the whole
+   percentage, so a pinch now recomposes one `Text` a few times instead of the whole
+   viewer per frame.
+9. **Camera zoom is coalesced.** `LaunchedEffect(zoomRatio, …)` issued one
+   `cameraControl.setZoomRatio` per touch event — up to 120 IPC round-trips a second,
+   each queueing behind the last. `snapshotFlow { zoomRatio }.conflate()` plus a 32 ms
+   floor (~31 Hz) keeps only the newest value and always lands on it.
+10. **`SegmentedPill`'s thumb animates on the layer.** It animated a `Dp` through
+    `Modifier.offset`, i.e. a layout pass per frame of the slide; it is now
+    `translationX` inside `graphicsLayer`, a draw-time transform.
+11. **The signature pad appends instead of copying.** `currentStroke = currentStroke +
+    position` copied the whole growing stroke on every pointer move; it is a
+    `SnapshotStateList` now (O(1) append, and the draw lambda is its only reader). The
+    blank-pad hint reads a `derivedStateOf` boolean, so composition no longer
+    invalidates per appended point.
+
+### Motion
+
+12. **`Motion.fade` was `LinearEasing`.** Linear spends as long on the first
+    millisecond as the last and reads *slower* than it is; it is correct for constant
+    motion (a progress sweep) and wrong for a fade. New `Motion.EaseOut` is
+    `cubic-bezier(0.23, 1, 0.32, 1)`, and `Motion.EaseIn` is its mirror.
+13. **`Modifier.entrance` allocated two layers.** `.alpha(progress)` *is* a graphics
+    layer, so every entering element had one for the fade and another for the
+    translation. One `graphicsLayer { alpha = …; translationY = … }` now does both —
+    these are the two properties that stay on the render thread. The entrance also
+    uses `EaseOut` rather than the default curve.
+14. **`Motion.press` was under-damped.** At `dampingRatio = 0.55` every button in the
+    app visibly wobbled on release; it is 0.8 now (still springy, no tic). `bouncy`
+    remains for the one-off cases.
+15. **Screen transitions use two curves instead of one.** The arriving screen
+    decelerates (`EaseOut`), the leaving one accelerates (`EaseIn`), instead of both
+    using Material's symmetric `FastOutSlowInEasing`.
+
+### Signatures and files other agents need
+
+| What | Change |
+| :--- | :--- |
+| `ScannerRepository.deletePage(docId, pageId)` | signature unchanged; **now also removes the document when it was the last page** |
+| `data/LibraryViewModel.kt` | **new** — `AndroidViewModel`, `val repository: StateFlow<ScannerRepository?>`, closes in `onCleared()` |
+| `MainActivity` | no longer holds a `ScannerRepository` field; `onDestroy` no longer closes it |
+| `theme/Motion.kt` | new `Motion.EaseOut`, `Motion.EaseIn`; `fade` and `press` retuned; `entrance` is one layer |
+| `ui/viewer/PageViewerScreen.kt` | new private `ViewerZoomBadge(scaleState: FloatState)` |
+| `ui/camera/ScannerCameraScreen.kt` | new private `ZOOM_APPLY_INTERVAL_MS = 32L` |
+
+No filter, geometry, PDF or OCR code was touched; no filter output, colour, typography
+or page geometry changed in this round. `AGENTS.md` §2 still holds: no APKs, no
+build artifacts, no new SDKs, no dependency added.
+
 ## 2026-10-26 (night) — Arena.ai — Round 32: Round 30 reviewed, and the refresh-rate request corrected
 
 Antigravity's Round 30 (six Rust filter kernels, ABI 2) is merged and is good work.

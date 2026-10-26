@@ -1,7 +1,6 @@
 package com.example.docscanner
 
 import androidx.compose.animation.ContentTransform
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
@@ -13,6 +12,7 @@ import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
 import com.example.docscanner.data.ScannerRepository
+import com.example.docscanner.theme.Motion
 import com.example.docscanner.ui.camera.ScannerCameraScreen
 import com.example.docscanner.ui.dashboard.DashboardScreen
 import com.example.docscanner.ui.detail.DocumentDetailScreen
@@ -178,14 +178,20 @@ private fun addDetailIfNeeded(
  *
  * The outgoing screen deliberately travels less than the incoming one — that
  * parallax is what makes a change of screen read as depth instead of a cut.
+ *
+ * Two different curves, not one: the arriving screen decelerates into place
+ * ([Motion.EaseOut]) while the leaving one accelerates away ([Motion.EaseIn]). A
+ * symmetric pair — Material's `FastOutSlowInEasing`, which this used for both —
+ * makes the two screens look like they are still negotiating for the same space
+ * at the halfway point.
  */
 private fun navForwardTransition(): ContentTransform =
     slideInHorizontally(
-        animationSpec = tween(durationMillis = NAV_TRANSITION_MS, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = NAV_TRANSITION_MS, easing = Motion.EaseOut),
         initialOffsetX = { width -> width }
     ).togetherWith(
         slideOutHorizontally(
-            animationSpec = tween(durationMillis = NAV_TRANSITION_MS, easing = FastOutSlowInEasing),
+            animationSpec = tween(durationMillis = NAV_TRANSITION_MS, easing = Motion.EaseIn),
             targetOffsetX = { width -> -width / NAV_PARALLAX_DIVISOR }
         )
     )
@@ -196,11 +202,11 @@ private fun navForwardTransition(): ContentTransform =
  */
 private fun navBackTransition(): ContentTransform =
     slideInHorizontally(
-        animationSpec = tween(durationMillis = NAV_TRANSITION_MS, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = NAV_TRANSITION_MS, easing = Motion.EaseOut),
         initialOffsetX = { width -> -width / NAV_PARALLAX_DIVISOR }
     ).togetherWith(
         slideOutHorizontally(
-            animationSpec = tween(durationMillis = NAV_TRANSITION_MS, easing = FastOutSlowInEasing),
+            animationSpec = tween(durationMillis = NAV_TRANSITION_MS, easing = Motion.EaseIn),
             targetOffsetX = { width -> width }
         )
     )

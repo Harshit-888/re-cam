@@ -102,10 +102,28 @@ fun DocumentDetailScreen(
     var showRenameDialog by remember { mutableStateOf(false) }
     var showWatermarkDialog by remember { mutableStateOf(false) }
 
+    // Deleting a page is destructive and irreversible — the capture, the JPEG bake
+    // and the lossless bake all go — and it used to happen on a single tap of a
+    // menu item, with no confirmation and no undo. The page is named in the dialog
+    // because "delete page 3" is a decision you can check and "delete" is not.
+    var pagePendingDelete by remember { mutableStateOf<ScannedPage?>(null) }
+
+    // The document can vanish underneath this screen: the last page was deleted,
+    // it was trashed or purged from another screen, or a restore replaced it.
+    // Landing on "Document not found" is a dead end that needs a manual back
+    // press; leaving is what the user was going to do anyway.
+    LaunchedEffect(document == null) {
+        if (document == null) onNavigateBack()
+    }
+
     if (document == null) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("Document not found")
-        }
+        // One frame, while the effect above runs. Matching the app background
+        // avoids a flash of unrelated colour.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+        )
         return
     }
 
@@ -260,7 +278,7 @@ fun DocumentDetailScreen(
                         canMoveForward = index >= 0 && index < document.pages.lastIndex,
                         onViewClick = { onNavigateToViewer(page.id) },
                         onCropClick = { onNavigateToCrop(page.id) },
-                        onDeleteClick = { repository.deletePage(docId, page.id) },
+                        onDeleteClick = { pagePendingDelete = page },
                         onRotateClick = {
                             // Re-bake so the rotation is visible immediately in the
                             // grid, the viewer and the PDF — not just stored as a flag.
@@ -292,6 +310,40 @@ fun DocumentDetailScreen(
             pages = document.pages,
             settings = settings,
             onDismiss = { showPdfExportSheet = false }
+        )
+    }
+
+    // Confirmation for a page delete. The last page is called out separately: it
+    // removes the whole document, which is not obvious from a page-level menu.
+    pagePendingDelete?.let { page ->
+        val isLastPage = document.pages.size <= 1
+        AlertDialog(
+            onDismissRequest = { pagePendingDelete = null },
+            title = { Text(if (isLastPage) "Delete this scan?" else "Delete this page?") },
+            text = {
+                Text(
+                    if (isLastPage) {
+                        "This is the only page in \"${document.title}\", so the whole " +
+                            "document is deleted. This cannot be undone."
+                    } else {
+                        "Page ${page.pageIndex + 1} of \"${document.title}\" is deleted " +
+                            "permanently. The other ${document.pages.size - 1} pages stay."
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pagePendingDelete = null
+                        repository.deletePage(docId, page.id)
+                    }
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pagePendingDelete = null }) { Text("Keep") }
+            }
         )
     }
 
@@ -352,10 +404,14 @@ fun DocumentDetailScreen(
             confirmButton = {
                 PillButton(
                     text = "Save",
+                    // A blank title used to be a silent no-op: the dialog closed, the
+                    // notes were saved, and the title the user had just cleared their
+                    // way to was quietly thrown away. Disabling Save says so before
+                    // the tap instead of after it.
+                    enabled = newTitle.isNotBlank(),
                     onClick = {
-                        if (newTitle.isNotBlank()) {
-                            repository.updateDocumentTitle(docId, newTitle)
-                        }
+                        // Surrounding whitespace is a typing artefact, never a title.
+                        repository.updateDocumentTitle(docId, newTitle.trim())
                         repository.setDocumentNotes(docId, newNotes)
                         showRenameDialog = false
                     }

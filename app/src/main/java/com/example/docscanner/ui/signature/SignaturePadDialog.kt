@@ -35,6 +35,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -90,7 +91,21 @@ fun SignaturePadDialog(
     val scope = rememberCoroutineScope()
 
     val strokes = remember { mutableStateListOf<List<Offset>>() }
-    var currentStroke by remember { mutableStateOf<List<Offset>>(emptyList()) }
+    // The stroke in progress is a *list*, appended to in place.
+    //
+    // It used to be `var currentStroke by mutableStateOf(listOf<Offset>())` and every
+    // pointer move did `currentStroke = currentStroke + position` — a full copy of a
+    // list that grows all the way to the end of the signature, so the cost of a touch
+    // rose with the length of the stroke, and each copy was garbage. Appending to a
+    // snapshot list is O(1), and because the draw lambda is its only reader, a move
+    // invalidates draw and nothing else.
+    val currentStroke = remember { mutableStateListOf<Offset>() }
+    // Composition must not read the lists themselves, or every appended point would
+    // recompose the dialog. It only ever needs one bit — "is the pad blank?" — so ask
+    // for that bit through a derived state, which notifies exactly when it flips.
+    val padEmpty by remember {
+        derivedStateOf { strokes.isEmpty() && currentStroke.isEmpty() }
+    }
     var strokeWidth by remember { mutableFloatStateOf(6f) }
     val inkColors = listOf(0xFF000000, 0xFF0D47A1, 0xFFB71C1C)
     var selectedInkColor by remember { mutableStateOf(inkColors.first()) }
@@ -185,21 +200,26 @@ fun SignaturePadDialog(
                             .onSizeChanged { canvasSize = it }
                             .pointerInput(Unit) {
                                 detectDragGestures(
-                                    onDragStart = { offset -> currentStroke = listOf(offset) },
+                                    onDragStart = { offset ->
+                                        currentStroke.clear()
+                                        currentStroke.add(offset)
+                                    },
                                     onDrag = { change, _ ->
                                         change.consume()
-                                        currentStroke = currentStroke + change.position
+                                        currentStroke.add(change.position)
                                     },
                                     onDragEnd = {
                                         if (currentStroke.isNotEmpty()) {
-                                            strokes.add(currentStroke)
-                                            currentStroke = emptyList()
+                                            // Snapshot: the live list is about to be
+                                            // cleared and reused for the next stroke.
+                                            strokes.add(currentStroke.toList())
+                                            currentStroke.clear()
                                         }
                                     },
                                     onDragCancel = {
                                         if (currentStroke.isNotEmpty()) {
-                                            strokes.add(currentStroke)
-                                            currentStroke = emptyList()
+                                            strokes.add(currentStroke.toList())
+                                            currentStroke.clear()
                                         }
                                     }
                                 )
@@ -242,7 +262,7 @@ fun SignaturePadDialog(
                         drawSmooth(currentStroke)
                     }
 
-                    if (strokes.isEmpty() && currentStroke.isEmpty()) {
+                    if (padEmpty) {
                         Text(
                             text = "Sign here",
                             style = MaterialTheme.typography.titleSmall,
@@ -315,7 +335,7 @@ fun SignaturePadDialog(
                         enabled = !isSaving,
                         onClick = {
                             strokes.clear()
-                            currentStroke = emptyList()
+                            currentStroke.clear()
                         },
                         modifier = Modifier.weight(1f)
                     )

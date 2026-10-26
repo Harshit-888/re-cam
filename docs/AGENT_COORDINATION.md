@@ -96,6 +96,7 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai & Antigravity | ✅ merged & verified (Round 27) | `util/DocumentSearch.kt`, `util/NativeSearch.kt` (new), `app/src/main/rust/src/search.rs` + `lib.rs`, `ui/dashboard/DashboardScreen.kt`, `ui/settings/SettingsScreen.kt`, `app/src/test/.../MagicSearchTest.kt` (new), docs | "Magic Search": typo/prefix/stem/synonym/phrase/year matching with highlighted snippets, and the vocabulary walk in Rust behind a parity gate. **`SearchBarField` renamed to `MagicSearchField`.** Fixed `vocabulary.asList()` on `expandReference`. See §6r. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 29) | `util/FramePacing.kt`, `util/FrameBudget.kt`, `util/PerfTrace.kt`, `MainActivity.kt`, `theme/Theme.kt`, `util/PageImageLoader.kt`, `ui/dashboard/DashboardScreen.kt`, `app/src/test/.../FrameBudgetTest.kt`, docs | Dynamic high-refresh display pacing (fastest same-resolution mode), display-aware frame budgets & jank detection, stable card callbacks, and RGB_565 tile decodes. Fixed `FramePacing.kt` display mode/refresh rate application. See §6s. |
 | Antigravity | ✅ merged & verified (Round 30) | `app/src/main/rust/src/kernels.rs`, `app/src/main/rust/src/lib.rs`, `util/NativeFilters.kt`, `util/DocumentFilters.kt` | Rust acceleration of 6 more expensive filter loops: `meanPool` (paper map), `applyLut` (Lighten), `rec601InPlace` (Grayscale), `gaussianBlur3`, `boxBlur3`, `boxBlurInPlace` — all behind byte-for-byte parity gates with Kotlin reference fallbacks. ABI bumped to 2. `verifyNativeFilters` now checks all 9 kernels. All unit tests pass, `app-debug.apk` built (65,687,518 bytes). Reviewed in §6u. |
+| Arena.ai | ✅ committed (Round 33) | `data/LibraryViewModel.kt` (new), `MainActivity.kt`, `Navigation.kt`, `data/ScannerRepository.kt`, `theme/Motion.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/editor/CropAndFilterScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `ui/signature/SignaturePadDialog.kt`, `ui/common/Expressive.kt`, docs | Six behaviour bugs (empty documents, unconfirmed page delete, detail dead-end, stale selection/no-op merge, silent rename discard, per-rotation repository rebuild), five hot paths moved to draw-phase reads / layer transforms / coalesced IPC, four motion corrections. `deletePage` now removes an emptied document; the repository moved to a ViewModel. See §6v. |
 
 ## 5. File ownership map
 
@@ -103,7 +104,7 @@ Rebuilt 2026-10-25 after the "make it real" pass.
 
 | Area | Files | Notes |
 | :--- | :--- | :--- |
-| App shell | `MainActivity.kt`, `Navigation.kt`, `NavigationKeys.kt` | Repository is created in `MainActivity` and passed down — **do not re-introduce a singleton** |
+| App shell | `MainActivity.kt`, `Navigation.kt`, `NavigationKeys.kt`, `data/LibraryViewModel.kt` | The repository is created by `LibraryViewModel` (Round 33; it used to be a `MainActivity` field, which rebuilt and leaked it on every rotation) and passed down as a `StateFlow` — **do not re-introduce a singleton**, and do not give it to `Application` |
 | Domain | `model/Models.kt` | `@Serializable`; changes need a `schemaVersion` bump in `LibraryStore` |
 | Data | `data/ScannerRepository.kt`, `data/LibraryStore.kt` | All mutation goes through the repository, which persists |
 | Core utils | `util/ImageStore.kt`, `util/PageImageLoader.kt`, `util/PerspectiveWarp.kt`, `util/ImageProcessingUtils.kt`, `util/PdfGenerator.kt` | Pure/stateless; safe to call from any dispatcher except noted |
@@ -1112,7 +1113,83 @@ Kotlin reference underneath.
 - **Every native call keeps its `return` guard and its Kotlin reference.** The gate is
   the only thing standing between a compiler quirk and a changed scan.
 
+## 6v. Round 33: six bugs, five hot paths, four motion corrections (Arena, 2026-10-26, round 33)
+
+Source-only round. **Nothing compiled** — no JDK, no Android SDK, no `cargo` here — so
+treat every number below as a claim about the code, not a measurement. Two of these
+change behaviour other screens can see; they are flagged first.
+
+### Behaviour other code can observe
+
+- **`ScannerRepository.deletePage` now deletes the document when the page was the
+  last one.** The signature is unchanged, so no call site needs touching, but
+  `DocumentDetailScreen` (and anything else sitting on a `docId`) will see that
+  document disappear from `documents`. The detail screen navigates back when that
+  happens; anything new that holds a `docId` must tolerate the same.
+- **`MainActivity` no longer owns the repository.** It is
+  `data/LibraryViewModel.kt` (`AndroidViewModel`) now:
+  `val repository: StateFlow<ScannerRepository?>`, `null` until the library has been
+  read, closed in `onCleared()`. A rotation reuses the loaded library instead of
+  rebuilding it — which also means **the launch screen is no longer replayed on a
+  rotation**. `AGENTS.md` §2.6 still holds: the repository is Activity-scoped, not a
+  process singleton. Do not move it to `Application`.
+
+### The bug six
+
+1. A document could reach zero pages and stay in the library (no cover, no export, no
+   way to delete it from the UI).
+2. Page delete was one tap, permanent, unconfirmed.
+3. `DocumentDetailScreen` dead-ended on "Document not found".
+4. `selection` kept ids that were no longer listed: the count lied, and **Merge could
+   silently do nothing**. Selection is pruned to `activeDocs`; the merge handler always
+   either merges or ends selection.
+5. Rename closed the dialog, saved the notes and discarded a blank title silently.
+6. Every rotation rebuilt the repository and leaked the previous one (`close()` only
+   ran when `isFinishing`, while `onCreate` built a new instance each time).
+
+### The five hot paths
+
+| Where | Was | Now |
+| :--- | :--- | :--- |
+| `BorderCanvas` corner drag | every pointer move hoisted a quad into the editor's state → full screen recomposition, and `LaunchedEffect(previewSource, …)` re-baked the preview **per frame** | `liveQuad` is local, written in the gesture, read **only in the draw lambda**, committed once on release |
+| `PageViewerScreen` pinch | `graphicsLayer(scaleX = scale, …)` — composition-phase read, layer rebuilt per frame | lambda form; the zoom badge is its own composable fed the `FloatState`, with `derivedStateOf` on the integer percent |
+| Camera pinch | one `setZoomRatio` IPC **per touch event** | `snapshotFlow { zoomRatio }.conflate()` + a 32 ms floor ≈ 31 Hz, newest value always applied |
+| `SegmentedPill` thumb | animated `Dp` through `Modifier.offset` — a layout pass per frame | `translationX` in `graphicsLayer` |
+| `SignaturePadDialog` | `currentStroke = currentStroke + point` — a full copy of a growing list per move, and a composition-phase read | `SnapshotStateList` append (O(1)) + `derivedStateOf` boolean for the blank hint |
+
+### The four motion corrections (skill repo: `animation-performance`, `review-animations`)
+
+- `Motion.fade` was **`LinearEasing`** → `Motion.EaseOut` = `cubic-bezier(0.23, 1,
+  0.32, 1)`. Linear is for constant motion, never for a fade.
+- `Modifier.entrance` was `.alpha(p)` **plus** `graphicsLayer { translationY }` — two
+  layers, two offscreen buffers — → one `graphicsLayer { alpha; translationY }`.
+- `Motion.press` was `dampingRatio = 0.55`: every button in the app wobbled on release.
+  0.8 now; `bouncy` is still there for one-off moments.
+- `Navigation.kt` used one symmetric `FastOutSlowInEasing` for both screens. Arriving
+  is `Motion.EaseOut`, leaving is `Motion.EaseIn` (the one legitimate `ease-in`: it is
+  on its way out).
+
+### Do not undo
+
+- **Do not put `corners` back into the drag path.** `liveQuad` in `BorderCanvas` is the
+  whole reason a drag costs a redraw instead of a recomposition. If a new feature needs
+  the live quad, add it as a draw-phase read or a `derivedStateOf`; hoisting it back
+  into the screen is what made the drag heavy in the first place.
+- **Do not key a `LaunchedEffect` on `zoomRatio`** in the camera screen; that re-creates
+  the IPC-per-frame problem. Add to the `snapshotFlow` if a new consumer is needed.
+- **Do not use the parameter form of `graphicsLayer`** for anything a gesture moves.
+- **Do not read a `SnapshotStateList` in composition** to decide something per point;
+  wrap it in `derivedStateOf`.
+- **`close()` stays in `LibraryViewModel.onCleared()` only.** Calling it from
+  `onDestroy` as well would tear down the instance the next Activity reuses.
+- **Still nothing to compile here.** `./gradlew testDebugUnitTest` and
+  `assembleDebug` remain the gate, and only a machine with a JDK can run them.
+
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-26 (`./gradlew testDebugUnitTest assembleDebug` passed — Round 30).
+Round 33 (Arena, 2026-10-26) is **source-only and uncompiled**: no JDK/SDK/`cargo` in
+that sandbox. It adds `data/LibraryViewModel.kt` and changes `MainActivity`'s
+ownership of the repository, so the first machine that can build should treat
+`./gradlew testDebugUnitTest assembleDebug` as the gate for it.
 Round 30: Added 6 new Rust kernels (meanPool, applyLut, rec601InPlace, gaussianBlur3, boxBlur3, boxBlurInPlace), bumped ABI to 2, and wired Kotlin dispatch with reference fallback for every kernel. All unit tests pass, `app-debug.apk` built (65,687,518 bytes).

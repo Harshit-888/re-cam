@@ -405,10 +405,13 @@ fun CropAndFilterScreen(
     }
 
     // ---- filter swatches -----------------------------------------------------
-    // Keyed on the stage, not on `corners`: corners change on every pointer move
-    // while a handle is being dragged, and re-rendering five swatches per frame
-    // would make the drag stutter. Entering the filters stage is the one moment
-    // the swatches can actually be seen.
+    // Keyed on the stage, not on `corners`. The drag no longer hoists a corner on
+    // every pointer move (see `liveQuad` in `BorderCanvas`), so this is not what
+    // keeps the drag smooth any more — but it is still right: the swatches are
+    // full five-filter renders of the warped page, they cannot be seen from the
+    // borders stage, and re-rendering them the moment a handle is released is a
+    // frame of work nobody asked for. The stage change is the only moment they
+    // become visible, so it is the only moment they need to be fresh.
     LaunchedEffect(previewSource, stage) {
         val source = previewSource ?: return@LaunchedEffect
         val thumbs = withContext(Dispatchers.Default) {
@@ -942,6 +945,20 @@ private fun BorderCanvas(
             return Offset(candidate.x.coerceIn(-maxX, maxX), candidate.y.coerceIn(-maxY, maxY))
         }
 
+        // The quad being dragged, owned here rather than by the screen.
+        //
+        // `corners` is a parameter, so every pointer move used to hoist a new value
+        // into the editor's own state — and that recomposed the *whole* screen on
+        // every touch event: the header, the page strip (a `LazyRow`), the action
+        // rows, the banners and this canvas, sixty to a hundred and twenty times a
+        // second. None of them change while a handle moves.
+        //
+        // The live quad stays local, is written only inside the gesture, read only
+        // inside the draw lambda, and handed up **once**, when the finger lifts.
+        // A state read in the draw phase invalidates draw alone, so a drag now
+        // costs one canvas redraw per frame instead of a screen recomposition.
+        val liveQuad = remember(corners) { mutableStateOf(corners) }
+
         // Everything the gesture reads, read *through a state holder* rather than
         // captured by value.
         //
@@ -953,7 +970,9 @@ private fun BorderCanvas(
         // `grabbedCorner` was `null` for the entire gesture, the corner branch was
         // never entered, and the finger moved a handle that could not move.
         // `rememberUpdatedState` keeps one stable object while always returning the
-        // current value.
+        // current value. The quad is *not* read through a holder while dragging —
+        // `liveQuad` above owns that — but the gesture still needs to know what the
+        // screen last committed, and that is exactly what a holder is for.
         val latestCorners = rememberUpdatedState(corners)
         val latestZoom = rememberUpdatedState(zoom)
         val latestPan = rememberUpdatedState(pan)
@@ -999,7 +1018,7 @@ private fun BorderCanvas(
                         val nx = canvasPoint.x / frameW
                         val ny = canvasPoint.y / frameH
                         if (nx < -0.15f || nx > 1.15f || ny < -0.15f || ny > 1.15f) return null
-                        val quad = latestCorners.value
+                        val quad = liveQuad.value
                         val distances = listOf(
                             distSq(nx, ny, quad.topLeftX, quad.topLeftY),
                             distSq(nx, ny, quad.topRightX, quad.topRightY),
@@ -1054,28 +1073,26 @@ private fun BorderCanvas(
                                     val canvasPoint = screenToCanvas(change.position)
                                     val nx = snapToFrame((canvasPoint.x / frameW).coerceIn(0f, 1f))
                                     val ny = snapToFrame((canvasPoint.y / frameH).coerceIn(0f, 1f))
-                                    val quad = latestCorners.value
-                                    reportCorners.value(
-                                        when (grabbed) {
-                                            0 -> quad.copy(
-                                                topLeftX = clamp(nx, 0f, quad.topRightX - MIN_GAP),
-                                                topLeftY = clamp(ny, 0f, quad.bottomLeftY - MIN_GAP)
-                                            )
-                                            1 -> quad.copy(
-                                                topRightX = clamp(nx, quad.topLeftX + MIN_GAP, 1f),
-                                                topRightY = clamp(ny, 0f, quad.bottomRightY - MIN_GAP)
-                                            )
-                                            2 -> quad.copy(
-                                                bottomRightX = clamp(nx, quad.bottomLeftX + MIN_GAP, 1f),
-                                                bottomRightY = clamp(ny, quad.topRightY + MIN_GAP, 1f)
-                                            )
-                                            3 -> quad.copy(
-                                                bottomLeftX = clamp(nx, 0f, quad.bottomRightX - MIN_GAP),
-                                                bottomLeftY = clamp(ny, quad.topLeftY + MIN_GAP, 1f)
-                                            )
-                                            else -> quad
-                                        }
-                                    )
+                                    val quad = liveQuad.value
+                                    liveQuad.value = when (grabbed) {
+                                        0 -> quad.copy(
+                                            topLeftX = clamp(nx, 0f, quad.topRightX - MIN_GAP),
+                                            topLeftY = clamp(ny, 0f, quad.bottomLeftY - MIN_GAP)
+                                        )
+                                        1 -> quad.copy(
+                                            topRightX = clamp(nx, quad.topLeftX + MIN_GAP, 1f),
+                                            topRightY = clamp(ny, 0f, quad.bottomRightY - MIN_GAP)
+                                        )
+                                        2 -> quad.copy(
+                                            bottomRightX = clamp(nx, quad.bottomLeftX + MIN_GAP, 1f),
+                                            bottomRightY = clamp(ny, quad.topRightY + MIN_GAP, 1f)
+                                        )
+                                        3 -> quad.copy(
+                                            bottomLeftX = clamp(nx, 0f, quad.bottomRightX - MIN_GAP),
+                                            bottomLeftY = clamp(ny, quad.topLeftY + MIN_GAP, 1f)
+                                        )
+                                        else -> quad
+                                    }
                                     change.consume()
                                 } else if (latestZoom.value > 1.001f) {
                                     val delta = change.position - change.previousPosition
@@ -1091,7 +1108,19 @@ private fun BorderCanvas(
                             }
                         } while (event.changes.any { it.pressed })
 
+                        // One hop to the screen, at the end of the gesture. The
+                        // comparison matters: a tap that never moved must not mark
+                        // the page as hand-cropped.
                         reportGrabbed.value(null)
+                        // `latestCorners`, not `corners`: the gesture block is
+                        // suspended across many recompositions and still sees the
+                        // composition it was created in — the very bug this file
+                        // documents. Comparing against a stale quad could report an
+                        // unchanged crop, or swallow a changed one.
+                        val committed = latestCorners.value
+                        if (liveQuad.value != committed) {
+                            reportCorners.value(liveQuad.value)
+                        }
                     }
                 }
         ) {
@@ -1127,11 +1156,14 @@ private fun BorderCanvas(
                         // Inside the zoom layer, so strokes divide by the scale to
                         // keep a constant on-screen weight while zoomed.
                         val invZoom = 1f / zoom
+                        // Draw-phase read: this is what keeps a drag off the
+                        // recomposition path. `corners` itself is never read here.
+                        val shown = liveQuad.value
                         val points = listOf(
-                            Offset(corners.topLeftX * w, corners.topLeftY * h),
-                            Offset(corners.topRightX * w, corners.topRightY * h),
-                            Offset(corners.bottomRightX * w, corners.bottomRightY * h),
-                            Offset(corners.bottomLeftX * w, corners.bottomLeftY * h)
+                            Offset(shown.topLeftX * w, shown.topLeftY * h),
+                            Offset(shown.topRightX * w, shown.topRightY * h),
+                            Offset(shown.bottomRightX * w, shown.bottomRightY * h),
+                            Offset(shown.bottomLeftX * w, shown.bottomLeftY * h)
                         )
                         val quad = Path().apply {
                             moveTo(points[0].x, points[0].y)

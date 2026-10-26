@@ -89,6 +89,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -113,6 +114,8 @@ import com.example.docscanner.util.GalleryExporter
 import com.example.docscanner.util.ImageStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -284,15 +287,31 @@ fun ScannerCameraScreen(
                 zoomRatio = zoomRatio.coerceIn(minZoomRatio, maxOf(minZoomRatio, maxZoomRatio))
                 return@LaunchedEffect
             }
-            kotlinx.coroutines.delay(100)
+            delay(100)
         }
     }
 
     // ---- apply zoom whenever it changes -----------------------------------
-    LaunchedEffect(zoomRatio, boundCamera, minZoomRatio, maxZoomRatio) {
+    //
+    // *Not* keyed on `zoomRatio`, and not one camera call per touch event.
+    //
+    // A pinch produces a new zoom value on every pointer move — at 120 Hz that is
+    // up to 120 IPC round-trips a second into the camera service, each one queued
+    // behind the last, so the preview ended up chasing the finger and kept drifting
+    // after it stopped. `snapshotFlow` + `conflate` keeps only the newest value and
+    // the short pause after each call caps the rate at ~30/s. Zoom is a smooth
+    // optical change; 30 Hz is invisible, and the last value always lands because
+    // `conflate` hands over the newest rather than dropping it.
+    LaunchedEffect(boundCamera, minZoomRatio, maxZoomRatio) {
         val camera = boundCamera ?: return@LaunchedEffect
-        val target = zoomRatio.coerceIn(minZoomRatio, maxOf(minZoomRatio, maxZoomRatio))
-        runCatching { camera.cameraControl.setZoomRatio(target) }
+        val upper = maxOf(minZoomRatio, maxZoomRatio)
+        snapshotFlow { zoomRatio }
+            .conflate()
+            .collect { requested ->
+                val target = requested.coerceIn(minZoomRatio, upper)
+                runCatching { camera.cameraControl.setZoomRatio(target) }
+                delay(ZOOM_APPLY_INTERVAL_MS)
+            }
     }
 
     // ---- gallery import ---------------------------------------------------
@@ -1298,6 +1317,15 @@ private const val FLASH_MS = 260
 
 /** Zoom ratios closer than this to a stop count as that stop being selected. */
 private const val ZOOM_SELECTED_EPSILON = 0.06f
+
+/**
+ * Minimum gap between camera zoom calls while a pinch is in flight.
+ *
+ * 32 ms is ~31 Hz: above the point where a stepped zoom is visible, well below the
+ * point where the camera service starts queueing requests faster than it can serve
+ * them.
+ */
+private const val ZOOM_APPLY_INTERVAL_MS = 32L
 
 /**
  * The zoom stops worth offering: whole stops the sensor can reach, plus the

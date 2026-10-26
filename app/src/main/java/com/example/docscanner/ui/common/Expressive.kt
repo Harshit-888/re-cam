@@ -3,7 +3,6 @@ package com.example.docscanner.ui.common
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.spring
@@ -23,7 +22,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -44,6 +42,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -269,8 +268,17 @@ fun SegmentedPill(
     ) {
         BoxWithConstraints(modifier = Modifier.padding(4.dp)) {
             val segmentWidth = maxWidth / options.size
-            val thumbOffset by animateDpAsState(
-                targetValue = segmentWidth * selectedIndex,
+            // Pixels, translated on the layer — not a `Dp` handed to `offset`.
+            //
+            // `Modifier.offset(x = animatedDp)` is a *layout* modifier: every frame
+            // of the slide re-places the thumb and its subtree. `translationX` on a
+            // graphics layer is a draw-time transform, so the slide costs the same
+            // as an idle frame and cannot re-run measure on the pill's contents.
+            // Animating a layout property is the one thing motion must never do.
+            val density = LocalDensity.current
+            val segmentWidthPx = with(density) { segmentWidth.toPx() }
+            val thumbOffsetPx by animateFloatAsState(
+                targetValue = segmentWidthPx * selectedIndex,
                 animationSpec = spring(dampingRatio = 0.75f, stiffness = 500f),
                 label = "segmentedThumb"
             )
@@ -281,7 +289,7 @@ fun SegmentedPill(
                 modifier = Modifier
                     .width(segmentWidth)
                     .height(38.dp)
-                    .offset(x = thumbOffset)
+                    .graphicsLayer { translationX = thumbOffsetPx }
             ) {}
             Row(Modifier.fillMaxWidth()) {
                 options.forEachIndexed { index, label ->
