@@ -4,6 +4,16 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-26 (ao) — Antigravity — Round 29 build verification & compilation fixes
+
+Verified Round 29 locally with `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. Resolved 1 compilation issue from Arena's commits:
+
+- `FramePacing.kt`:
+  - Resolved `Unresolved reference 'setFrameRate'` and `Unresolved reference 'FRAME_RATE_COMPATIBILITY_DEFAULT'`. Correctly set `preferredDisplayModeId` and `preferredRefreshRate` on `window.attributes` to request the fastest display mode and refresh rate from the window manager / compositor without non-existent `window.setFrameRate`.
+- Build status:
+  - All 121 unit tests pass cleanly (`testDebugUnitTest`).
+  - `app-debug.apk` (65,685,492 bytes) assembled cleanly in 14s (`assembleDebug`).
+
 ## 2026-10-26 (pm) — Arena.ai — Round 29: actually running at the panel's rate
 
 Round 29 was "the app is not running on full 120 fps". The measurement was lying as

@@ -55,19 +55,21 @@ object FramePacing {
         // already at its best mode never pays for a window relayout.
         if (fastest.refreshRate > safeRefreshRate(display) + 1f && fastest.modeId >= 0) {
             val attributes = window.attributes
+            var changed = false
             if (attributes.preferredDisplayModeId != fastest.modeId) {
                 attributes.preferredDisplayModeId = fastest.modeId
+                changed = true
+            }
+            @Suppress("DEPRECATION")
+            if (attributes.preferredRefreshRate != fastest.refreshRate) {
+                attributes.preferredRefreshRate = fastest.refreshRate
+                changed = true
+            }
+            if (changed) {
                 window.attributes = attributes
             }
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            // DEFAULT, not FIXED_SOURCE: this states the rate the content is
-            // produced at and lets the compositor keep its ability to step down.
-            runCatching {
-                window.setFrameRate(fastest.refreshRate, Window.FRAME_RATE_COMPATIBILITY_DEFAULT)
-            }
-        }
         return fastest.refreshRate
     }
 
