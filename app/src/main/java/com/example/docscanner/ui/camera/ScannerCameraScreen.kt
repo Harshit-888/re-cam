@@ -63,6 +63,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -918,7 +919,7 @@ fun ScannerCameraScreen(
                     // slot itself never changes size, so the shutter cannot drift off
                     // centre while it animates.
                     Box(contentAlignment = Alignment.Center) {
-                        AnimatedVisibility(
+                        this@Row.AnimatedVisibility(
                             visible = capturedPages.isNotEmpty(),
                             // `spring()` as a *scale* enter spec wants
                             // `Animatable`-style visibility thresholds, which the

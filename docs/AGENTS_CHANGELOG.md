@@ -4,6 +4,13 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-26 (night) — Antigravity — Rounds 34 & 35 build verification & compilation fixes
+
+Verified Rounds 34 & 35 changes from Arena.ai. Fixed 2 compilation errors:
+- `ScannerCameraScreen.kt`: Added missing `import androidx.compose.foundation.layout.width`.
+- `ScannerCameraScreen.kt`: Explicitly qualified `this@Row.AnimatedVisibility` inside the bottom controls `Box`.
+All unit tests pass (`BUILD SUCCESSFUL in 28s`), `assembleDebug` passes (`BUILD SUCCESSFUL in 11s`), `app-debug.apk` built (66,209,649 bytes).
+
 ## 2026-10-26 (night, 3) — Arena.ai — Round 35: one segmented control everywhere, motion in every state change, and the sheet verified in the dark
 
 Two things were reported: the export sheet "is still not fixed", and the app wants small
