@@ -11,6 +11,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -34,12 +35,14 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CallMerge
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
@@ -95,7 +98,11 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -114,6 +121,7 @@ import com.example.docscanner.ui.common.InfoPill
 import com.example.docscanner.ui.common.PageThumbnail
 import com.example.docscanner.ui.common.PillButton
 import com.example.docscanner.ui.common.SectionLabel
+import com.example.docscanner.ui.common.TonalPillButton
 import com.example.docscanner.ui.pdf.PdfExportSheet
 import com.example.docscanner.util.DocumentNaming
 import com.example.docscanner.util.DocumentSearch
@@ -267,8 +275,10 @@ fun DashboardScreen(
         isSearching = false
     }
 
-    val snippetsByDocument = remember(searchHits) {
-        searchHits.mapNotNull { hit -> hit.snippet?.let { hit.document.id to it } }.toMap()
+    // The full hit, not just its text: a result now carries the ranges that matched,
+    // so the card can emphasise the words instead of showing an unexplained sentence.
+    val hitsByDocument = remember(searchHits) {
+        searchHits.mapNotNull { hit -> hit.snippet?.let { hit.document.id to hit } }.toMap()
     }
 
     // Keyed on *whether* a query is active, not on the query text: while the user
@@ -578,7 +588,7 @@ fun DashboardScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            SearchBarField(
+            MagicSearchField(
                 query = searchQuery,
                 onQueryChange = { searchQuery = it },
                 modifier = Modifier
@@ -631,7 +641,8 @@ fun DashboardScreen(
                     if (!isSearching) {
                         EmptyStateView(
                             isSearch = searchQuery.isNotBlank(),
-                            onStartScan = startScan
+                            onStartScan = startScan,
+                            onTryQuery = { searchQuery = it }
                         )
                     }
                 }
@@ -665,7 +676,8 @@ fun DashboardScreen(
                             document = doc,
                             dateLabel = dateLabels[doc.id]?.short.orEmpty(),
                             coverSize = coverSize,
-                            snippet = snippetsByDocument[doc.id],
+                            snippet = hitsByDocument[doc.id]?.snippet,
+                            snippetHighlights = hitsByDocument[doc.id]?.highlights.orEmpty(),
                             onClick = {
                                 if (isSelecting) toggleSelection(doc.id) else onNavigateToDetail(doc.id)
                             },
@@ -700,7 +712,8 @@ fun DashboardScreen(
                         DocumentListCard(
                             document = doc,
                             dateLabel = dateLabels[doc.id]?.long.orEmpty(),
-                            snippet = snippetsByDocument[doc.id],
+                            snippet = hitsByDocument[doc.id]?.snippet,
+                            snippetHighlights = hitsByDocument[doc.id]?.highlights.orEmpty(),
                             onClick = {
                                 if (isSelecting) toggleSelection(doc.id) else onNavigateToDetail(doc.id)
                             },
@@ -937,6 +950,16 @@ private fun prefetchRow(
 /** Pre-formatted dates for one document, built once per library change. */
 private data class DateLabels(val short: String, val long: String)
 
+/**
+ * Example queries offered when a search finds nothing.
+ *
+ * Chosen to demonstrate the three things the field understands beyond a plain
+ * word: a quoted phrase, tolerance for a misspelling, and a bare year. Tapping one
+ * fills the field, so the lesson is a search the user can then edit rather than a
+ * tooltip.
+ */
+private val MAGIC_EXAMPLES = listOf("invoice", "\"pan card\"", "2024")
+
 /** Columns in the library grid. The cover size below is derived from it. */
 private const val GRID_COLUMNS = 2
 
@@ -1061,8 +1084,16 @@ private fun CaptureFab(onClick: () -> Unit) {
     }
 }
 
+/**
+ * The Magic Search field.
+ *
+ * A sparkle, not a magnifier, and a name that says what it does: this field finds a
+ * document when the query is a prefix, a plural, a misspelling or a different way of
+ * writing the same word (see [com.example.docscanner.util.DocumentSearch]). A
+ * magnifier would promise an exact search and then quietly be cleverer than that.
+ */
 @Composable
-fun SearchBarField(
+fun MagicSearchField(
     query: String,
     onQueryChange: (String) -> Unit,
     modifier: Modifier = Modifier
@@ -1081,14 +1112,22 @@ fun SearchBarField(
         onValueChange = onQueryChange,
         placeholder = {
             Text(
-                "Search documents",
+                "Magic Search",
                 style = MaterialTheme.typography.bodyMedium
             )
         },
         leadingIcon = {
+            // A sparkle rather than a magnifier: this field also matches words the
+            // user did not type exactly, and a magnifier would promise an exact
+            // search. It takes the accent colour once there is a query.
             Icon(
-                Icons.Default.Search,
+                Icons.Default.AutoAwesome,
                 contentDescription = null,
+                tint = if (query.isBlank()) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
                 modifier = Modifier.size(20.dp)
             )
         },
@@ -1257,6 +1296,8 @@ fun DocumentGridCard(
     onMoveToFolder: () -> Unit,
     onLongClick: () -> Unit = {},
     snippet: String? = null,
+    /** Ranges inside [snippet] that matched, for emphasis. */
+    snippetHighlights: List<IntRange> = emptyList(),
     selectionMode: Boolean = false,
     selected: Boolean = false,
     /** 1-based position in the merge order; 0 when not selected. */
@@ -1369,14 +1410,15 @@ fun DocumentGridCard(
                         maxLines = 1
                     )
                 } else {
-                    // Why this document matched: the sentence around the hit. Without
-                    // it a search result is just a thumbnail the user has to re-open.
-                    Text(
-                        snippet,
-                        style = MaterialTheme.typography.bodySmall,
+                    // Why this document matched: the sentence around the hit, with
+                    // the matched words marked. Without it a search result is just a
+                    // thumbnail the user has to re-open.
+                    SnippetText(
+                        text = snippet,
+                        highlights = snippetHighlights,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
+                        highlight = MaterialTheme.colorScheme.primary,
+                        maxLines = 2
                     )
                 }
             }
@@ -1395,6 +1437,8 @@ fun DocumentListCard(
     onMoveToFolder: () -> Unit,
     onLongClick: () -> Unit = {},
     snippet: String? = null,
+    /** Ranges inside [snippet] that matched, for emphasis. */
+    snippetHighlights: List<IntRange> = emptyList(),
     selectionMode: Boolean = false,
     selected: Boolean = false,
     selectionOrder: Int = 0
@@ -1469,12 +1513,12 @@ fun DocumentListCard(
                 )
                 if (snippet != null) {
                     Spacer(Modifier.height(2.dp))
-                    Text(
-                        snippet,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
+                    SnippetText(
+                        text = snippet,
+                        highlights = snippetHighlights,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        highlight = MaterialTheme.colorScheme.primary,
+                        maxLines = 2
                     )
                 }
             }
@@ -1497,6 +1541,59 @@ fun DocumentListCard(
             }
         }
     }
+}
+
+/**
+ * A result's matching passage, with the words that matched emphasised.
+ *
+ * Built as one `AnnotatedString` rather than a row of `Text`s: the passage has to
+ * wrap as a sentence, and splitting it into spans would let the highlighter change
+ * where the line breaks fall. `remember` keyed on the ranges because a card
+ * recomposes on every scroll frame of a fling and rebuilding the string per frame
+ * is exactly the kind of per-tile work the library spent three rounds removing.
+ */
+@Composable
+private fun SnippetText(
+    text: String,
+    highlights: List<IntRange>,
+    color: Color,
+    highlight: Color,
+    maxLines: Int
+) {
+    if (highlights.isEmpty()) {
+        Text(
+            text,
+            style = MaterialTheme.typography.bodySmall,
+            color = color,
+            maxLines = maxLines,
+            overflow = TextOverflow.Ellipsis
+        )
+        return
+    }
+    val annotated = remember(text, highlights, highlight) {
+        buildAnnotatedString {
+            var cursor = 0
+            for (range in highlights) {
+                val start = range.first.coerceIn(0, text.length)
+                val end = (range.last + 1).coerceIn(start, text.length)
+                if (start > cursor) append(text.substring(cursor, start))
+                if (end > start) {
+                    withStyle(SpanStyle(color = highlight, fontWeight = FontWeight.SemiBold)) {
+                        append(text.substring(start, end))
+                    }
+                }
+                cursor = maxOf(cursor, end)
+            }
+            if (cursor < text.length) append(text.substring(cursor))
+        }
+    }
+    Text(
+        annotated,
+        style = MaterialTheme.typography.bodySmall,
+        color = color,
+        maxLines = maxLines,
+        overflow = TextOverflow.Ellipsis
+    )
 }
 
 /** Small round overflow affordance that does not shout on top of a thumbnail. */
@@ -1556,7 +1653,9 @@ private fun DocumentMenu(
 @Composable
 fun EmptyStateView(
     isSearch: Boolean,
-    onStartScan: () -> Unit
+    onStartScan: () -> Unit,
+    /** Fills the search field with an example. Absent on screens without a search. */
+    onTryQuery: ((String) -> Unit)? = null
 ) {
     Column(
         modifier = Modifier
@@ -1568,14 +1667,15 @@ fun EmptyStateView(
         EmptyPagesArt(isSearch = isSearch)
         Spacer(Modifier.height(26.dp))
         Text(
-            if (isSearch) "Nothing matches that search" else "Your library is empty",
+            if (isSearch) "Nothing matched" else "Your library is empty",
             style = MaterialTheme.typography.headlineSmall,
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(8.dp))
         Text(
             if (isSearch) {
-                "Try a different word, or clear the filters above."
+                "Magic Search ignores spelling and word endings, so a near miss " +
+                    "usually still finds it. Fewer words works better than more."
             } else {
                 "Scan a page and it will appear here, ready to sign, export or share."
             },
@@ -1583,6 +1683,24 @@ fun EmptyStateView(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
         )
+        if (isSearch && onTryQuery != null) {
+            Spacer(Modifier.height(20.dp))
+            // Three examples, each teaching one thing the field can do that a plain
+            // `contains` could not: a phrase, a typo-tolerant word, and a year.
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                // Three pills are wider than a small phone; scrolling keeps every
+                // example reachable instead of clipping the last one.
+                modifier = Modifier.horizontalScroll(rememberScrollState())
+            ) {
+                MAGIC_EXAMPLES.forEach { example ->
+                    TonalPillButton(
+                        text = example,
+                        onClick = { onTryQuery(example) }
+                    )
+                }
+            }
+        }
         if (!isSearch) {
             Spacer(Modifier.height(26.dp))
             PillButton(

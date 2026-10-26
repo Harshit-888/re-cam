@@ -69,6 +69,7 @@ import com.example.docscanner.model.ImageScale
 import com.example.docscanner.model.PageOrientation
 import com.example.docscanner.model.PaperSize
 import com.example.docscanner.model.ThemeMode
+import com.example.docscanner.util.NativeSearch
 import com.example.docscanner.util.PerfTrace
 
 /**
@@ -301,6 +302,17 @@ fun SettingsScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Search kernel: " + if (NativeSearch.isActive) {
+                                "Rust (verified against the Kotlin reference)"
+                            } else {
+                                "Kotlin reference"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         Spacer(Modifier.height(8.dp))
                         Text(
                             "avg ≈ 17 ms is one 60 Hz frame. Large sync/layout means the " +

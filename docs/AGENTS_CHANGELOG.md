@@ -4,6 +4,73 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-25 (am) — Arena.ai — Round 27: "Magic Search", with the vocabulary walk in Rust
+
+The home screen's search is now **Magic Search**: it finds a document when the query
+is a prefix, a plural, a misspelling, a curated spelling variant or a year — and the
+one part of it whose cost grows with the library runs in Rust, behind a parity gate.
+
+### Renames and signature changes (call sites updated in this commit)
+
+- **`ui/dashboard/DashboardScreen.kt`: `SearchBarField` → `MagicSearchField`.** Same
+  parameters; the placeholder is `Magic Search` and the leading glyph is
+  `Icons.Default.AutoAwesome` (tinted primary once there is a query).
+- `DocumentSearch.Hit` gained `highlights: List<IntRange>` (defaulted) — the ranges,
+  **inside `snippet`**, that matched, so a card can emphasise them.
+- `DocumentGridCard` / `DocumentListCard` gained `snippetHighlights: List<IntRange>`
+  (defaulted).
+- `EmptyStateView` gained `onTryQuery: ((String) -> Unit)? = null`; the dashboard
+  passes it so the no-results state can offer three example queries.
+- `DocumentSearch.Index.search(query)` and `DocumentSearch.tokenize` are unchanged.
+  `DocumentSearch.parseQuery`, `stem`, `expandReference`, `boundedEditDistance`,
+  `packStrings` and `PREFIX_CODE` are new and `internal`.
+
+### New files
+
+| File | Contents |
+| :--- | :--- |
+| `util/NativeSearch.kt` | The Rust vocabulary matcher behind a load/ABI/parity gate, exactly like `NativeFilters`. Loads nothing in JVM unit tests and falls back cleanly. |
+| `app/src/main/rust/src/search.rs` | The matcher: packed-UTF-8 parsing, capped Levenshtein, the prefix/fuzzy walk. `std` only, no new crate, no state. |
+| `app/src/test/.../MagicSearchTest.kt` | 20 tests for typo tolerance, prefix, stemming, phrases, exclusions, years, recency, highlights, query parsing, the packing format, and the golden expansion vectors **shared with `search.rs`'s own tests**. |
+
+### What search does now
+
+| typed | also matches | weight |
+| :--- | :--- | :--- |
+| `invoic` | every vocabulary entry starting with it (≥ 3 chars) | 0.85 |
+| `invoce` | entries one edit away — only on words ≥ 5 chars | 0.55 |
+| `aadhr` | entries two edits away — only on words ≥ 8 chars | 0.30 |
+| `aadhar` | its curated spelling group (`aadhaar`) | 0.90 |
+| `invoices` | `invoice` (both sides stemmed identically) | 1.00 |
+
+Plus: quoted phrases **and** implicit adjacency (`tax return` unquoted), `-word`
+exclusion, a bare year matched against years the document mentions, same-page
+co-occurrence bonus, and a 0.4-point recency nudge that only breaks ties.
+
+Two structural changes also made it faster, independent of Rust:
+
+- title and tag containment used to be an O(documents) `contains` scan **per term**;
+  they are now postings lists, so a query touches only the documents that matter;
+- the phrase check used to scan every page in the library on every keystroke; it now
+  runs only for candidate documents (capped at 240, and snippets at 80).
+
+### Limits worth knowing
+
+- Fuzzy matching is deliberately length-gated: two edits on a five-letter word turns
+  "tax" into "toy", and a wrong answer is worse than no answer.
+- The vocabulary includes title and tag words, not just page words — otherwise a typo
+  in a word that only appears in a title could never be expanded.
+- `SYNONYMS` is a curated list of **spellings of the same thing**, not a thesaurus.
+  Semantic matching is still the embedding model in `docs/AGENT_COORDINATION.md` §6i.
+
+### Rust
+
+`search.rs` adds **no dependency** and no global state: one `Vec<u32>` per call, and
+the whole module is ~200 lines. `NativeSearch` runs the kernel against
+`DocumentSearch.expandReference` on a fixed vocabulary the first time it is used and
+refuses the native path unless the two arrays are identical; Settings → Performance
+(debug) prints which one is live.
+
 ## 2026-10-25 (al) — Arena.ai — Round 26: PDF password, file size, renaming, and merging
 
 Four things the user asked for, all in the share sheet: a passphrase, a smaller

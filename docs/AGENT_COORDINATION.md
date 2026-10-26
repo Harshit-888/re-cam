@@ -94,6 +94,7 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai | 🚧 in review (Round 25) | `data/LibraryStore.kt`, `data/SettingsStore.kt`, `data/ScannerRepository.kt`, `util/ImageStore.kt`, `util/PageImageLoader.kt`, `ui/camera/ScannerCameraScreen.kt`, `ui/editor/CropAndFilterScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `app/src/test/.../OrphanSweepTest.kt`, docs | Data-loss fixes (atomic library writes, flush on close, discarded scans and orphan page files deleted, editor geometry saved on exit), a prefetch priority gate, and a wider/earlier startup warm-up. See §6p. |
 
 | Arena.ai | 🚧 in review (Round 26) | `model/Models.kt`, `util/PdfGenerator.kt` (rewritten), `util/PdfWriter.kt` (new), `util/PdfSecurity.kt` (new), `ui/pdf/PdfExportSheet.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `app/src/test/.../PdfWriterTest.kt` + `PdfSecurityTest.kt` (new), docs | Password-protected PDFs, choose-the-size compression, rename at share time, and multi-select → merge from the library. **`PdfExportSheet` and `PdfGenerator.generatePdf` signatures changed** — see the changelog. See §6q. |
+| Arena.ai | 🚧 in review (Round 27) | `util/DocumentSearch.kt`, `util/NativeSearch.kt` (new), `app/src/main/rust/src/search.rs` + `lib.rs`, `ui/dashboard/DashboardScreen.kt`, `ui/settings/SettingsScreen.kt`, `app/src/test/.../MagicSearchTest.kt` (new), docs | "Magic Search": typo/prefix/stem/synonym/phrase/year matching with highlighted snippets, and the vocabulary walk in Rust behind a parity gate. **`SearchBarField` renamed to `MagicSearchField`.** See §6r. |
 
 ## 5. File ownership map
 
@@ -813,6 +814,78 @@ not composition; `sync`/`layout` dominating means our own composition.
   it is not a vault.
 - Merges default to `Balanced`. The sheet's compression control is visible and the
   default is never re-applied after the fact.
+
+## 6r. Magic Search + the Rust vocabulary matcher (Arena, 2026-10-25, round 27)
+
+### What to build
+
+Nothing new to provision — the matcher lives in the crate that already exists, so
+the build is unchanged:
+
+```
+cargo install cargo-ndk                      # once
+rustup target add aarch64-linux-android x86_64-linux-android
+export ANDROID_NDK_HOME=/path/to/ndk
+./gradlew assembleDebug                      # buildRustKernels runs, or is skipped
+```
+
+Without the toolchain everything still works: `NativeSearch.isLoaded` is false and
+`DocumentSearch.expandReference` answers every query. That is not a degraded mode —
+it is the same code the JVM tests run.
+
+`search.rs` adds **no dependency**, no global state and no new JNI surface beyond two
+functions (`nativeVersion`, `nativeExpand`). It is the smallest thing that could do
+the job: one `Vec<i32>` per call, `std` only.
+
+### Why this one is worth native code
+
+Search has exactly one loop whose cost grows with the *library* rather than with the
+query: expanding each typed word into the index's vocabulary (prefixes and
+near-spellings). On a 3,000-page library that vocabulary is tens of thousands of
+words. Everything else in a query is postings lookups that already scale with the
+number of matches.
+
+### The contract that must not drift
+
+| fact | where |
+| :--- | :--- |
+| `DocumentSearch.expandReference` is the **definition** of the walk | `util/DocumentSearch.kt` |
+| `search.rs::expand` must produce the **same triples in the same order** | `app/src/main/rust/src/search.rs` |
+| order is **vocabulary outer, query inner** | both |
+| codes: `0` exact, `-1` prefix, `1`/`2` edit distance | both |
+| an entry matches at most one code per query, priority exact → prefix → distance | both |
+| `SEARCH_ABI_VERSION` (1) is versioned **separately** from the pixel `ABI_VERSION` | `lib.rs`, `NativeSearch.kt` |
+
+The golden triple vector (`invoce`/`invoi`/`aadhar`/`dob`/`totl` over an 18-word
+vocabulary) is asserted in **both** `search.rs`'s `#[cfg(test)]` module and
+`MagicSearchTest.theVocabularyWalkProducesTheGoldenTriples`. If the two ever disagree,
+one of the two tests fails — and on device the parity check refuses the kernel before
+a user ever sees a wrong result.
+
+### Do not undo
+
+- **The length gates on fuzzy matching.** One edit needs a 5-character word, two need
+  8. Without them "tax" matches "toy" and the search stops being trustworthy.
+- **The `stem()` pairing.** The index and the query are stemmed by the *same*
+  function; changing one side silently halves recall.
+- **Postings for titles and tags.** They used to be an O(documents) `contains` scan per
+  term per keystroke — the reason a big library felt slow while typing.
+- **Candidate-restricted phrase and snippet work.** The phrase check used to scan
+  every page in the library on every keystroke.
+- **`NativeSearch.isLoaded` must stay side-effect free.** It is initialised in JVM
+  unit tests; no `android.util.Log` call may appear on that path.
+
+### How to verify on a device
+
+1. `./gradlew testDebugUnitTest` — 20 new tests, all pure JVM, no device.
+2. Settings → **Performance (debug)** prints `Search kernel: Rust (verified against
+   the Kotlin reference)` when the `.so` loaded *and* the parity check passed, and
+   `Kotlin reference` otherwise. Both are correct; the first is faster.
+3. Type `invoce`, `invoi`, `invoices`, `aadhaar` and `"pan card"` against a library
+   that contains the correct spellings — each should find the document, and the
+   matched words in the snippet should be emphasised.
+4. Type `-draft` after a word to confirm exclusion, and `2024` alone to confirm the
+   year path.
 
 ## 7. Known-good state
 
