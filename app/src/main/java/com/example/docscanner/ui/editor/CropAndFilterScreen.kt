@@ -37,6 +37,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -81,8 +83,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEvent
-import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -106,6 +108,7 @@ import com.example.docscanner.ui.common.PageThumbnail
 import com.example.docscanner.ui.common.PillButton
 import com.example.docscanner.ui.common.SegmentedPill
 import com.example.docscanner.ui.common.TonalIconButton
+import com.example.docscanner.util.CropHandles
 import com.example.docscanner.util.DocumentDetector
 import com.example.docscanner.util.ImageProcessingUtils
 import com.example.docscanner.util.ImageStore
@@ -165,9 +168,6 @@ private const val PREVIEW_RENDER_DIMENSION = 2400
 
 /** Long edge of the tiny render behind each filter swatch, in pixels. */
 private const val FILTER_THUMB_DIMENSION = 260
-
-/** Smallest allowed gap between opposing edges, in normalised units. */
-private const val MIN_GAP = 0.02f
 
 /**
  * The two stages of a scan.
@@ -248,6 +248,17 @@ fun CropAndFilterScreen(
     var loadedPageId by remember { mutableStateOf<String?>(null) }
     var cornersEdited by remember { mutableStateOf(false) }
 
+    /**
+     * Whether the next page load keeps the filter the user has chosen.
+     *
+     * Loading a page normally adopts that page's own filter — right when the screen
+     * opens, wrong when the user is walking the strip in the filter stage to compare
+     * one look across pages: each tap silently threw the choice away and put back
+     * the stored one, so "the same filter on every page" could not be previewed at
+     * all.
+     */
+    var keepFilterOnNextLoad by remember { mutableStateOf(false) }
+
     // Pages whose borders the user has confirmed in this session.
     val borderedPages = remember(docId) { mutableStateMapOf<String, Boolean>() }
 
@@ -285,7 +296,15 @@ fun CropAndFilterScreen(
         val current = repository.getDocumentById(docId)
             ?.pages?.find { it.id == activePageId } ?: return@LaunchedEffect
 
-        selectedFilter = current.filterType
+        // Drop the previous page's pixels now, rather than leaving them under the
+        // new page's number until this one has arrived. Switching pages is a normal
+        // thing to do in the filter stage (the strip is right there), and a frame of
+        // page 2 labelled "Page 3 of 12" is exactly the kind of lying preview that
+        // makes an editor feel broken. The loading state says "Loading page…".
+        previewBitmap = null
+
+        if (!keepFilterOnNextLoad) selectedFilter = current.filterType
+        keepFilterOnNextLoad = false
         rotation = current.rotationDegrees
         corners = current.corners
         zoom = 1f
@@ -573,6 +592,10 @@ fun CropAndFilterScreen(
         val target = pages.getOrNull(index) ?: return
         if (target.id == activePageId) return
         persistGeometry()
+        // Browsing pages with a filter on is comparing looks; browsing them with
+        // corners in hand is deciding crops. Only the first one keeps the choice
+        // (see `keepFilterOnNextLoad`).
+        keepFilterOnNextLoad = stage == Stage.FILTERS
         activePageId = target.id
     }
 
@@ -752,6 +775,10 @@ fun CropAndFilterScreen(
                         stage = current,
                         onStageChange = { stage = it },
                         pages = pages,
+                        activePageId = activePageId,
+                        borderedPages = borderedPages,
+                        needsCheck = needsCheck,
+                        onSelectPage = { index -> goToPage(index) },
                         selectedFilter = selectedFilter,
                         onSelectFilter = { selectedFilter = it },
                         thumbs = filterThumbs,
@@ -1013,21 +1040,49 @@ private fun BorderCanvas(
                         return Offset(rx + frameW / 2f, ry + frameH / 2f)
                     }
 
+                    /**
+                     * The handle under [point], in **canvas pixels**.
+                     *
+                     * Three things were wrong with the old test, and together they
+                     * are the "the dots jump when I drag" report:
+                     *
+                     * * it compared squared distances in *normalised* coordinates
+                     *   against `GRAB_THRESHOLD = 0.05f`, i.e. ~22 % of the frame
+                     *   per axis — so a touch anywhere near the middle of the page
+                     *   grabbed whichever handle happened to be closest, and a drag
+                     *   meant to nudge one corner threw another one across the page;
+                     * * normalising x by the width and y by the height made the
+                     *   region anisotropic, so on a portrait page the horizontal
+                     *   reach was far larger than the vertical one;
+                     * * the radius did not follow the zoom, while the handles are
+                     *   drawn at a *constant on-screen size* (they divide by the
+                     *   zoom), so zooming in shrank the area you could actually hit.
+                     *
+                     * Now: a fingertip-sized radius in screen dp, converted into
+                     * canvas pixels by dividing by the zoom, compared isotropically.
+                     */
                     fun grabCornerAt(point: Offset): Int? {
                         val canvasPoint = screenToCanvas(point)
-                        val nx = canvasPoint.x / frameW
-                        val ny = canvasPoint.y / frameH
-                        if (nx < -0.15f || nx > 1.15f || ny < -0.15f || ny > 1.15f) return null
+                        val tolerance = (HANDLE_GRAB_DP.dp.toPx() / latestZoom.value).let { it * it }
                         val quad = liveQuad.value
-                        val distances = listOf(
-                            distSq(nx, ny, quad.topLeftX, quad.topLeftY),
-                            distSq(nx, ny, quad.topRightX, quad.topRightY),
-                            distSq(nx, ny, quad.bottomRightX, quad.bottomRightY),
-                            distSq(nx, ny, quad.bottomLeftX, quad.bottomLeftY)
+                        val xs = floatArrayOf(
+                            quad.topLeftX, quad.topRightX, quad.bottomRightX, quad.bottomLeftX
                         )
-                        return distances.withIndex().minByOrNull { it.value }
-                            ?.takeIf { it.value < GRAB_THRESHOLD }
-                            ?.index
+                        val ys = floatArrayOf(
+                            quad.topLeftY, quad.topRightY, quad.bottomRightY, quad.bottomLeftY
+                        )
+                        var bestIndex = -1
+                        var bestDistance = Float.MAX_VALUE
+                        for (index in 0..3) {
+                            val dx = canvasPoint.x - xs[index] * frameW
+                            val dy = canvasPoint.y - ys[index] * frameH
+                            val distance = dx * dx + dy * dy
+                            if (distance < bestDistance) {
+                                bestDistance = distance
+                                bestIndex = index
+                            }
+                        }
+                        return if (bestDistance <= tolerance) bestIndex else null
                     }
 
                     awaitEachGesture {
@@ -1039,6 +1094,13 @@ private fun BorderCanvas(
                         val grabbed = grabCornerAt(down.position)
                         reportGrabbed.value(grabbed)
                         var multiTouch = false
+                        // A handle only starts moving once the finger has actually
+                        // travelled. Before this, the first pointer event of *any*
+                        // touch near a handle wrote the finger's position into that
+                        // corner — so a tap (or the start of a pan) teleported a
+                        // corner halfway across the page instead of doing nothing.
+                        var dragging = false
+                        val touchSlop = viewConfiguration.touchSlop
 
                         var event: PointerEvent
                         do {
@@ -1070,28 +1132,33 @@ private fun BorderCanvas(
                                 val change = event.changes.firstOrNull { it.pressed }
                                 if (change == null) continue
                                 if (grabbed != null) {
-                                    val canvasPoint = screenToCanvas(change.position)
-                                    val nx = snapToFrame((canvasPoint.x / frameW).coerceIn(0f, 1f))
-                                    val ny = snapToFrame((canvasPoint.y / frameH).coerceIn(0f, 1f))
-                                    val quad = liveQuad.value
-                                    liveQuad.value = when (grabbed) {
-                                        0 -> quad.copy(
-                                            topLeftX = clamp(nx, 0f, quad.topRightX - MIN_GAP),
-                                            topLeftY = clamp(ny, 0f, quad.bottomLeftY - MIN_GAP)
+                                    if (!dragging &&
+                                        (change.position - down.position).getDistance() > touchSlop
+                                    ) {
+                                        dragging = true
+                                    }
+                                    if (dragging) {
+                                        // **Relative** movement, not "put the corner
+                                        // under the finger".
+                                        //
+                                        // The corner keeps its grab offset, so the
+                                        // handle follows the finger 1:1 from wherever
+                                        // it already was instead of leaping to the
+                                        // touch point — and a slow drag no longer
+                                        // overshoots because the finger was a few dp
+                                        // off the handle when it landed. The delta is
+                                        // taken between two *canvas* positions, so it
+                                        // is already corrected for zoom and rotation.
+                                        val from = screenToCanvas(change.previousPosition)
+                                        val to = screenToCanvas(change.position)
+                                        val dx = (to.x - from.x) / frameW
+                                        val dy = (to.y - from.y) / frameH
+                                        liveQuad.value = CropHandles.move(
+                                            quad = liveQuad.value,
+                                            corner = grabbed,
+                                            dx = dx,
+                                            dy = dy
                                         )
-                                        1 -> quad.copy(
-                                            topRightX = clamp(nx, quad.topLeftX + MIN_GAP, 1f),
-                                            topRightY = clamp(ny, 0f, quad.bottomRightY - MIN_GAP)
-                                        )
-                                        2 -> quad.copy(
-                                            bottomRightX = clamp(nx, quad.bottomLeftX + MIN_GAP, 1f),
-                                            bottomRightY = clamp(ny, quad.topRightY + MIN_GAP, 1f)
-                                        )
-                                        3 -> quad.copy(
-                                            bottomLeftX = clamp(nx, 0f, quad.bottomRightX - MIN_GAP),
-                                            bottomLeftY = clamp(ny, quad.topLeftY + MIN_GAP, 1f)
-                                        )
-                                        else -> quad
                                     }
                                     change.consume()
                                 } else if (latestZoom.value > 1.001f) {
@@ -1298,26 +1365,13 @@ private fun BordersControls(
         Spacer(Modifier.height(14.dp))
 
         if (pages.size > 1) {
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(horizontal = 2.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                items(pages, key = { it.id }) { page ->
-                    val index = pages.indexOfFirst { it.id == page.id }
-                    PageChip(
-                        page = page,
-                        index = index,
-                        selected = page.id == activePageId,
-                        done = borderedPages[page.id] == true,
-                        // A confident detection is a tick; an unconfident one is a
-                        // warning, not a success. Showing both as "done" would be a
-                        // lie the user only discovers in the exported PDF.
-                        needsReview = needsCheck(page),
-                        onClick = { onSelectPage(index) }
-                    )
-                }
-            }
+            PageStrip(
+                pages = pages,
+                activePageId = activePageId,
+                borderedPages = borderedPages,
+                needsCheck = needsCheck,
+                onSelectPage = onSelectPage
+            )
             Spacer(Modifier.height(14.dp))
         }
 
@@ -1381,12 +1435,24 @@ private fun BordersControls(
     }
 }
 
-/** Filters stage controls: live swatches and one apply action. */
+/**
+ * Filters stage controls: the page strip, live swatches and one apply action.
+ *
+ * The page strip is **not** border-pass furniture. Leaving the border stage used to
+ * remove the only way to change pages in the whole editor: a document with twelve
+ * scans opened on page one, and the filter stage could show, compare and apply to
+ * page one and nothing else. The strip is the editor's page switcher, so it appears
+ * in both stages, in the same place, with the same tick/amber markers.
+ */
 @Composable
 private fun FilterControls(
     stage: Stage,
     onStageChange: (Stage) -> Unit,
     pages: List<ScannedPage>,
+    activePageId: String,
+    borderedPages: Map<String, Boolean>,
+    needsCheck: (ScannedPage) -> Boolean = { false },
+    onSelectPage: (Int) -> Unit,
     selectedFilter: FilterType,
     onSelectFilter: (FilterType) -> Unit,
     thumbs: Map<FilterType, ImageBitmap>,
@@ -1398,6 +1464,17 @@ private fun FilterControls(
     EditorSheet {
         StageSwitch(stage = stage, pageCount = pages.size, onSelect = onStageChange)
         Spacer(Modifier.height(14.dp))
+
+        if (pages.size > 1) {
+            PageStrip(
+                pages = pages,
+                activePageId = activePageId,
+                borderedPages = borderedPages,
+                needsCheck = needsCheck,
+                onSelectPage = onSelectPage
+            )
+            Spacer(Modifier.height(14.dp))
+        }
 
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1490,6 +1567,54 @@ private fun FilterSwatch(
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center
         )
+    }
+}
+
+/**
+ * The editor's page switcher — one strip, both stages.
+ *
+ * A single strip rather than a copy per stage because it is the *same* control in
+ * both places: same chips, same tick/amber markers, same behaviour. Leaving the
+ * border pass used to remove it entirely (see `FilterControls`).
+ *
+ * It also follows the page you are on. With more than a handful of scans the strip
+ * scrolls, and a selected chip off-screen is the same problem as no strip at all —
+ * so when the active page changes, the strip brings its chip into view.
+ */
+@Composable
+private fun PageStrip(
+    pages: List<ScannedPage>,
+    activePageId: String,
+    borderedPages: Map<String, Boolean>,
+    needsCheck: (ScannedPage) -> Boolean,
+    onSelectPage: (Int) -> Unit
+) {
+    val state = rememberLazyListState()
+    val activeIndex = pages.indexOfFirst { it.id == activePageId }
+    LaunchedEffect(activeIndex, pages.size) {
+        if (activeIndex < 0) return@LaunchedEffect
+        val visible = state.layoutInfo.visibleItemsInfo.any { it.index == activeIndex }
+        if (!visible) state.animateScrollToItem(activeIndex)
+    }
+    LazyRow(
+        state = state,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(horizontal = 2.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        itemsIndexed(pages, key = { _, page -> page.id }) { index, page ->
+            PageChip(
+                page = page,
+                index = index,
+                selected = page.id == activePageId,
+                done = borderedPages[page.id] == true,
+                // A confident detection is a tick; an unconfident one is a warning,
+                // not a success. Showing both as "done" would be a lie the user only
+                // discovers in the exported PDF.
+                needsReview = needsCheck(page),
+                onClick = { onSelectPage(index) }
+            )
+        }
     }
 }
 
@@ -1745,36 +1870,6 @@ private fun ApplyingOverlay(current: Int, total: Int) {
     }
 }
 
-/**
- * Pulls a handle onto the frame edge when it is within [CORNER_SNAP] of it.
- *
- * Dragging to the very edge of a photo frame is a pixel-exact finger exercise on a
- * phone, and "the crop stops 4 px short of the page" is the result. Snapping is the
- * difference between aiming and landing: the value the user wanted is the one the
- * handle visibly reaches.
- */
-private fun snapToFrame(value: Float): Float = when {
-    value <= CORNER_SNAP -> 0f
-    value >= 1f - CORNER_SNAP -> 1f
-    else -> value
-}
-
-/**
- * `coerceIn` throws when `min > max`. Dragging one corner past its neighbour used
- * to produce exactly that and crash the editor; this orders the bounds first.
- */
-private fun clamp(value: Float, first: Float, second: Float): Float {
-    val low = minOf(first, second)
-    val high = maxOf(first, second)
-    return value.coerceIn(low, high)
-}
-
-private fun distSq(x1: Float, y1: Float, x2: Float, y2: Float): Float {
-    val dx = x1 - x2
-    val dy = y1 - y2
-    return dx * dx + dy * dy
-}
-
 /** Largest preview magnification in the border editor. */
 private const val MAX_ZOOM = 5f
 
@@ -1782,14 +1877,20 @@ private const val MAX_ZOOM = 5f
 private const val ZOOM_FACTOR = 1.6f
 
 /**
- * Squared normalised distance within which a touch counts as grabbing a corner.
- * 0.05 ≈ 22 % of the frame width, which stays comfortable at 1x and effectively
- * grows as the user zooms in.
+ * How close a touch has to be to a handle to grab it, in **screen dp**.
+ *
+ * A fingertip is ~9 mm, the handles are drawn at 22–28 dp, and the old test was a
+ * normalised 0.05 (≈ 22 % of the frame per axis) — which is why a drag started from
+ * the middle of the page used to seize whichever corner was nearest. 28 dp radius is
+ * a little larger than the dot itself (easy to hit, still unambiguous) and, unlike
+ * the old constant, it is converted to canvas pixels through the zoom, so it stays
+ * the same size under the finger at 1x and at 5x.
  */
-private const val GRAB_THRESHOLD = 0.05f
+private const val HANDLE_GRAB_DP = 28f
 
 /**
- * A dragged handle this close to a frame edge (fraction of the frame) is snapped
- * onto it, so a crop that should reach the edge actually does.
+ * Edge snapping and the minimum gap now live with the drag arithmetic they belong
+ * to: `CropHandles.SNAP` and `CropHandles.MIN_GAP`. They moved there so a unit test
+ * can drive the same numbers the canvas does — a duplicated constant is how the
+ * handles and their hit test drifted apart in the first place.
  */
-private const val CORNER_SNAP = 0.012f

@@ -4,6 +4,64 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 (later) — Arena.ai — Round 37: pages can be switched in the filter stage, and the corner handles behave
+
+Reported: *"we cant change the pages when in the filters section after border fix,
+and the manual border dots are misbehaving when dragged"*. Both were real, and both
+were in `ui/editor/CropAndFilterScreen.kt`.
+
+### 1. No page switcher in the filter stage
+
+The page strip existed only inside `BordersControls`. `FilterControls` had the stage
+switch, the filter swatches and the apply button — and nothing else — so as soon as the
+border pass handed over (or the user tapped *Filters*), a twelve-page document could
+only ever show page one. The strip was not disabled or broken; it was not there.
+
+* New `PageStrip(pages, activePageId, borderedPages, needsCheck, onSelectPage)` — one
+  implementation used by **both** stages, in the same position under the stage switch,
+  with the same tick/amber markers, and it scrolls itself to the active page
+  (`rememberLazyListState` + `animateScrollToItem`) so the selected chip is never
+  off-screen. Uses `itemsIndexed` instead of an `indexOfFirst` per row.
+* `FilterControls` gained `activePageId`, `borderedPages`, `needsCheck`, `onSelectPage`
+  (private composable; only one call site).
+* Switching page in the filter stage now **keeps the chosen filter** instead of
+  adopting each page's stored one (`keepFilterOnNextLoad`): browsing the strip with a
+  look applied is comparing the look, and that is impossible if every tap resets it.
+* Switching page clears `previewBitmap` first, so the loading state says `Loading
+  page…` instead of leaving the previous page's pixels under the new page's number.
+
+### 2. Corner handles that "misbehave when dragged"
+
+Three separate defects, all in the gesture in `BorderCanvas`:
+
+| defect | effect |
+| :--- | :--- |
+| the grab test used **normalised** squared distances against `GRAB_THRESHOLD = 0.05` — ~22 % of the frame per axis, and anisotropic | a drag started anywhere near the middle of the page seized whichever corner was nearest and threw it across the page |
+| the corner was set to **the finger's position** on the first pointer event | a *tap* near a handle teleported it, and a drag jumped by the grab offset |
+| the grab radius did not follow the zoom while the handles are drawn at a constant on-screen size | at 5x you could see a handle you could not hit |
+
+Now: `HANDLE_GRAB_DP = 28f` (a fingertip, converted to canvas pixels through the zoom,
+compared isotropically in canvas space); dragging starts only after
+`viewConfiguration.touchSlop`, and moves the corner **by the delta** between two canvas
+positions (`screenToCanvas(previousPosition)` → `screenToCanvas(position)`), so the handle
+follows the finger from where it already was.
+
+The clamp/snap arithmetic moved out of the composable into **`util/CropHandles.kt`**
+(`move(quad, corner, dx, dy)`, `isSound(quad)`, `SNAP`, `MIN_GAP`), because it is the
+part that was wrong and the only part a unit test can reach: `CropHandlesTest` covers a
+zero delta (the tap), single-corner movement, axis independence, edge snapping, the
+no-crossing clamp, the frame bounds, an unknown corner index, and 2 000 random moves
+asserting the quad never folds or leaves the frame.
+
+**Deleted** from `CropAndFilterScreen.kt`: `GRAB_THRESHOLD`, `distSq`, `snapToFrame`,
+`clamp`, `MIN_GAP`, `CORNER_SNAP` — a duplicated constant is how the handles and their
+hit test drifted apart (and how the guide frame once diverged from the detector).
+
+### Known-good state
+
+Still uncompiled here (no JDK/SDK): `./gradlew testDebugUnitTest assembleDebug`.
+`CropHandlesTest` is pure JVM maths and runs in `testDebugUnitTest`.
+
 ## 2026-10-27 — Arena.ai — Round 36: the export sheet says how big the file will be, and the ten-second launch is answered
 
 Two requests, verbatim:

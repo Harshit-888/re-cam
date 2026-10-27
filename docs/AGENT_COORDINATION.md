@@ -1371,6 +1371,39 @@ modifier)` now requires `sizeLabel`; it is `heightIn(min = 88.dp)` with label / 
 - Mock regenerated for both palettes; if you touch the card, re-run
   `python3 docs/design/render_pdf_sheet.py` from the **repo root**.
 
+## 6z. Round 37: a page strip in the filter stage, and corner handles that behave (Arena, 2026-10-27, round 37)
+
+### New shared pieces
+
+| symbol | file | contract |
+| :--- | :--- | :--- |
+| `PageStrip` | `ui/editor/CropAndFilterScreen.kt` (private) | the editor's **only** page switcher; used by the borders *and* filters stage, scrolls to the active page |
+| `CropHandles` | `util/CropHandles.kt` | `move(quad, corner, dx, dy)`, `isSound(quad)`, `MIN_GAP = 0.02f`, `SNAP = 0.012f` — the corner-drag arithmetic |
+
+If you add another stage or another sheet to the editor, **use `PageStrip`**; do not
+redraw the chip row. A stage without it is a stage where a multi-page document cannot
+change pages, which is exactly the Round 37 bug.
+
+### What changed in the editor
+
+- `FilterControls` grew `activePageId`, `borderedPages`, `needsCheck`, `onSelectPage`.
+- Switching pages in the filter stage keeps the user's filter choice
+  (`keepFilterOnNextLoad`) instead of adopting the target page's stored filter.
+- A page switch clears `previewBitmap` first, so the loading state is honest.
+- `BorderCanvas` grabs handles within `HANDLE_GRAB_DP` (28 dp, divided by the zoom,
+  measured in canvas pixels) and drags them **relatively** after `touchSlop`.
+
+### Do not undo
+
+- **Do not put a corner back under the finger on pointer-down.** A tap must not move a
+  corner, and a drag must not jump by the grab offset. Both were the report.
+- **Do not hit-test handles in normalised coordinates.** The frame is not square; a
+  normalised radius is anisotropic and (at the old 0.05) a fifth of the page.
+- **Do not duplicate `MIN_GAP`/`SNAP` in the canvas.** Use `CropHandles`; the test
+  drives the same numbers the gesture does.
+- **Do not remove `PageStrip` from one stage.** See above.
+- Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
+
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-26 (`./gradlew testDebugUnitTest assembleDebug` passed — Rounds 34 & 35).
