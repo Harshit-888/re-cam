@@ -1,6 +1,7 @@
 package com.example.docscanner.util
 
 import com.example.docscanner.util.CardComposition.Axis
+import com.example.docscanner.util.CardComposition.Box
 import com.example.docscanner.util.CardComposition.Size
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

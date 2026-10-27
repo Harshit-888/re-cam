@@ -32,7 +32,7 @@ class BackupArchiveTest {
     // ------------------------------------------------------------------ helpers
 
     private fun dirs(): Triple<File, File, File> {
-        val root = temp.newFolder("files")
+        val root = temp.newFolder()
         val pages = File(root, "pages").apply { mkdirs() }
         val signatures = File(root, "signatures").apply { mkdirs() }
         return Triple(root, pages, signatures)

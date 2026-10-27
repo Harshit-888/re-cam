@@ -86,7 +86,7 @@ object MarkupRenderer {
             val (currentX, currentY) = px(points[index])
             val midX = (previousX + currentX) / 2f
             val midY = (previousY + currentY) / 2f
-            path.quadraticBezierTo(previousX, previousY, midX, midY)
+            path.quadTo(previousX, previousY, midX, midY)
             if (index == points.lastIndex) path.lineTo(currentX, currentY)
         }
         return path

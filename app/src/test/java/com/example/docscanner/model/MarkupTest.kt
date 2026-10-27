@@ -148,7 +148,7 @@ class MarkupTest {
     @Test
     fun `a width must be positive`() {
         try {
-            MarkupStroke(widthFraction = 0f)
+            stroke(widthFraction = 0f)
             throw AssertionError("a zero-width stroke was accepted")
         } catch (expected: IllegalArgumentException) {
             // expected
