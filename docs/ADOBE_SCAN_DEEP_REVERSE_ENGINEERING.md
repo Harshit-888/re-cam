@@ -45,12 +45,14 @@ Extracted and verified directly via FlatBuffers binary inspection from `base.apk
 
 ### 2.1 Live Boundary Detection Model (`capture_6_22_23.tflite`)
 - **File Size**: 2,542,032 bytes (2.48 MB)
-- **Architecture**: MobileNetV2 $1.00\_320$ backbone with custom regression head.
-- **Input Tensor**:
+- **Architecture**: MobileNetV2 backbone with direct quadrilateral regression and curvature keypoint outputs.
+- **Input Tensor (Verified via LiteRT runtime)**:
   - Name: `serving_default_input_2:0`
   - Index: `#0`
   - Shape: `[1, 320, 320, 4]` (Batch=1, Height=320, Width=320, Channels=4: **RGBA**)
-  - Data Type: **`UINT8`** (0..255 direct pixel byte values; **no floating point normalization required on CPU**, enabling direct native memcpy from CameraX ImageProxy!)
+  - Data Type: **`UINT8`**
+  - Quantization: `scale = 0.003921568859368563` ($1/255$), `zero_point = 0`
+  - **Zero-Copy Optimization**: Because quantization scale is $1/255$ and zero-point is 0, the model handles $x/255.0$ normalization internally on the NPU/GPU/CPU delegate. **No floating-point conversion is needed in Kotlin/C++**. CameraX ImageProxy RGBA bytes are passed directly into the interpreter buffer.
 - **Output Tensor**:
   - Name: `StatefulPartitionedCall:0`
   - Index: `#189`
@@ -92,38 +94,58 @@ Extracted and verified directly via FlatBuffers binary inspection from `base.apk
 
 ## 3. Real-Time Viewfinder Tracking Engine
 
-Decompiled from `com.adobe.magic_clean.CameraCleanLiveEdgeDetectionAndroidShim`:
+Decompiled directly from `com.adobe.magic_clean.CameraCleanLiveEdgeDetectionAndroidShim`:
 
-### 3.1 Timing & Interval Constants
+### 3.1 Timing & State Machine Loop
 The live edge detector runs on a fixed-rate 250ms background timer (`mLiveBoundaryTimeKeeper`):
-- `mLiveBoundaryTimeKeeperInterval` = **250 ms**
-- `mLiveBoundaryUpdateInterval` = **750 ms** (boundary polygons refreshed every 3 ticks)
-- `mLiveBoundaryHintUpdateInterval` = **1000 ms** (hints updated every 4 ticks)
-- `mLiveBoundaryCaptureEnableInterval` = **1500 ms** (auto-capture arming delay)
-- Auto-Capture Trigger Delay = **2500 ms** (`mLiveBoundaryCaptureEnableInterval + 1000 ms`)
+```java
+// Scheduled at fixed rate: interval = 250ms
+this.mLiveBoundaryTimeKeeperInterval = 250L;
+this.mLiveBoundaryUpdateInterval = 750L;           // 3 ticks: polygon update
+this.mLiveBoundaryHintUpdateInterval = 1000L;       // 4 ticks: text hint update
+this.mLiveBoundaryCaptureEnableInterval = 1500L;    // 6 ticks: hold-for-capture arm
+// Auto-capture fires at (mLiveBoundaryCaptureEnableInterval + 1000L) = 2500ms (10 ticks)
+```
 
-### 3.2 Confidence Accumulator & Stability Filter
-To prevent camera jitter and flickering bounding boxes, Adobe Scan uses dynamic hysteresis:
-1. **Dynamic Confidence Thresholding**:
-   - `mBoundaryConfidenceForDisplayThreshold` = **1** (or 2 if inference latency $> 300\text{ms}$)
-   - `mBoundaryConfidenceForCaptureThreshold` = **3** (or 4 if inference latency $> 700\text{ms}$)
-2. **Tolerance Checking**:
-   - Corner tolerance limit $d = 0.2$ (normalized coordinate space).
-   - `WithinTolerance(corner1, corner2, threshold = 0.1)`: checks whether all 4 corner coordinates $(x, y)$ moved less than 10% between consecutive frames.
-3. **Decay Rule**:
-   - If a valid quad is detected within tolerance: `mBoundaryConfidence++`.
-   - If detection fails or jumps:
-     $$\text{confidence} = \begin{cases} \text{confidence} \gg 1 & \text{if } \text{confidence} > 5 \\ \text{confidence} - 1 & \text{if } \text{confidence} > 0 \\ 0 & \text{otherwise} \end{cases}$$
+```
+[Camera Frame] (every ~33ms)
+       │
+       ▼ (if 750ms tick elapsed)
+[GetBoundariesInLivePreview] ──► TFLite Inference (capture_6_22_23.tflite)
+       │
+       ▼
+[AreCurrentCornersWithinTolerance] (tolerance d = 0.2, stability threshold = 0.1)
+  ├─► TRUE  ──► mBoundaryConfidence++
+  └─► FALSE ──► Confidence Decay: (conf > 5 ? conf >> 1 : conf - 1)
+       │
+       ▼
+[Evaluate Display & Capture Thresholds]
+  ├─► conf >= DisplayThreshold (1 or 2)  ──► Render Blue Compose Boundary Polygon
+  ├─► conf >= CaptureThreshold (3 or 4)  ──► Start Capture Hold Counter (1500ms)
+  │                                           UI Hint: "Hold steady"
+  └─► timer reaches 2500ms               ──► Trigger Shutter (ReadyForCapture)
+```
 
-### 3.3 Dynamic Hints State Machine
-- `kLiveBoundaryHintLookingForDocument`: Shown when `mBoundaryConfidence < mBoundaryConfidenceForDisplayThreshold`.
-- `kLiveBoundaryHintHoldForCapture`: Shown when `mBoundaryConfidence >= mBoundaryConfidenceForCaptureThreshold` and timer is running.
-- `kLiveBoundaryHintReadyForCapture`: Triggered when conditions are stable for $\ge 2.5\text{s}$, invoking automatic camera shutter.
+### 3.2 Dynamic Confidence Thresholding
+To adapt across low-end and high-end hardware, thresholds scale dynamically based on frame latency:
+- If inference time $t_{\text{frame}} > 0.7\text{s}$:
+  - `mBoundaryConfidenceForDisplayThreshold = 1`
+  - `mBoundaryConfidenceForCaptureThreshold = 3`
+- If inference time $0.3\text{s} < t_{\text{frame}} \le 0.7\text{s}$:
+  - `mBoundaryConfidenceForDisplayThreshold = 2`
+  - `mBoundaryConfidenceForCaptureThreshold = 4`
+
+### 3.3 Stability Verification & Dummy Edge Filter
+- **Tolerance Formula**:
+  $$\max_{i \in [0, 3]} \left( |x_i - x_{i, \text{prev}}|, |y_i - y_{i, \text{prev}}| \right) \le 0.1$$
+- **Screen-Clamp Dummy Edge Rejection (`CheckIfQuadHasDummyEdge`)**:
+  Rejects any quad where a full edge is pinned to screen boundaries:
+  - $(y_0 \approx 0 \land y_1 \approx 0) \lor (x_1 \approx 1 \land x_2 \approx 1) \lor (y_2 \approx 1 \land y_3 \approx 1) \lor (x_3 \approx 0 \land x_0 \approx 0)$.
 
 ### 3.4 Glare & Low-Light Flash Automation
 - **Low Light Detection**: Evaluates ambient scene lux; if `mBrightnessFromCamera <= 5.0` lux for $\ge 2$ consecutive frames, torch is automatically requested (`kLiveBoundaryTorchHintTorchOn`).
-- **Shadow Detection**: Calls native `imageHasDarkShadow(bmp, corners)`.
-- **Torch Glare Suppression**: Calls native `imageHasGlareAfterTorch(bmpNoTorch, cornersNoTorch, bmpWithTorch, cornersWithTorch)`. If specular highlights saturate document text, torch is immediately turned off (`kLiveBoundaryTorchHintTorchOff`).
+- **Shadow Detection**: Native `imageHasDarkShadow(bmp, corners)`.
+- **Torch Glare Suppression**: Native `imageHasGlareAfterTorch(bmpNoTorch, cornersNoTorch, bmpWithTorch, cornersWithTorch)`. If specular highlights saturate document text, torch is immediately turned off (`kLiveBoundaryTorchHintTorchOff`).
 
 ---
 
