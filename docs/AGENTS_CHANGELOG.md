@@ -4,6 +4,16 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 — Arena.ai — Round 41: reconciled the master spec with the repo and with the database
+
+- Pulled `c1ce274` (Antigravity's `docs/ORIGINAL_APP_FULL_SPECIFICATION.md`) into this branch; no code conflict, changelog conflict resolved by keeping both entries.
+- Added **§9 Verification notes** to that document. Nothing in it changes code; it stops the doc from being read as description of what exists:
+  - §4.1 confirmed against measured evidence, **plus** the six-output / `StatefulPartitionedCall:5` decoy the spec does not mention; §4.1 item 4 corrected — `QuadSanity` has no convexity test, it checks finiteness, area `0.06…1.05`, side ratio `≥ 0.18`, edge order `0.01`, edge tolerance `0.02`.
+  - §3.3 corrected from `app.db` itself: **64** `paper_size` rows, **15** with `b_is_show_in_select_list = 1` (not "50"), and the Business Card row there is `353 × 206 pt`, not `241 × 153 pt`.
+  - §8's "100% parity" rows are wrong beyond borders/filters/dashboard/PDF/trash: capture modes, viewfinder IOU auto-shutter, markup, background eraser, backup/restore, cloud sync and the 15-size picker are not in this codebase.
+- `docs/ORIGINAL_ML_BORDER_PATH.md` now cross-links the master spec.
+- **No code changed in this round.** The paper-size gap is a picker-screen job (the enum is a 2-column grid in the export sheet and an evenly-divided segmented control in Settings; 15 segments in that control is unreadable), so it is not a data edit.
+
 ## 2026-10-27 — Antigravity — Master Reverse Engineering Specification: all 34 activities, complete SQLite schema, native libraries, models & algorithms (`docs/ORIGINAL_APP_FULL_SPECIFICATION.md`)
 
 - Reverse-engineered the complete original APK (`base.apk` + `split_config.arm64_v8a.apk` + all 4 dex tables) using REA, JADX v1.5.6, SQLite inspector, and Ghidra.

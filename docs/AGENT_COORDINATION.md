@@ -1407,6 +1407,23 @@ change pages, which is exactly the Round 37 bug.
 - **Do not remove `PageStrip` from one stage.** See above.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
 
+## 6ad. Round 41: reconciliation of the master spec (Arena, 2026-10-27)
+
+**No code touched.** `docs/ORIGINAL_APP_FULL_SPECIFICATION.md` gained a §9 section; that
+is the only change, plus a cross-link from `docs/ORIGINAL_ML_BORDER_PATH.md`.
+
+Three things worth knowing before §8 of that spec is used as a work queue:
+
+1. The border model has **six** outputs and `StatefulPartitionedCall:5` is as wide as the
+   scores (`[1,1,4]`). Bind by name. (§9.1, `ORIGINAL_ML_BORDER_PATH.md`.)
+2. `app.db` has 64 paper sizes, **15** of them visible in the original picker; our enum
+   has 8. Adding them means redesigning the two surfaces that enumerate the enum
+   (`PdfExportSheet` 2-column grid, `SettingsScreen` segmented control), so it is a
+   picker-screen task, not an enum edit.
+3. §8's "100% parity" applies to borders, filters, dashboard, PDF and trash only.
+   Capture modes, viewfinder tracking/auto-shutter, markup, background eraser,
+   backup/restore and cloud sync are absent — the first two deliberately.
+
 ## 6ac. Round 40: the ML border model's real tensor layout (Arena, 2026-10-27)
 
 **Claimed:** `util/MlBorderDetector.kt` output binding only. No other file touched.

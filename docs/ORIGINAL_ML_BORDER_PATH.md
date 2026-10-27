@@ -12,6 +12,10 @@ downloaded, no Android device was involved, and nothing was guessed.
   not needed for this — the bytecode is readable), plus `tflite_runtime` 2.14 loading
   the `.tflite` file to print its real tensor names and shapes and to run it.
 
+The broader picture — all 34 activities, the SQLite schema, the paper-size table — is in
+[`ORIGINAL_APP_FULL_SPECIFICATION.md`](ORIGINAL_APP_FULL_SPECIFICATION.md); §9 of that
+document is where the two readings were reconciled. This file is the ML path only.
+
 Obfuscation is what hid this earlier: the classes are `Ler5;`, `Lht3;`, `Lqt3;`,
 `Lsw3;`, `Lit3;`. Name-based searching finds nothing; instruction-text searching finds
 everything.
