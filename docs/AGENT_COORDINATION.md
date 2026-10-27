@@ -1407,6 +1407,23 @@ change pages, which is exactly the Round 37 bug.
 - **Do not remove `PageStrip` from one stage.** See above.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
 
+## 6ae. Round 42: sixteen paper presets, grouped (Arena, 2026-10-27)
+
+**Touched:** `model/Models.kt`, `ui/pdf/PdfExportSheet.kt`, new
+`test/.../model/PaperSizeTest.kt`, docs. Settings screen untouched.
+
+- `PaperSize` gained a `group: PaperGroup` parameter. **Any code that constructs a
+  `PaperSize` positionally must now pass four arguments** — nothing in the repo did,
+  but check yours. Reading `widthPt` / `heightPt` / `label` is unchanged.
+- Eight new entries (`B4`, `B5`, `LEDGER`, `TABLOID`, `ANSI_C`, `ANSI_D`, `ANSI_E`,
+  `FOLIO`); `A3` moved from `1191` to `1190` pt to match the original's database.
+  `BUSINESS_CARD` deliberately stays 243 × 153.
+- **Do not render `PaperSize.entries` in a segmented control.** Sixteen segments is
+  the failure mode described at the top of `Expressive.kt`; use `PaperSize.byGroup`
+  (heading + 2-column cards) or the scrolling `ChoiceDialog`.
+- Enum names for the eight old entries are unchanged, so persisted settings survive.
+  Renaming one would silently reset it — `PaperSizeTest` pins the names.
+
 ## 6ad. Round 41: reconciliation of the master spec (Arena, 2026-10-27)
 
 **No code touched.** `docs/ORIGINAL_APP_FULL_SPECIFICATION.md` gained a §9 section; that

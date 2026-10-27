@@ -4,6 +4,15 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 — Arena.ai — Round 42: the paper chooser now offers what the original offers
+
+- **`model/Models.kt` — `PaperSize` goes from 8 entries to 16**, matching the fifteen rows the original marks `b_is_show_in_select_list = 1` in `app.db`, with its stored point values and order, plus our own `RECEIPT`. New entries: `B4`, `B5`, `LEDGER`, `TABLOID`, `ANSI_C`, `ANSI_D`, `ANSI_E`, `FOLIO`. New `group` property and `PaperGroup` enum (`ISO_A`, `ISO_B`, `AMERICAN`, `OTHER`), mirroring `paper_size_group`; `PaperSize.byGroup` gives declaration order grouped for rendering.
+- **`A3` is now `842 × 1190`** (was `1191`) to match the database — both are roundings of 841.89 × 1190.55 pt, and matching keeps our PDF page boxes identical to the original's. **`BUSINESS_CARD` stays `243 × 153`** (85.6 × 54 mm, ISO/IEC 7810 ID-1); the original's stored `353 × 206` is 124.5 × 72.7 mm, which is not a business card.
+- **`ui/pdf/PdfExportSheet.kt`** — the paper section renders `PaperSize.byGroup` with a heading per group instead of one flat 2-column grid, which would now be sixteen undifferentiated cards. No change to the card itself, to selection, or to the sheet's scroll.
+- **`ui/settings/SettingsScreen.kt` — untouched.** Its page-size control is a scrolling `ChoiceDialog`, not the segmented control that the note in `Expressive.kt` warns about, so sixteen rows are fine there.
+- **New `app/src/test/java/com/example/docscanner/model/PaperSizeTest.kt`** (6 tests): every database size present with its exact point values, the business-card departure pinned, the eight names that have ever shipped pinned (renaming resets saved settings — kotlinx.serialization stores the name), labels parse into `shortLabel` + `dimensionsLabel`, and `byGroup` covers every entry exactly once in declaration order.
+- Enum *names* are unchanged for the eight that already existed, so saved settings keep working.
+
 ## 2026-10-27 — Arena.ai — Round 41: reconciled the master spec with the repo and with the database
 
 - Pulled `c1ce274` (Antigravity's `docs/ORIGINAL_APP_FULL_SPECIFICATION.md`) into this branch; no code conflict, changelog conflict resolved by keeping both entries.

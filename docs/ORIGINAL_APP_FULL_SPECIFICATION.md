@@ -372,12 +372,18 @@ is checked, not inferred:
   (**`353 × 206 pt`, unit `in`**). Our app ships `243 × 153 pt`, which is the physically
   correct 85.6 × 54 mm — neither matches the original's stored value, and we are not
   changing ours to a number that is not a business card.
-- **Our `PaperSize` has 8 entries** (A4, Letter, Legal, A3, A5, Executive,
-  Business Card, Receipt — Receipt is ours, not the original's). Closing the gap to the
-  15 visible sizes is a *picker screen* job: today the enum is rendered as a 2-column
-  grid in `PdfExportSheet` and as an evenly-divided segmented control in
-  `SettingsScreen`, and 15 segments in that control would be unreadable. Data edit
-  alone would damage both surfaces.
+- **Closed in Round 42.** Our `PaperSize` now carries all **15** visible originals with
+  the database's stored point values and order, plus our own `RECEIPT` — 16 entries,
+  grouped by the original's own `paper_size_group` (`PaperGroup.ISO_A` / `ISO_B` /
+  `AMERICAN` / `OTHER`) and rendered under headings in `PdfExportSheet`, whose 2-column
+  grid would otherwise be a wall of sixteen cards. Two departures, both pinned by
+  `PaperSizeTest`:
+  - `BUSINESS_CARD` stays at **243 × 153 pt** (85.6 × 54 mm, ISO/IEC 7810 ID-1). The
+    original's stored `353 × 206 pt` is 124.5 × 72.7 mm, which is not a business card.
+  - `RECEIPT` is ours; the original has no receipt preset.
+  - `A3` now uses the database's `842 × 1190` instead of our `842 × 1191`. Both are
+    roundings of 841.89 × 1190.55 pt; matching the original keeps PDF page boxes
+    identical to a file exported by it.
 
 ### 9.3 §8 "100% parity" — not accurate for everything it claims
 

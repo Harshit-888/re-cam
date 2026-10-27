@@ -13,22 +13,74 @@ enum class FilterType(val label: String) {
 }
 
 /**
+ * Grouping for the paper chooser, mirroring the original app's
+ * `paper_size_group` table (`assets/databases/app.db`, groups 1, 2 and 6). The
+ * original calls them "ISO A paper sizes", "ISO B paper sizes" and "American
+ * paper sizes"; headers in a phone sheet want the short form.
+ */
+enum class PaperGroup(val label: String) {
+    ISO_A("ISO A"),
+    ISO_B("ISO B"),
+    AMERICAN("American"),
+    OTHER("Other")
+}
+
+/**
  * Paper presets in PostScript points (1 pt = 1/72 in), which is the unit
  * [android.graphics.pdf.PdfDocument.PageInfo] expects.
  *
- * `BUSINESS_CARD` is 85.6 x 54 mm (ISO/IEC 7810 ID-1, the credit-card / ID-card
- * size) rounded to whole points.
+ * The sizes are the ones the original app marks
+ * `b_is_show_in_select_list = 1` in `app.db` — fifteen of its sixty-four rows —
+ * with its stored point values verbatim, in its stored order. Two deliberate
+ * departures, both recorded in `docs/ORIGINAL_APP_FULL_SPECIFICATION.md` §9.2:
+ *
+ * * `BUSINESS_CARD` is 85.6 x 54 mm (ISO/IEC 7810 ID-1, the credit-card /
+ *   ID-card size) rounded to whole points. The original stores 353 x 206 pt for
+ *   it, which is 124.5 x 72.7 mm — not a business card, and not what its own
+ *   label would promise.
+ * * `RECEIPT` is ours; the original has no receipt preset.
+ *
+ * Adding an entry is safe for saved settings — kotlinx.serialization stores the
+ * enum *name*, not its ordinal — but **renaming one is not**: it silently resets
+ * that setting. `PaperSizeTest` pins the names.
  */
 @Serializable
-enum class PaperSize(val label: String, val widthPt: Int, val heightPt: Int) {
-    A4("A4 (210 × 297 mm)", 595, 842),
-    LETTER("US Letter (8.5 × 11 in)", 612, 792),
-    LEGAL("US Legal (8.5 × 14 in)", 612, 1008),
-    A3("A3 (297 × 420 mm)", 842, 1191),
-    A5("A5 (148 × 210 mm)", 420, 595),
-    EXECUTIVE("Executive (7.25 × 10.5 in)", 522, 756),
-    BUSINESS_CARD("Business Card (85.6 × 54 mm)", 243, 153),
-    RECEIPT("Receipt (80 mm roll)", 226, 600)
+enum class PaperSize(
+    val label: String,
+    val widthPt: Int,
+    val heightPt: Int,
+    val group: PaperGroup
+) {
+    // ISO A
+    A3("A3 (297 × 420 mm)", 842, 1190, PaperGroup.ISO_A),
+    A4("A4 (210 × 297 mm)", 595, 842, PaperGroup.ISO_A),
+    A5("A5 (148 × 210 mm)", 420, 595, PaperGroup.ISO_A),
+
+    // ISO B
+    B4("B4 (250 × 353 mm)", 709, 1001, PaperGroup.ISO_B),
+    B5("B5 (176 × 250 mm)", 499, 709, PaperGroup.ISO_B),
+
+    // American — the original's order and values, including the landscape
+    // Tabloid and the ANSI engineering sizes.
+    LETTER("US Letter (8.5 × 11 in)", 612, 792, PaperGroup.AMERICAN),
+    LEGAL("US Legal (8.5 × 14 in)", 612, 1008, PaperGroup.AMERICAN),
+    LEDGER("Ledger (11 × 17 in)", 792, 1224, PaperGroup.AMERICAN),
+    TABLOID("Tabloid (17 × 11 in)", 1224, 792, PaperGroup.AMERICAN),
+    EXECUTIVE("Executive (7.25 × 10.5 in)", 522, 756, PaperGroup.AMERICAN),
+    ANSI_C("ANSI C (22 × 17 in)", 1584, 1224, PaperGroup.AMERICAN),
+    ANSI_D("ANSI D (34 × 22 in)", 2448, 1584, PaperGroup.AMERICAN),
+    ANSI_E("ANSI E (44 × 34 in)", 3168, 2448, PaperGroup.AMERICAN),
+    BUSINESS_CARD("Business Card (85.6 × 54 mm)", 243, 153, PaperGroup.AMERICAN),
+    FOLIO("Folio (8.5 × 13 in)", 612, 936, PaperGroup.AMERICAN),
+
+    // Ours
+    RECEIPT("Receipt (80 mm roll)", 226, 600, PaperGroup.OTHER);
+
+    companion object {
+        /** Declaration order, grouped — what every chooser should render. */
+        val byGroup: List<Pair<PaperGroup, List<PaperSize>>>
+            get() = entries.groupBy { it.group }.toList()
+    }
 }
 
 @Serializable

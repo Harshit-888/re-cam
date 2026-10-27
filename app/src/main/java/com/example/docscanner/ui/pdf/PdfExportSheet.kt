@@ -778,20 +778,31 @@ private fun PaperSizeChooser(
                 ) {
                     // Two columns: a paper name plus its dimensions does not fit
                     // three-up on a small phone, and a wrapped grid reads worse than
-                    // a taller one.
-                    PaperSize.entries.chunked(2).forEach { pair ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            pair.forEach { size ->
-                                PaperOption(
-                                    size = size,
-                                    selected = size == selected,
-                                    onClick = { onSelect(size) },
-                                    modifier = Modifier.weight(1f)
-                                )
+                    // a taller one. Sixteen presets need headings, or the list is a
+                    // wall of cards — the groups are the original's own
+                    // (`paper_size_group` in its `app.db`).
+                    PaperSize.byGroup.forEach { (group, sizes) ->
+                        Text(
+                            group.label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 4.dp, top = 4.dp)
+                        )
+                        sizes.chunked(2).forEach { pair ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                pair.forEach { size ->
+                                    PaperOption(
+                                        size = size,
+                                        selected = size == selected,
+                                        onClick = { onSelect(size) },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                // Keeps a lone last card the same width as the rest
+                                // instead of stretching it across the row.
+                                if (pair.size == 1) Spacer(Modifier.weight(1f))
                             }
-                            // Keeps a lone last card the same width as the rest
-                            // instead of stretching it across the row.
-                            if (pair.size == 1) Spacer(Modifier.weight(1f))
                         }
                     }
                 }
