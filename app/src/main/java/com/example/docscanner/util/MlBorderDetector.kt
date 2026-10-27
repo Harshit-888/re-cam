@@ -29,12 +29,22 @@ import org.tensorflow.lite.Interpreter
  * the geometry pass — indistinguishable from "the model found nothing", on a device,
  * with no error to read. So instead of assuming:
  *
- * * outputs are located **by element count** (8 floats = the four points, 4 floats =
- *   the four confidences) and allocated from the tensor's **own shape**;
+ * * outputs are located **by name**, then by size only when that is unambiguous, and
+ *   allocated from the tensor's **own shape** — the model has six outputs and two of
+ *   them are four floats wide, so size alone picks the wrong one;
  * * the input tensor's shape and dtype are read and honoured (float32 or uint8);
  * * the input **scale is calibrated once** per process against the model's own
- *   confidence, because 0–255 and 0–1 are both common and only one of them is right;
+ *   confidence, because 0–255 and 0–1 are both common and only one of them is right
+ *   (measured on this file: 0–255 gives mean corner score 0.99 on a clean page, 0–1
+ *   gives 0.53 — the calibration therefore always lands on 0–255 here, and stays
+ *   honest if the model is ever swapped);
  * * the quad is checked by [QuadSanity] before it is offered as an answer.
+ *
+ * The four facts the first version assumed are now measured rather than assumed: the
+ * tensor names, the shapes, the `(y, x)` component order, the 0–255 encoding and the
+ * 0.5 confidence threshold all come from `Lht3;->a` / `Lqt3;->c` in the original APK,
+ * and the shapes and names were re-read from the shipped `.tflite` file itself with
+ * tflite-runtime. `docs/ORIGINAL_ML_BORDER_PATH.md` records the evidence.
  *
  * Every fallback is logged once under `DocScannerPerf` (debug), so a device test says
  * which path answered instead of having to guess.
@@ -47,6 +57,10 @@ object MlBorderDetector {
     private const val TAG = "DocScannerPerf"
     private const val MODEL_FILE = "border_detect_224.tflite"
     private const val INPUT_SIZE = 224
+
+    /** Output tensor names, verbatim from the model. See the comment at the lookup. */
+    private const val COORDS_TENSOR = "StatefulPartitionedCall:1"
+    private const val SCORES_TENSOR = "StatefulPartitionedCall:0"
 
     /**
      * Mean confidence below which the answer is not used.
@@ -162,6 +176,13 @@ object MlBorderDetector {
 
     // ------------------------------------------------------------------ internals
 
+    /**
+     * Exact name, or a suffix match so a signature-prefixed name still binds —
+     * `:0` and `:1` remain distinguishable either way.
+     */
+    private fun isTensorNamed(actual: String, expected: String): Boolean =
+        actual == expected || actual.endsWith(expected)
+
     /** One inference plus the checks, with nothing cached. */
     private class Outcome(
         val corners: QuadCorners,
@@ -221,26 +242,56 @@ object MlBorderDetector {
             if (scaled !== bitmap && !scaled.isRecycled) scaled.recycle()
         }
 
-        // ---- locate the two outputs by size, not by name -----------------------
+        // ---- locate the two outputs --------------------------------------------
         //
-        // Names come from a decompiled class; sizes come from the file. Only the file
-        // is authoritative.
+        // The model has **six** outputs and **two** of them hold four floats, so the
+        // element count alone cannot tell the real scores from the decoy. Ground truth
+        // for this exact file, from two independent sources — `ht3.a` in the original
+        // APK (disassembled: six `getOutputTensorIndex` calls, shapes allocated as
+        // [1,1] / [1,1,4] / [1,1] / [1] / [1,1,4,2] / [1,1,4]) and the file itself
+        // (tflite-runtime):
+        //
+        //   StatefulPartitionedCall:1  [1,1,4,2]  8 floats  the four corners, (y, x)
+        //   StatefulPartitionedCall:0  [1,1,4]    4 floats  one score per corner
+        //   StatefulPartitionedCall:5  [1,1,4]    4 floats  not the scores
+        //
+        // So: names first. Sizes are only a fallback, and only when they are
+        // unambiguous — four floats is not enough to pick the right tensor, and a
+        // wrong pick would read the decoy, report ~0.2 confidence on a good page, and
+        // quietly lose the ML answer. Refusing is better than guessing.
         var coordsIndex = -1
         var scoresIndex = -1
+        var coordsBySize = -1
+        val fourElementOutputs = mutableListOf<Int>()
         for (index in 0 until interp.outputTensorCount) {
-            val elements = interp.getOutputTensor(index).numElements()
-            when {
-                elements == 8 && coordsIndex < 0 -> coordsIndex = index
-                elements == 4 && scoresIndex < 0 -> scoresIndex = index
-            }
+            val tensor = interp.getOutputTensor(index)
+            val name = tensor.name()
+            if (isTensorNamed(name, COORDS_TENSOR)) coordsIndex = index
+            if (isTensorNamed(name, SCORES_TENSOR)) scoresIndex = index
+            if (tensor.numElements() == 8) coordsBySize = index
+            if (tensor.numElements() == 4) fourElementOutputs.add(index)
         }
+        if (coordsIndex < 0) coordsIndex = coordsBySize
+        if (scoresIndex < 0) scoresIndex = fourElementOutputs.singleOrNull() ?: -1
         if (coordsIndex < 0 || scoresIndex < 0) {
+            val seen = (0 until interp.outputTensorCount).joinToString(", ") { index ->
+                val tensor = interp.getOutputTensor(index)
+                "${tensor.name()}${tensor.shape().contentToString()}"
+            }
             logOnce(
                 "outputs",
-                "[ml] no [8, 4] pair among ${interp.outputTensorCount} outputs; model not used"
+                "[ml] cannot tell the corner tensor from the score tensor in " +
+                    "${interp.outputTensorCount} outputs [$seen]; model not used"
             )
             return null
         }
+        logOnce(
+            "outputs-ok",
+            "[ml] corners = ${interp.getOutputTensor(coordsIndex).name()} " +
+                "${interp.getOutputTensor(coordsIndex).shape().contentToString()}, " +
+                "scores = ${interp.getOutputTensor(scoresIndex).name()} " +
+                "${interp.getOutputTensor(scoresIndex).shape().contentToString()}"
+        )
 
         val coordsShape = interp.getOutputTensor(coordsIndex).shape()
         val scoresShape = interp.getOutputTensor(scoresIndex).shape()

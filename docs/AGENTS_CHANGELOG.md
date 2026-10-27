@@ -4,6 +4,75 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 — Arena.ai — Round 47: UI/UX audit against the design-engineering skills
+
+- **New `docs/UI_UX_REVIEW.md`** — full audit against `emil-design-eng`, `mobile-native`, `animation-performance` and `review-animations` from `github.com/Harshit-888/skills`, in the `| Before | After | Why |` table those skills require, including what was checked and deliberately left alone.
+- **New `ui/common/TapTarget.kt`** — a 48 dp pressable wrapper for visuals smaller than that (`label`, optional `selected` for radio semantics, the app's `pressScale`). Exists so the drawing never dictates the hit area again.
+- **`ui/detail/DocumentDetailScreen.kt`** — the four page actions (move back, rotate, crop, overflow) lost their `Modifier.size(32.dp)`: `IconButton` already reserves 48 dp, and the explicit size was shrinking the **touch target** to 32 dp. The row is 16 dp taller; `MoreVert` icon 18 → 20 dp to match its 40 dp state layer.
+- **`ui/editor/MarkupDialog.kt`** — ink swatches are now `TapTarget` (48 dp target, 30 dp dot) with spoken names ("Black ink", …) published as a radio group, instead of four unlabelled 30 dp clickable boxes.
+- **`ui/camera/ScannerCameraScreen.kt`** — finish button `initialScale`/`targetScale` 0.6 → 0.92. It appears after every capture, so a big pop reads as lag rather than delight.
+- **`ui/pdf/PdfExportSheet.kt`** — both accordions now close in 100 ms (`EXIT_MS`) against 140 ms to open; the system answering should be faster than the system presenting.
+- Reviewed and **not** changed, with reasons recorded in the doc: `RevealWhen` (animates width, but is unused), the height-animating paper accordion (a disclosure has to change height), the 900 ms linear shutter spinner (constant motion), the 420 ms splash, and per-item list entrance animations (already deliberately omitted).
+- No change to filters, page geometry, `PdfGenerator`/`PdfWriter` output, captured pixels, colours or typography. **Nothing compiled here**; the review says which findings are code-verified and which need hardware.
+
+## 2026-10-27 — Arena.ai — Round 46: annotation — pen, marker, whiteout
+
+- **New `model/Markup.kt`** — `MarkupTool` (`PEN`, `HIGHLIGHTER`, `WHITEOUT`), `MarkupPoint`, `MarkupStroke` (normalised 0…1, width as a fraction of the page's **short side**) and `MarkupHistory` (undo, redo, and a single-step undoable Clear). All `@Serializable`, all plain Kotlin.
+- **`model/Models.kt` — `ScannedPage` gains `markup: List<MarkupStroke> = emptyList()`.** Annotations are **stored on the page, not baked into the file**, because `PageRenderer` rebuilds a page from its pristine capture on every bake: anything flattened would vanish the next time a filter changed. Old `library.json` files stay readable — the field defaults to empty.
+- **New `util/MarkupRenderer.kt`** — one drawing routine used by both the preview and the bake, with quadratic smoothing through segment midpoints (the signature pad's curve, for the same reason: a finger emits few, far-apart samples) and a multiplied, translucent highlighter so the text underneath stays legible.
+- **`util/PageRenderer.kt`** — replays `page.markup` **last**, after the filter and after the signature overlay, onto a mutable copy when necessary. Nothing sits on top of the user's ink.
+- **New `ui/editor/MarkupDialog.kt`** — page preview with a drawing overlay, tool chips, four ink colours, three widths, undo/redo/clear, Done/Cancel. Strokes are normalised against the preview's size, so a stroke drawn at 1400 px lands identically on the 3200 px bake.
+- **`ui/detail/DocumentDetailScreen.kt`** — "Annotate" in each page's overflow menu; saving updates the page then re-bakes so the thumbnail and viewer show the ink immediately.
+- **New `app/src/test/java/com/example/docscanner/model/MarkupTest.kt`** (12 tests). Writing them found a real flaw in my first `MarkupHistory`: after `clear()` the undo stack was empty, so "Clear is undoable" was false. Reworked to keep the cleared strokes for one undo, to forget them once new work starts, and each case is exercised against a Python port of the final algorithm.
+- **Not compiled here.** The model is host-tested; the dialog and the compositing path have not been run.
+
+## 2026-10-27 — Arena.ai — Round 45: printing, from the same PDF that gets shared
+
+- **New `util/PdfPrinter.kt`** — `canPrint(context, config)` and `print(context, file, jobName, paperSize)` over `PrintManager`. The adapter copies the already-generated PDF into the descriptor the print service hands back, so **what prints is byte-identical to what the share sheet would have sent** — no second renderer, no second appearance.
+- Paper size is converted to **mils** (`pt × 1000/72`), because `PrintAttributes.MediaSize` takes thousandths of an inch; getting that wrong prints at ~1/14 scale and only shows in the preview. `setMinMargins(NO_MARGINS)`, since `PdfGenerator` already bakes the margins into the page geometry.
+- Printing is refused with a reason, not a failure, when there is no `Activity` context (the `PrintManager` API needs one) or when the PDF is password-protected — the framework opens the file itself to render it and an encrypted file fails there, not here.
+- **`ui/pdf/PdfExportSheet.kt`** — the generation code is now one `generateThen { file -> … }` path shared by *Share* and a new **Print instead** text button (disabled, with the reason, when the PDF will be encrypted). No change to what the export button produces.
+- The Android `PrintManager` path is the only thing here that cannot be exercised without a device; the size conversion and the gating rules are the parts that would fail silently, and they are the parts written down above.
+
+## 2026-10-27 — Arena.ai — Round 44: ID card — two pages onto one sheet
+
+- **New `util/CardComposition.kt`** — pure geometry, no Android imports: `placement(page, front, back)` returns where the two cards go, `defaultAxis()` splits a portrait page left/right and a landscape one top/bottom, margins and the gap are 5 % / 4 % of the page's short side. Aspect ratio preserved, both cells equal, nothing outside the printable area, no overlap. Returns `null` when the page cannot hold the requested margin/gap.
+- **`data/ScannerRepository.createIdCardDocument(frontPageId, backPageId, title, folderId)`** — decodes both pages at 1600 px, composes onto A4 at 200 dpi (1654 × 2339) on a **white** background (a transparent sheet composites to whatever the viewer chooses), writes **PNG** to the ordinary `_edited.png` slot so the orphan sweep and thumbnail keys treat it as a normal page, and creates a new document with one page (filter `ORIGINAL`, full-frame quad). Source pages are untouched.
+- **`ui/detail/DocumentDetailScreen.kt`** — a card icon in the app bar, enabled only when the document has exactly two pages, with a confirmation dialog that says page 1 is the front, page 2 the back, and that the originals are kept. Failure to read either page is a toast, not a crash.
+- The camera is **not** touched: this works from pages that already exist, so capture semantics (4:3, FIT_CENTER, MAXIMIZE_QUALITY, flash/torch, shutter sound, auto-save, batch vs single, discard cleanup) are unchanged. A two-step capture flow can be layered on later without changing this.
+- **New `app/src/test/java/com/example/docscanner/util/CardCompositionTest.kt`** (11 tests). Two of them were written wrong first and corrected against a Python port of the algorithm: two scans with *different* aspects legitimately get equal widths but different heights, and a 10 × 10 page still lays out under fractional margins (only an explicitly impossible margin or gap yields `null`).
+- **Not compiled here.** The geometry was simulated end to end; the compositing path has not been run.
+
+## 2026-10-27 — Arena.ai — Round 43: backup and restore (the library, as one zip)
+
+- **New `util/BackupArchive.kt`** — no Android imports, so all of it is unit-tested on the host. `create()` writes `library.json` + every referenced image + `backup.json` (format, format version, schema version, entry list with size and SHA-256 of each). `inspect()` reads and validates the manifest without extracting. `restore()` validates, extracts to a **staging directory**, and returns a `RestoredBackup` whose `commit()`/`discard()` are the only things that touch the live library. `merge()` unions two snapshots by id, backup winning collisions.
+- **Restore refuses anything that is not exactly what it wrote**: entry paths must match `pages/<name>` / `signatures/<name>` (no traversal, no nesting, no absolute paths), entries must be declared in the manifest and vice versa, sizes and SHA-256 must match, `library.json` must exist, caps are 20 000 entries / 256 MB per file / 2 GB total (checked against bytes actually read, not the zip header's claim), and a newer `format` or `schemaVersion` is rejected.
+- **Absolute paths are rewritten.** `ScannedPage` stores absolute paths, which are meaningless on another install; the archive stores `pages/<file>`, and restore maps it back under the current directories.
+- **`data/ScannerRepository.kt`**: `snapshotNow()`, `exportBackup(Uri)`, `importBackup(Uri)`. Import copies the picked stream to the cache, restores into staging, merges into the in-memory library, commits the files, then publishes the flows and writes `library.json` — **pixels first, then library**, so no page can appear before its file exists. A failure at any point leaves the live library untouched.
+- **`ui/settings/SettingsScreen.kt`**: new "Library" section with *Back up library* and *Restore from backup*, both through SAF (`CreateDocument("application/zip")` / `OpenDocument`), a busy state, and a confirmation dialog on restore that states the merge rule. Restore still needs no storage permission.
+- Restore is a **merge, not a replace**: documents and folders that only exist locally are kept.
+- **Not in the archive, deliberately:** app settings (theme, accent, paper size…). They are this install's preferences, not the user's scans, and restoring a stranger's accent colour is a surprise, not a feature.
+- **New `app/src/test/java/com/example/docscanner/util/BackupArchiveTest.kt`** (9 tests): round trip incl. commit and staging cleanup, a page reusing one file is packed once, missing image counted rather than dropped, discard writes nothing, and refusal of traversal / undeclared entry / checksum mismatch / declared-but-absent file / newer format / foreign format, plus merge semantics.
+
+## 2026-10-27 — Arena.ai — Round 42: the paper chooser now offers what the original offers
+
+- **`model/Models.kt` — `PaperSize` goes from 8 entries to 16**, matching the fifteen rows the original marks `b_is_show_in_select_list = 1` in `app.db`, with its stored point values and order, plus our own `RECEIPT`. New entries: `B4`, `B5`, `LEDGER`, `TABLOID`, `ANSI_C`, `ANSI_D`, `ANSI_E`, `FOLIO`. New `group` property and `PaperGroup` enum (`ISO_A`, `ISO_B`, `AMERICAN`, `OTHER`), mirroring `paper_size_group`; `PaperSize.byGroup` gives declaration order grouped for rendering.
+- **`A3` is now `842 × 1190`** (was `1191`) to match the database — both are roundings of 841.89 × 1190.55 pt, and matching keeps our PDF page boxes identical to the original's. **`BUSINESS_CARD` stays `243 × 153`** (85.6 × 54 mm, ISO/IEC 7810 ID-1); the original's stored `353 × 206` is 124.5 × 72.7 mm, which is not a business card.
+- **`ui/pdf/PdfExportSheet.kt`** — the paper section renders `PaperSize.byGroup` with a heading per group instead of one flat 2-column grid, which would now be sixteen undifferentiated cards. No change to the card itself, to selection, or to the sheet's scroll.
+- **`ui/settings/SettingsScreen.kt` — untouched.** Its page-size control is a scrolling `ChoiceDialog`, not the segmented control that the note in `Expressive.kt` warns about, so sixteen rows are fine there.
+- **New `app/src/test/java/com/example/docscanner/model/PaperSizeTest.kt`** (6 tests): every database size present with its exact point values, the business-card departure pinned, the eight names that have ever shipped pinned (renaming resets saved settings — kotlinx.serialization stores the name), labels parse into `shortLabel` + `dimensionsLabel`, and `byGroup` covers every entry exactly once in declaration order.
+- Enum *names* are unchanged for the eight that already existed, so saved settings keep working.
+
+## 2026-10-27 — Arena.ai — Round 41: reconciled the master spec with the repo and with the database
+
+- Pulled `c1ce274` (Antigravity's `docs/ORIGINAL_APP_FULL_SPECIFICATION.md`) into this branch; no code conflict, changelog conflict resolved by keeping both entries.
+- Added **§9 Verification notes** to that document. Nothing in it changes code; it stops the doc from being read as description of what exists:
+  - §4.1 confirmed against measured evidence, **plus** the six-output / `StatefulPartitionedCall:5` decoy the spec does not mention; §4.1 item 4 corrected — `QuadSanity` has no convexity test, it checks finiteness, area `0.06…1.05`, side ratio `≥ 0.18`, edge order `0.01`, edge tolerance `0.02`.
+  - §3.3 corrected from `app.db` itself: **64** `paper_size` rows, **15** with `b_is_show_in_select_list = 1` (not "50"), and the Business Card row there is `353 × 206 pt`, not `241 × 153 pt`.
+  - §8's "100% parity" rows are wrong beyond borders/filters/dashboard/PDF/trash: capture modes, viewfinder IOU auto-shutter, markup, background eraser, backup/restore, cloud sync and the 15-size picker are not in this codebase.
+- `docs/ORIGINAL_ML_BORDER_PATH.md` now cross-links the master spec.
+- **No code changed in this round.** The paper-size gap is a picker-screen job (the enum is a 2-column grid in the export sheet and an evenly-divided segmented control in Settings; 15 segments in that control is unreadable), so it is not a data edit.
+
 ## 2026-10-27 — Antigravity — Master Reverse Engineering Specification: all 34 activities, complete SQLite schema, native libraries, models & algorithms (`docs/ORIGINAL_APP_FULL_SPECIFICATION.md`)
 
 - Reverse-engineered the complete original APK (`base.apk` + `split_config.arm64_v8a.apk` + all 4 dex tables) using REA, JADX v1.5.6, SQLite inspector, and Ghidra.
@@ -15,6 +84,14 @@ Newest entry at the top.
   5. Complete camera and capture workflows (`CameraXActivity`, `PaperBorderView` states `CLEAR`/`LOOKUP`/`PAUSE`, IOU >= 0.95 auto-snap).
   6. Complete editor blueprints for Background Eraser (`CleanupBgView`), Markup (`MarkupView`), and Digital Signature Pad (`SignaturePadActivity`).
   7. Storage, template naming (`DocumentNameSettingActivity`), and ZIP backup/restore mechanics (`MyBackupActivity`).
+
+## 2026-10-27 — Arena.ai — Round 40: the ML border path was decompiled, and our output binding was wrong
+
+- **New doc: `docs/ORIGINAL_ML_BORDER_PATH.md`** — the original APK's ML border path read out of the committed DEX files (`er5`/`ht3`/`qt3`/`sw3`/`it3`) with androguard, and out of the committed model with tflite-runtime. Call graph, preprocessing, all six outputs, postprocessing, the 0.5 gate, and a measured 0–255-vs-0–1 experiment.
+- **`util/MlBorderDetector.kt` — output binding fixed.** The model has **six** outputs and **two** of them are four floats wide: `StatefulPartitionedCall:0` (the real per-corner scores, `[1,1,4]`) and `StatefulPartitionedCall:5` (not the scores, also `[1,1,4]`). The Round 39 rule "8 floats = corners, 4 floats = scores" could bind the scores to `:5`, which would report ≈0.2 confidence on a good page and silently fall through to the geometry pass. Now: bind **by name** (`StatefulPartitionedCall:1` / `:0`), fall back to size only when it is unambiguous, and otherwise decline the model with a `[ml]` log line instead of guessing. New one-line log: `[ml] corners = … [, …], scores = …`.
+- Verified against the file itself (not just the decompile): input `serving_default_input:0` `[1,224,224,3]` float32; corners are normalised `0…1` in **`(y, x)`** order; the encoding is **`0…255`** (mean corner score 0.99 vs 0.53 for `0…1` on the same image); the gate is `mean >= 0.5f`; the original detects on a bitmap downscaled to fit **640×640** and runs native OpenCV in parallel as its fallback.
+- No change to quad geometry, filters, page geometry, PDF output or capture behaviour. No new dependency: the analysis tooling (`androguard`, `tflite_runtime`) was installed in the agent sandbox only and is not referenced by the app.
+- Still not compiled here (no Android SDK/Maven access in this sandbox); Antigravity's build of Rounds 38–39 is the last green build.
 
 ## 2026-10-27 — Antigravity — Build & Configuration Cache fix for VerifyBorderModelTask; full verification of Rounds 38 & 39
 

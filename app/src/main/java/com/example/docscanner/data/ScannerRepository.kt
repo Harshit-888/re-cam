@@ -1,15 +1,28 @@
 package com.example.docscanner.data
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
+import android.net.Uri
 import com.example.docscanner.model.AppSettings
 import com.example.docscanner.model.Document
+import com.example.docscanner.model.FilterType
 import com.example.docscanner.model.Folder
 import com.example.docscanner.model.LibrarySnapshot
 import com.example.docscanner.model.QuadCorners
 import com.example.docscanner.model.ScannedPage
+import com.example.docscanner.util.BackupArchive
+import com.example.docscanner.util.CardComposition
 import com.example.docscanner.util.ImageStore
+import com.example.docscanner.util.PageImageLoader
 import com.example.docscanner.util.OcrEngine
 import com.example.docscanner.util.StartupWork
+import com.example.docscanner.util.ThumbnailStore
+import java.io.File
+import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +33,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -70,6 +84,13 @@ private const val OCR_PAUSE_POLL_MS = 250L
  * while — the files are not going anywhere.
  */
 private const val ORPHAN_SWEEP_IDLE_MS = 6_000L
+
+/** A4 at 200 dpi: readable when printed, cheap to compose. */
+private const val A4_PX_WIDTH = 1654
+private const val A4_PX_HEIGHT = 2339
+
+/** Each card is scaled into a half-page cell, so decoding larger is waste. */
+private const val CARD_SOURCE_DIMENSION = 1600
 
 class ScannerRepository(context: Context) {
 
@@ -612,6 +633,181 @@ class ScannerRepository(context: Context) {
         }
         return paths
     }
+
+    // ------------------------------------------------------- backup & restore
+
+    /** The library exactly as it stands, without waiting for the write debounce. */
+    fun snapshotNow(): LibrarySnapshot = LibrarySnapshot(
+        schemaVersion = LibraryStore.CURRENT_SCHEMA_VERSION,
+        folders = _folders.value,
+        documents = _documents.value
+    )
+
+    /**
+     * Writes the library to [uri] as a `.zip` (see [BackupArchive]).
+     *
+     * Runs on IO; the caller is a coroutine started from the Settings screen. A
+     * failure throws — the UI turns it into a message. Writing a *partial* archive
+     * and reporting success is the one outcome that must not happen, so nothing here
+     * swallows an exception.
+     */
+    suspend fun exportBackup(uri: Uri): BackupArchive.Summary = withContext(Dispatchers.IO) {
+        val snapshot = snapshotNow()
+        val out = appContext.contentResolver.openOutputStream(uri)
+            ?: throw IOException("Could not open the chosen file for writing")
+        out.use { stream ->
+            BackupArchive.create(
+                output = stream,
+                snapshot = snapshot,
+                pagesDir = ImageStore.pagesDir(appContext),
+                signaturesDir = ImageStore.signaturesDir(appContext)
+            )
+        }
+    }
+
+    /**
+     * Restores a `.zip` backup from [uri], **merged** into the current library rather
+     * than replacing it: a backup taken last week knows nothing about this morning's
+     * scans. Documents and folders that only exist locally are kept; ones the backup
+     * also has take the backup's version.
+     *
+     * The archive is copied to the cache first, validated and extracted to a staging
+     * directory, and only then applied — so a truncated download or a corrupted zip
+     * fails without touching a single file of the live library.
+     */
+    suspend fun importBackup(uri: Uri): BackupArchive.Summary = withContext(Dispatchers.IO) {
+        val input = appContext.contentResolver.openInputStream(uri)
+            ?: throw IOException("Could not open the chosen file")
+        val stagedArchive = File(appContext.cacheDir, "restore-${System.nanoTime()}.zip")
+        try {
+            input.use { source ->
+                stagedArchive.outputStream().use { target -> source.copyTo(target) }
+            }
+            val restored = BackupArchive.restore(
+                archive = stagedArchive,
+                pagesDir = ImageStore.pagesDir(appContext),
+                signaturesDir = ImageStore.signaturesDir(appContext),
+                stagingParent = appContext.filesDir
+            )
+            val merged = BackupArchive.merge(snapshotNow(), restored.snapshot)
+            var committed = false
+            try {
+                restored.commit()
+                committed = true
+                // Publish only after the pixels are in place: a page that appears in
+                // the library before its file exists renders as a blank thumbnail and
+                // a failed export.
+                _folders.value = merged.folders
+                _documents.value = merged.documents
+                store.writeNowBlocking(merged)
+
+                // Thumbnails are keyed by path *and* the file's length and mtime, so a
+                // changed file produces a new key — but the memo of that key is keyed
+                // by path alone, and it was computed against the file this restore just
+                // overwrote. Forget those, and drop decoded bitmaps still in memory.
+                restored.snapshot.documents.forEach { document ->
+                    document.pages.forEach { page ->
+                        ThumbnailStore.invalidate(page.imageUri)
+                        ThumbnailStore.invalidate(page.originalImageUri)
+                        ThumbnailStore.invalidate(page.signatureOverlayUri)
+                    }
+                }
+                PageImageLoader.clear()
+                restored.summary
+            } finally {
+                // A failed move leaves staged files behind; the live library is
+                // untouched either way, so this only reclaims space.
+                if (!committed) restored.discard()
+            }
+        } finally {
+            stagedArchive.delete()
+        }
+    }
+
+    // ------------------------------------------------------------- ID card
+
+    /**
+     * Front and back of an ID card on one A4 page, as a new document.
+     *
+     * The original app does this as a two-step capture mode; this does it from two
+     * pages that already exist, so it works on a re-scan as well as a fresh one and
+     * touches nothing about how the camera captures. The layout arithmetic is
+     * [CardComposition] (unit-tested); this is only the drawing.
+     *
+     * The page is written as **PNG**: a card is flat colour and small text, exactly
+     * the content JPEG rings around, and `AGENTS.md` already makes lossless the rule
+     * for pages that are not photographs. The composed page is stored under the same
+     * `_edited.png` name every re-bake uses, so the orphan sweep and thumbnail keys
+     * treat it as an ordinary page.
+     *
+     * @return the new document, or `null` when either image cannot be read.
+     */
+    suspend fun createIdCardDocument(
+        frontPageId: String,
+        backPageId: String,
+        title: String,
+        folderId: String? = null
+    ): Document? = withContext(Dispatchers.IO) {
+        val allPages = _documents.value.flatMap { it.pages }
+        val front = allPages.firstOrNull { it.id == frontPageId } ?: return@withContext null
+        val back = allPages.firstOrNull { it.id == backPageId } ?: return@withContext null
+
+        val frontBitmap = ImageStore.loadBitmap(appContext, front.imageUri, CARD_SOURCE_DIMENSION)
+            ?: return@withContext null
+        val backBitmap = ImageStore.loadBitmap(appContext, back.imageUri, CARD_SOURCE_DIMENSION)
+        if (backBitmap == null) {
+            frontBitmap.recycle()
+            return@withContext null
+        }
+
+        val composed = try {
+            val page = CardComposition.Size(A4_PX_WIDTH, A4_PX_HEIGHT)
+            val placement = CardComposition.placement(
+                page = page,
+                front = CardComposition.Size(frontBitmap.width, frontBitmap.height),
+                back = CardComposition.Size(backBitmap.width, backBitmap.height)
+            ) ?: return@withContext null
+
+            Bitmap.createBitmap(A4_PX_WIDTH, A4_PX_HEIGHT, Bitmap.Config.ARGB_8888).also { target ->
+                val canvas = Canvas(target)
+                // Paper, not transparency: the PNG is embedded in a PDF, and a
+                // transparent sheet composites to whatever the viewer decides is
+                // behind it.
+                canvas.drawColor(Color.WHITE)
+                val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+                canvas.drawBitmap(frontBitmap, null, placement.front.toRect(), paint)
+                canvas.drawBitmap(backBitmap, null, placement.back.toRect(), paint)
+            }
+        } finally {
+            frontBitmap.recycle()
+            backBitmap.recycle()
+        }
+
+        try {
+            val pageId = UUID.randomUUID().toString()
+            val file = ImageStore.editedLosslessFile(appContext, pageId)
+            ImageStore.writePng(composed, file)
+            addDocument(
+                title = title,
+                folderId = folderId,
+                pages = listOf(
+                    ScannedPage(
+                        id = pageId,
+                        documentId = "", // assigned by addDocument
+                        pageIndex = 0,
+                        imageUri = file.absolutePath,
+                        // Already composed: do not run a filter over it.
+                        filterType = FilterType.ORIGINAL,
+                        corners = QuadCorners()
+                    )
+                )
+            )
+        } finally {
+            if (!composed.isRecycled) composed.recycle()
+        }
+    }
+
+    private fun CardComposition.Box.toRect(): Rect = Rect(left, top, right, bottom)
 
     // -------------------------------------------------------- lifecycle
 

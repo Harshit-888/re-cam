@@ -331,4 +331,78 @@ The original app implements 5 enhancement filters via `cv3` and `yu3` enums:
 | **Markup & Annotation** | 60% Parity (Signature dialog, Watermark dialog live) | Build `MarkupCanvas.kt` |
 | **Background Eraser** | 0% Parity (Reverse engineering complete) | Build `CleanupBgCanvas.kt` |
 | **ID Card Scan Mode** | 0% Parity (Reverse engineering complete) | Add ID Card dual-capture mode |
-| **Backup / Restore** | 0% Parity (Reverse engineering complete) | Build `BackupRestoreManager.kt` |
+| **Backup / Restore** | Implemented in Round 43 (`util/BackupArchive.kt`) | Zip of library + pages, validated restore, merges rather than replaces |
+
+---
+
+## 9. Verification notes (Arena.ai, 2026-10-27)
+
+Read this with §4.1, §3.3 and §8. Everything below was checked against artifacts in
+this repository and against the code in `app/src/main/java`, not taken from a summary.
+
+### 9.1 §4.1 ML border detection — confirmed, with one addition
+
+- Input `0.0…255.0` float RGB, 224×224: **confirmed** by measurement — the same image
+  scores 0.99 mean corner confidence at `0…255` and 0.53 at `0…1`.
+- `StatefulPartitionedCall:1` `[1,1,4,2]` normalised `(y, x)` corners and
+  `StatefulPartitionedCall:0` `[1,1,4]` scores: **confirmed** against the file itself.
+- Gate `mean(c) >= 0.50f`: **confirmed** (`Lqt3;->c`, `cmpl-float` against
+  `const/high16 1056964608`).
+- **Addition the spec omits:** the model has **six** outputs, and a second tensor
+  (`StatefulPartitionedCall:5`, also `[1,1,4]`) is exactly as wide as the scores. Any
+  decoder that finds its outputs by element count can bind that one and read ~0.2
+  confidence on a good page. `MlBorderDetector` therefore binds by **name**. Full
+  evidence: [`ORIGINAL_ML_BORDER_PATH.md`](ORIGINAL_ML_BORDER_PATH.md).
+- §4.1 item 4 describes `QuadSanity.kt` inaccurately. It does **not** test convexity.
+  It rejects non-finite coordinates, an area outside `0.06…1.05`, a min/max side ratio
+  below `0.18`, and out-of-order edges beyond `0.01`, while allowing corners up to
+  `0.02` outside the frame (a page running off the edge of the photograph is a real
+  answer, not a bad one).
+
+### 9.2 §3.3 paper sizes — the database says 64 rows, 15 of them visible
+
+`assets/databases/app.db` is inside `docs/original_apk_pipeline_artifacts.zip`, so this
+is checked, not inferred:
+
+- `paper_size` holds **64** rows; `b_is_show_in_select_list = 1` on exactly **15**:
+  A3, A4, A5, B4, B5, Letter, Legal, Ledger, Tabloid, Executive, ANSI C, ANSI D,
+  ANSI E, Business Card, Folio — plus the `xxx Use Localize` placeholder (id 999,
+  `0 × 0`). The other 49 are built-in but hidden from the picker.
+- The doc's Business Card row (`241 × 153 pt`) disagrees with the database
+  (**`353 × 206 pt`, unit `in`**). Our app ships `243 × 153 pt`, which is the physically
+  correct 85.6 × 54 mm — neither matches the original's stored value, and we are not
+  changing ours to a number that is not a business card.
+- **Closed in Round 42.** Our `PaperSize` now carries all **15** visible originals with
+  the database's stored point values and order, plus our own `RECEIPT` — 16 entries,
+  grouped by the original's own `paper_size_group` (`PaperGroup.ISO_A` / `ISO_B` /
+  `AMERICAN` / `OTHER`) and rendered under headings in `PdfExportSheet`, whose 2-column
+  grid would otherwise be a wall of sixteen cards. Two departures, both pinned by
+  `PaperSizeTest`:
+  - `BUSINESS_CARD` stays at **243 × 153 pt** (85.6 × 54 mm, ISO/IEC 7810 ID-1). The
+    original's stored `353 × 206 pt` is 124.5 × 72.7 mm, which is not a business card.
+  - `RECEIPT` is ours; the original has no receipt preset.
+  - `A3` now uses the database's `842 × 1190` instead of our `842 × 1191`. Both are
+    roundings of 841.89 × 1190.55 pt; matching the original keeps PDF page boxes
+    identical to a file exported by it.
+
+### 9.3 §8 "100% parity" — not accurate for everything it claims
+
+Verified as implemented in this repository: ML border detection, the five filters and
+Rust kernels, dashboard/library, PDF export (8 sizes, 4 margins), trash.
+
+**Not implemented**, despite appearing in §1/§8 as parity:
+
+- ID Card, Book, Passport, Photo and QR/Barcode capture modes. The camera does
+  single-shot and batch at 4:3, which is a deliberate scope decision (static guide frame
+  removed, detection kept off the camera screen).
+- The `PaperBorderView` viewfinder tracker and the IOU ≥ 0.95 auto-shutter. Also a
+  deliberate decision, not an oversight.
+- Markup & annotation canvas, Background Eraser, Cloud Sync. (Backup/Restore closed in
+  Round 43 — `util/BackupArchive.kt`, see the changelog.)
+- 15 visible paper sizes (see 9.2).
+
+### 9.4 §7.1 naming
+
+Our default is `'Scan' yyyy-MM-dd HH-mm-ss`, not `New Doc [yyyy-MM-dd HH.mm.ss]`. It is
+deliberately quote-free and uses hyphens instead of colons so the name is portable
+across MTP/FAT/exFAT when a page is copied off the device by hand.

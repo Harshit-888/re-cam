@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import android.widget.Toast
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.ArrowBack
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.BrandingWatermark
+import androidx.compose.material.icons.outlined.CreditCard
 import androidx.compose.material.icons.outlined.Crop
 import androidx.compose.material.icons.outlined.Draw
 import androidx.compose.material.icons.outlined.Edit
@@ -75,6 +77,7 @@ import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.ui.common.PageThumbnail
 import com.example.docscanner.ui.pdf.PdfExportSheet
 import com.example.docscanner.ui.signature.SignaturePadDialog
+import com.example.docscanner.ui.editor.MarkupDialog
 import com.example.docscanner.util.PageRenderer
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -102,6 +105,9 @@ fun DocumentDetailScreen(
     var showSignatureDialog by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var showWatermarkDialog by remember { mutableStateOf(false) }
+    var showIdCardDialog by remember { mutableStateOf(false) }
+    var markupTarget by remember { mutableStateOf<ScannedPage?>(null) }
+    var idCardBusy by remember { mutableStateOf(false) }
 
     // Deleting a page is destructive and irreversible — the capture, the JPEG bake
     // and the lossless bake all go — and it used to happen on a single tap of a
@@ -150,6 +156,22 @@ fun DocumentDetailScreen(
                     }
                     IconButton(onClick = { showPdfExportSheet = true }) {
                         Icon(Icons.Outlined.PictureAsPdf, contentDescription = "Export PDF")
+                    }
+                    // Only meaningful for exactly two pages: front and back. Shown
+                    // rather than hidden so the feature is discoverable, and disabled
+                    // with a reason rather than lying about what a tap will do.
+                    IconButton(
+                        onClick = { showIdCardDialog = true },
+                        enabled = document.pages.size == 2 && !idCardBusy
+                    ) {
+                        Icon(
+                            Icons.Outlined.CreditCard,
+                            contentDescription = if (document.pages.size == 2) {
+                                "Combine the two pages as an ID card"
+                            } else {
+                                "ID card needs exactly two pages"
+                            }
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -305,7 +327,8 @@ fun DocumentDetailScreen(
                             }
                         },
                         onMoveBackward = { repository.movePage(docId, index, index - 1) },
-                        onMoveForward = { repository.movePage(docId, index, index + 1) }
+                        onMoveForward = { repository.movePage(docId, index, index + 1) },
+                        onAnnotateClick = { markupTarget = page }
                     )
                 }
             }
@@ -371,6 +394,91 @@ fun DocumentDetailScreen(
                         repository.updatePage(docId, target.id) { baked }
                     }
                 }
+            }
+        )
+    }
+
+    // Annotation is stored on the page as strokes and replayed by the renderer on
+    // every bake, so it survives a filter change made later. The re-bake here is only
+    // so the thumbnail and the viewer show the ink immediately.
+    markupTarget?.let { target ->
+        MarkupDialog(
+            page = target,
+            onDismiss = { markupTarget = null },
+            onSave = { strokes ->
+                markupTarget = null
+                scope.launch {
+                    val current = repository.getDocumentById(docId)
+                        ?.pages?.find { it.id == target.id } ?: return@launch
+                    repository.updatePage(docId, target.id) { it.copy(markup = strokes) }
+                    val baked = runCatching {
+                        PageRenderer.bake(context, current.copy(markup = strokes))
+                    }.getOrNull()
+                    if (baked != null) {
+                        repository.updatePage(docId, target.id) { baked }
+                    }
+                }
+            }
+        )
+    }
+
+    if (showIdCardDialog) {
+        val front = document.pages.getOrNull(0)
+        val back = document.pages.getOrNull(1)
+        AlertDialog(
+            onDismissRequest = { showIdCardDialog = false },
+            shape = DocShapes.dialog,
+            title = {
+                Text(
+                    "Combine as ID card?",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                Text(
+                    "Page 1 becomes the front and page 2 the back, side by side on one " +
+                        "A4 page. The original pages are kept and a new document is " +
+                        "created.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showIdCardDialog = false
+                        if (front == null || back == null) return@TextButton
+                        idCardBusy = true
+                        scope.launch {
+                            // A failure here is a failed write, not a crash: the page
+                            // may be unreadable or the disk full.
+                            val created = try {
+                                repository.createIdCardDocument(
+                                    frontPageId = front.id,
+                                    backPageId = back.id,
+                                    title = "${document.title} (ID card)",
+                                    folderId = document.folderId
+                                )
+                            } catch (t: Throwable) {
+                                null
+                            } finally {
+                                idCardBusy = false
+                            }
+                            Toast.makeText(
+                                context,
+                                if (created != null) {
+                                    "Created ${created.title}"
+                                } else {
+                                    "Could not read one of the two pages"
+                                },
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                ) { Text("Combine") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showIdCardDialog = false }) { Text("Cancel") }
             }
         )
     }
@@ -490,6 +598,7 @@ fun PageGridItem(
     onRotateClick: () -> Unit,
     onMoveBackward: () -> Unit,
     onMoveForward: () -> Unit,
+    onAnnotateClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -550,6 +659,12 @@ fun PageGridItem(
                 }
             }
 
+            // These four are the most-hit controls on the screen — rotate and crop get
+            // used on nearly every page — and they used to be constrained to 32 dp,
+            // which is the size of the *hit area*, not just the icon. `IconButton`
+            // already reserves 48 dp around its 40 dp state layer; the explicit
+            // `.size(32.dp)` was undoing that. Left unconstrained, the row is 16 dp
+            // taller and every target is a finger wide.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -557,18 +672,18 @@ fun PageGridItem(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onMoveBackward, enabled = canMoveBackward, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = onMoveBackward, enabled = canMoveBackward) {
                     Icon(Icons.Default.ArrowLeft, contentDescription = "Move page earlier", modifier = Modifier.size(18.dp))
                 }
-                IconButton(onClick = onRotateClick, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = onRotateClick) {
                     Icon(Icons.Default.RotateRight, contentDescription = "Rotate", modifier = Modifier.size(18.dp))
                 }
-                IconButton(onClick = onCropClick, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = onCropClick) {
                     Icon(Icons.Outlined.Crop, contentDescription = "Crop and filter", modifier = Modifier.size(18.dp))
                 }
                 Box {
-                    IconButton(onClick = { showMenu = true }, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "More", modifier = Modifier.size(18.dp))
+                    IconButton(onClick = { showMenu = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More", modifier = Modifier.size(20.dp))
                     }
                     DropdownMenu(
                         expanded = showMenu,
@@ -590,6 +705,14 @@ fun PageGridItem(
                             onClick = {
                                 showMenu = false
                                 onMoveBackward()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Annotate") },
+                            leadingIcon = { Icon(Icons.Outlined.Draw, contentDescription = null) },
+                            onClick = {
+                                showMenu = false
+                                onAnnotateClick()
                             }
                         )
                         DropdownMenuItem(

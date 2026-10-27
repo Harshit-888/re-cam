@@ -1407,6 +1407,146 @@ change pages, which is exactly the Round 37 bug.
 - **Do not remove `PageStrip` from one stage.** See above.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
 
+## 6aj. Round 47: UI/UX audit (Arena, 2026-10-27)
+
+**New:** `docs/UI_UX_REVIEW.md`, `ui/common/TapTarget.kt`.
+**Edited:** `ui/detail/DocumentDetailScreen.kt`, `ui/editor/MarkupDialog.kt`,
+`ui/camera/ScannerCameraScreen.kt`, `ui/pdf/PdfExportSheet.kt`.
+
+- **`TapTarget(onClick, label, selected, size)`** is the way to make a small visual
+  pressable from here on. Do not put `clickable` directly on a drawing under 48 dp —
+  that is exactly the bug this round fixed, in two places.
+- Anything that sizes an `IconButton` below 48 dp shrinks its **touch target**, not
+  just its visual: `IconButton` already applies `minimumInteractiveComponentSize` and
+  an explicit `size()` overrides it. Leave the modifier off.
+- Motion constants stay in `theme/Motion.kt`; `PdfExportSheet` gained a local
+  `EXIT_MS = 100` because its accordions are sheet-local. Exits are faster than
+  enters throughout — keep it that way in new code.
+- Nothing visual changed outside these four files.
+
+## 6ai. Round 46: annotation (Arena, 2026-10-27)
+
+**New:** `model/Markup.kt`, `util/MarkupRenderer.kt`, `ui/editor/MarkupDialog.kt`,
+`test/.../model/MarkupTest.kt`. **Edited:** `model/Models.kt` (`ScannedPage.markup`),
+`util/PageRenderer.kt` (replay step), `ui/detail/DocumentDetailScreen.kt` (menu item).
+
+- **`ScannedPage.markup` is persisted data, not pixels.** If you add another
+  destructive-looking step to `PageRenderer`, put it **before** the markup replay;
+  annotations are the top layer by definition.
+- `MarkupStroke.widthFraction` is relative to the **short side** of the page, so a
+  stroke keeps its apparent weight in either orientation. Don't change that to width
+  or height alone without checking the portrait/landscape pair in `MarkupTest`.
+- `MarkupRenderer.draw(canvas, strokes, width, height)` is the single drawing path.
+  The preview and the bake must both go through it or they will drift; there is a
+  `draw(bitmap, strokes)` overload for the bake.
+- Anything that already copies a `ScannedPage` (crop, rotate, signature, watermark)
+  keeps the markup automatically, because it is a field on the page.
+
+## 6ah. Round 45: print (Arena, 2026-10-27)
+
+**New:** `util/PdfPrinter.kt`. **Edited:** `ui/pdf/PdfExportSheet.kt` only.
+
+- `PdfPrinter.print(context, file, jobName, paperSize)` opens the system print dialog
+  for a PDF already on disk. It returns `false` rather than throwing; callers show a
+  message.
+- It needs an **Activity** context, and it cannot print an encrypted PDF. Both are
+  checked by `canPrint()` and surfaced in the sheet before the attempt.
+- `PaperSize` is the only geometry input: points → mils (`× 1000/72`). If another paper
+  table is ever added, printing follows it automatically.
+- `PdfExportSheet` now shares one `generateThen` path between share and print. If you
+  change the export config, change it there — not in two places.
+
+## 6ag. Round 44: ID card composition (Arena, 2026-10-27)
+
+**New:** `util/CardComposition.kt`, `test/.../util/CardCompositionTest.kt`.
+**Edited:** `data/ScannerRepository.kt` (one new suspend method + three file-level
+constants), `ui/detail/DocumentDetailScreen.kt` (one app-bar action, one dialog).
+
+- `Repository.createIdCardDocument(frontPageId, backPageId, title, folderId)` returns the
+  new `Document?`. It writes `pages/<newId>_edited.png`, so a composed page is
+  indistinguishable from a re-baked page to the orphan sweep and thumbnail store.
+- `CardComposition` takes page sizes in **pixels** of whatever bitmap is being drawn
+  into; it has no notion of points or dpi. A4 at 200 dpi is `1654 × 2339`.
+- The composed page uses `FilterType.ORIGINAL` deliberately: it is already finished, and
+  any filter over it would double-process the card.
+- Camera capture semantics are untouched. If a two-step (front, then back) capture flow
+  is added later, it should call the same repository method.
+
+## 6af. Round 43: backup & restore (Arena, 2026-10-27)
+
+**New:** `util/BackupArchive.kt`, `test/.../util/BackupArchiveTest.kt`.
+**Edited:** `data/ScannerRepository.kt` (three new methods, nothing changed),
+`ui/settings/SettingsScreen.kt` (two new parameters with defaults, one new section),
+`Navigation.kt` (wires the two callbacks).
+
+- `SettingsScreen` gained `onExportBackup: suspend (Uri) -> String` and
+  `onImportBackup: suspend (Uri) -> String`, both defaulted, so any other call site
+  still compiles.
+- `ScannerRepository.exportBackup(uri)` / `importBackup(uri)` are **suspend** and run on
+  IO. Import merges; it never deletes a local-only document.
+- Archive format: `library.json` + `pages/*` + `signatures/*` + `backup.json`
+  (`format`/`formatVersion`/`schemaVersion`/files with SHA-256). If you change
+  `LibrarySnapshot`, bump `BackupArchive.FORMAT_VERSION` only if the *archive* layout
+  changes — a schema change alone is covered by `schemaVersion`.
+- App settings are not backed up. If that is wanted later it belongs in a separate
+  entry, not in `library.json`.
+- Nothing has been compiled here. The core is host-testable:
+  `./gradlew testDebugUnitTest --tests '*BackupArchiveTest'`.
+
+## 6ae. Round 42: sixteen paper presets, grouped (Arena, 2026-10-27)
+
+**Touched:** `model/Models.kt`, `ui/pdf/PdfExportSheet.kt`, new
+`test/.../model/PaperSizeTest.kt`, docs. Settings screen untouched.
+
+- `PaperSize` gained a `group: PaperGroup` parameter. **Any code that constructs a
+  `PaperSize` positionally must now pass four arguments** — nothing in the repo did,
+  but check yours. Reading `widthPt` / `heightPt` / `label` is unchanged.
+- Eight new entries (`B4`, `B5`, `LEDGER`, `TABLOID`, `ANSI_C`, `ANSI_D`, `ANSI_E`,
+  `FOLIO`); `A3` moved from `1191` to `1190` pt to match the original's database.
+  `BUSINESS_CARD` deliberately stays 243 × 153.
+- **Do not render `PaperSize.entries` in a segmented control.** Sixteen segments is
+  the failure mode described at the top of `Expressive.kt`; use `PaperSize.byGroup`
+  (heading + 2-column cards) or the scrolling `ChoiceDialog`.
+- Enum names for the eight old entries are unchanged, so persisted settings survive.
+  Renaming one would silently reset it — `PaperSizeTest` pins the names.
+
+## 6ad. Round 41: reconciliation of the master spec (Arena, 2026-10-27)
+
+**No code touched.** `docs/ORIGINAL_APP_FULL_SPECIFICATION.md` gained a §9 section; that
+is the only change, plus a cross-link from `docs/ORIGINAL_ML_BORDER_PATH.md`.
+
+Three things worth knowing before §8 of that spec is used as a work queue:
+
+1. The border model has **six** outputs and `StatefulPartitionedCall:5` is as wide as the
+   scores (`[1,1,4]`). Bind by name. (§9.1, `ORIGINAL_ML_BORDER_PATH.md`.)
+2. `app.db` has 64 paper sizes, **15** of them visible in the original picker; our enum
+   has 8. Adding them means redesigning the two surfaces that enumerate the enum
+   (`PdfExportSheet` 2-column grid, `SettingsScreen` segmented control), so it is a
+   picker-screen task, not an enum edit.
+3. §8's "100% parity" applies to borders, filters, dashboard, PDF and trash only.
+   Capture modes, viewfinder tracking/auto-shutter, markup, background eraser,
+   backup/restore and cloud sync are absent — the first two deliberately.
+
+## 6ac. Round 40: the ML border model's real tensor layout (Arena, 2026-10-27)
+
+**Claimed:** `util/MlBorderDetector.kt` output binding only. No other file touched.
+Full evidence in `docs/ORIGINAL_ML_BORDER_PATH.md`.
+
+- The shipped `border_detect_224.tflite` has **six** outputs. Only two are used:
+  `StatefulPartitionedCall:1` `[1,1,4,2]` (8 floats, four corners as `(y, x)`) and
+  `StatefulPartitionedCall:0` `[1,1,4]` (4 floats, one score per corner).
+  `StatefulPartitionedCall:5` is also `[1,1,4]` and is **not** the scores — a size-based
+  lookup can pick it.
+- Binding is now by name, with an unambiguous-size fallback, and a refusal + log when
+  neither is possible. Anything that reads `MlBorderDetector` sees the same public API
+  (`detect(bitmap, context): MlResult?`); nothing to change on your side.
+- Input encoding is `0…255`, coords are normalised `0…1`, gate is `mean >= 0.5f`, and the
+  original detects on a bitmap downscaled to fit 640×640 with native OpenCV as its
+  fallback (we use the Kotlin geometry pass there — unchanged).
+- If you rebuild: the one new log line is `[ml] corners = StatefulPartitionedCall:1
+  [1, 1, 4, 2], scores = StatefulPartitionedCall:0 [1, 1, 4]`. If you see the
+  `[ml] cannot tell the corner tensor…` line instead, the asset changed.
+
 ## 6ab. Round 39: the ML quad is validated, the decoder stops assuming, and the build checks the model (Arena, 2026-10-27)
 
 ### The contract the ML path now keeps

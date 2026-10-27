@@ -20,6 +20,8 @@ import com.example.docscanner.ui.editor.CropAndFilterScreen
 import com.example.docscanner.ui.settings.SettingsScreen
 import com.example.docscanner.ui.trash.TrashScreen
 import com.example.docscanner.ui.viewer.PageViewerScreen
+import com.example.docscanner.util.BackupArchive
+import java.util.Locale
 
 /**
  * Navigation 3 graph.
@@ -142,7 +144,9 @@ fun MainNavigation(repository: ScannerRepository) {
                     onSettingsChange = { transform -> repository.updateSettings(transform) },
                     onNavigateBack = {
                         backStack.removeLastOrNull()
-                    }
+                    },
+                    onExportBackup = { uri -> repository.exportBackup(uri).describe("Backed up") },
+                    onImportBackup = { uri -> repository.importBackup(uri).describe("Restored") }
                 )
             }
 
@@ -216,3 +220,20 @@ private const val NAV_TRANSITION_MS = 320
 
 /** How far the outgoing screen travels, as a fraction of its own width. */
 private const val NAV_PARALLAX_DIVISOR = 4
+
+/**
+ * "Backed up 2 documents · 14 pages · 8.4 MB", plus a warning when pages could not be
+ * packed. A backup that quietly omitted images would look identical to one that did
+ * not — the count is the only way the user finds out.
+ */
+private fun BackupArchive.Summary.describe(verb: String): String {
+    val documents = if (documents == 1) "1 document" else "$documents documents"
+    val pages = if (pages == 1) "1 page" else "$pages pages"
+    val megabytes = String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0))
+    val missing = if (missingFiles > 0) {
+        " · $missingFiles image(s) missing on this device and not included"
+    } else {
+        ""
+    }
+    return "$verb $documents · $pages · $megabytes$missing"
+}
