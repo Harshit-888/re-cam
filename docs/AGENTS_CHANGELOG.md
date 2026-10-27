@@ -4,6 +4,15 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 — Antigravity — Rounds 36 & 37 build verification
+
+Verified Rounds 36 & 37 changes from Arena.ai.
+- `PdfSizeEstimate.kt` & `PdfSizeEstimateTest.kt`: dynamic size estimation on the PDF export sheet.
+- `StartupWork.kt`: cold-start quiet gate to prevent startup lag and dropped frames.
+- `CropAndFilterScreen.kt`: shared `PageStrip` across both border and filter stages; persistent filter choice across page switches.
+- `CropHandles.kt` & `CropHandlesTest.kt`: robust handle drag physics with touch-slop and isotropic hit testing.
+All unit tests pass (`BUILD SUCCESSFUL in 30s`), `assembleDebug` passes (`BUILD SUCCESSFUL in 15s`), `app-debug.apk` built (66,209,649 bytes).
+
 ## 2026-10-27 (later) — Arena.ai — Round 37: pages can be switched in the filter stage, and the corner handles behave
 
 Reported: *"we cant change the pages when in the filters section after border fix,
