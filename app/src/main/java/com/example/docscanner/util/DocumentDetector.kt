@@ -94,7 +94,12 @@ object DocumentDetector {
     private fun detectInternal(src: Bitmap, context: android.content.Context? = null): Detection {
         if (src.isRecycled) return failed()
 
-        // 1. Try on-device TFLite model from original app (assets/border_detect_224.tflite)
+        // 1. The on-device model from the original app, when it answers plausibly.
+        //
+        // `confident` is only true when the quad also passed `QuadSanity` (inside the
+        // detector): a model can be sure and still produce a crossed or sliver quad,
+        // and that would go straight into the warp. A rejected ML answer is not a
+        // failure — the geometry pass below is the fallback by design.
         val mlResult = MlBorderDetector.detect(src, context)
         if (mlResult != null && mlResult.confident) {
             return Detection(
@@ -104,25 +109,36 @@ object DocumentDetector {
             )
         }
 
-        // 2. Fall back to geometric step detector if ML confidence is low or unavailable
-        val luma = lumaOf(src) ?: return if (mlResult != null) {
-            Detection(mlResult.corners, confident = false, sidesFound = 4)
-        } else failed()
+        // Everything below prefers the geometry pass. The ML quad may still be used
+        // as a *starting point* — but only when it is a plausible page:
+        //
+        // `CropAndFilterScreen` applies `detection.corners` whether or not the
+        // detection was confident (an unconfident quad is a starting point the user
+        // nudges, which is the whole design). So an implausible ML quad must not
+        // reach it at all: a sliver or a crossed quad is not "roughly right", it is a
+        // blank export. Those fall through to the full frame, which is honest.
+        val usableMl = mlResult?.takeIf { it.rejection == null }
 
-        val found = DocumentQuad.detect(luma.pixels, luma.width, luma.height)
-        if (found != null) {
-            return Detection(
-                corners = found.corners,
-                confident = found.sidesFound >= 3 || found.sidesFound == 0,
-                sidesFound = found.sidesFound
-            )
+        // 2. Geometric detector: boundary scan + RANSAC on a grey copy of the page.
+        val luma = lumaOf(src)
+        if (luma != null) {
+            val found = DocumentQuad.detect(luma.pixels, luma.width, luma.height)
+            if (found != null) {
+                return Detection(
+                    corners = found.corners,
+                    confident = found.sidesFound >= 3 || found.sidesFound == 0,
+                    sidesFound = found.sidesFound
+                )
+            }
         }
 
-        if (mlResult != null) {
-            return Detection(mlResult.corners, confident = false, sidesFound = 4)
+        // 3. Neither detector found a page: offer the model's plausible-but-unsure
+        //    quad as a starting point, or nothing at all.
+        return if (usableMl != null) {
+            Detection(usableMl.corners, confident = false, sidesFound = 4)
+        } else {
+            failed()
         }
-
-        return failed()
     }
 
     /** Brightness of the working-resolution copy of [src], row-major. */

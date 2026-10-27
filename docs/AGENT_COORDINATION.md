@@ -1405,6 +1405,49 @@ change pages, which is exactly the Round 37 bug.
 - **Do not remove `PageStrip` from one stage.** See above.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
 
+## 6ab. Round 39: the ML quad is validated, the decoder stops assuming, and the build checks the model (Arena, 2026-10-27)
+
+### The contract the ML path now keeps
+
+```kotlin
+MlBorderDetector.detect(bitmap, context): MlResult?
+// corners, meanConfidence, confident (= confident AND plausible), rejection (shape problem)
+QuadSanity.rejection(quad): String?   // null when the quad is a believable page
+QuadSanity.isPlausible(quad): Boolean
+```
+
+`DocumentDetector.detect(src, context)` uses them in this order: **ML when confident and
+plausible → Kotlin geometry → plausible-but-unsure ML → full frame.**
+
+### Rules for the next agent
+
+- **`detection.corners` is applied even when `confident == false`** in
+  `CropAndFilterScreen` (an unsure quad is a starting point). Anything that produces a
+  quad therefore has to be *plausible*, not merely *reported*. That is what
+  `QuadSanity` is for — do not remove the check, and do not route a new detector around
+  it.
+- **Confidence ≠ plausibility.** Keep them separate in `MlResult`: merging them throws away
+  the model's useful output on hard pages (where it is unsure but right).
+- **Do not re-add `getOutputIndex("StatefulPartitionedCall:…")` or fixed output shapes.**
+  Outputs are found by element count (8 and 4) and arrays are built from the tensor's own
+  shape. Names and ranks differ between exports of the same graph.
+- **`MlBorderDetector` has no `init()` and no static `Context`.** Pass the context to
+  `detect`. A static context is a singleton by another name (§2.6).
+- **Byte buffers are reused and `detect` is `@Synchronized`.** Do not call the interpreter
+  from two threads, and do not share the scratch buffers by making the object stateless
+  again without measuring: a 24-page batch allocated 24 × ~600 KB per pass before this.
+- **`verifyBorderModel` runs before every build.** If you move the `.tflite` to the
+  ignored `assets/models/`, keep that task (update its path) or the app will quietly lose
+  ML detection and ship a build that looks fine.
+- **`build.gradle.kts` test heap is 512m on purpose.** The test JVM is not the Gradle
+  daemon; shrinking it only relocates an OOM into a confusing test failure.
+
+### Still open, needs a decision
+
+The 4.78 MB model is committed (AGENTS.md §2.5 says it should be provisioned). Guarded by
+`verifyBorderModel`; sha256 pinned in `app/build.gradle.kts` and
+`578f53b6…bdd1972`. No ABI filtering, so TFLite's four ABIs are all packaged.
+
 ## 6aa. Round 38 review: ML border detection must be able to load, and must be observable (Arena, 2026-10-27)
 
 ### Two rules that now hold

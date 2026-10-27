@@ -64,9 +64,6 @@ class MainActivity : ComponentActivity() {
         // middle of the launch animation. See util/FramePacing.kt.
         val displayHz = FramePacing.apply(window)
 
-        // Initialize on-device ML border detector model
-        com.example.docscanner.util.MlBorderDetector.init(applicationContext)
-
         // Debug builds only: logs per-window frame times and how each cover was
         // obtained (memory / stored thumbnail / full page decode) under the
         // `DocScannerPerf` tag, plus the per-frame stage breakdown while a scroll is

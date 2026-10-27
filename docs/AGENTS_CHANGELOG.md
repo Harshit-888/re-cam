@@ -4,6 +4,63 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 — Arena.ai — Round 39: the ML border path answers safely, and the build checks the model
+
+Follow-up to the Round 38 review, closing the runtime risks that were listed as open.
+
+### 1. A confident model answer can no longer reach the warp unchecked — new `util/QuadSanity.kt`
+
+`CropAndFilterScreen` applies `detection.corners` whether or not a detection was
+*confident* (that is by design — an unsure quad is a starting point the user nudges). So
+an implausible ML quad had a direct route into `PerspectiveWarp`: a crossed quad warps
+into a self-overlapping image, a sliver crops a strip, a quad 2 % of the frame exports a
+blank page. `QuadSanity.rejection(quad)` returns the first rule broken (or `null`) for
+exactly those cases — same thresholds the geometric detector already used
+(`MIN_AREA 0.06`, `MAX_AREA 1.05`, `MIN_SIDE_RATIO 0.18`, plus ordering and NaN checks),
+so both detectors agree on what a page is. Pure maths; covered by `QuadSanityTest`
+(eight cases, including NaN, a 9 %-area sliver, and a crossed quad).
+
+**Confidence and plausibility are now separate:** `MlResult.confident` = confident **and**
+plausible; `MlResult.rejection` is set only when the *shape* is wrong. An unsure but
+plausible quad is still offered to the caller as a starting point.
+
+### 2. The decoder no longer assumes the model's contract — `util/MlBorderDetector.kt`
+
+| was | now |
+| :--- | :--- |
+| `getOutputIndex("StatefulPartitionedCall:0/1")` | outputs located by **element count** (8 = four points, 4 = four confidences) |
+| `Array(1){Array(1){…}}` sized `[1,1,4,2]` / `[1,1,4]` | arrays built from each tensor's **own shape**, whatever its rank |
+| 0–255 floats, unconditionally | input shape and **dtype** read; float32 or uint8 honoured; scale (0–255 vs 0–1) **calibrated once** per process by running the first page through both and keeping the more confident |
+| `IntArray(50176)` + `ByteBuffer` per call | reused between calls (`@Synchronized`, the interpreter is not re-entrant anyway) |
+| `isInitialized` latch | removed (Round 38 review); still retried on the next detection |
+| `init(applicationContext)` + `object`-level `Context` | **removed** — a static context is a singleton (`AGENTS.md` §2.6). `detect(bitmap, context)` already took one; `MainActivity` dropped the call |
+| `Log.once` on the fly | `logOnce(key, message)`: debug only, once per key per process |
+
+`DocumentDetector`'s fallback chain was tightened to match: **ML (confident + plausible)
+→ geometry → plausible-but-unsure ML → full frame.** Previously an implausible ML quad was
+returned with `confident = false` as the last resort, and the editor applied it anyway.
+
+### 3. The build fails when the model is missing — `app/build.gradle.kts`
+
+New `verifyBorderModel` task (wired to every `preBuild`): throws with a clear message if
+`app/src/main/assets/border_detect_224.tflite` is absent or empty, and warns with the new
+hash when it differs from the pinned
+`578f53b6c90ee9bc14b6ba350c3d261ffd6001d3e9b716a7ad571b6a4bdd1972` (a re-sourced model is
+legitimate; silently vanished is not). This is the guard for the day the asset moves to
+the ignored `assets/models/` path.
+
+Also restored the unit-test worker heap to `-Xmx512m` (Round 38 cut it to 256m; the test
+JVM is separate from the Gradle daemon, so the cut bought no build memory and only moved
+an `OutOfMemoryError` somewhere less legible).
+
+### Still open
+
+- **The 4.78 MB `.tflite` is still committed**, against `AGENTS.md` §2.5. Deliberately: it
+  is kept until the model can be provisioned reproducibly, and it is now guarded rather
+  than invisible. `git rm --cached` + ignore + `verifyBorderModel` is the migration path.
+- **APK size**: TFLite native libraries for four ABIs. No `abiFilters`, so all four are
+  packaged; the scanner only ships Rust kernels for the architectures the toolchain built.
+
 ## 2026-10-27 — Arena.ai — Round 38 review: the ML border path now loads, and says when it doesn't
 
 A review of Round 38 before a device test. Two code changes, both about the ML path being

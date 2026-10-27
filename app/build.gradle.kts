@@ -85,7 +85,14 @@ android {
         unitTests.isReturnDefaultValues = true
         unitTests.all {
             it.maxParallelForks = 1
-            it.jvmArgs("-Xmx256m", "-XX:+UseParallelGC")
+            // 512m, not 256m. Each test worker is its own JVM, so this heap has
+            // nothing to do with the Gradle daemon's — shrinking it saves no build
+            // memory, it only moves an OutOfMemoryError from the daemon (which
+            // reports it clearly) into the forked test JVM (which reports it as a
+            // crash in whichever test happened to be running). The suite decodes
+            // nothing, but several thousand RANSAC iterations across the detector
+            // tests allocate more than 256m of garbage between collections.
+            it.jvmArgs("-Xmx512m", "-XX:+UseParallelGC")
         }
     }
 }
@@ -196,4 +203,54 @@ dependencies {
 
   // TensorFlow Lite (matches original app ML border detection)
   implementation(libs.tensorflow.lite)
+}
+
+/**
+ * Fails the build when the border model is gone.
+ *
+ * `MlBorderDetector` degrades to the Kotlin geometry pass when
+ * `assets/border_detect_224.tflite` is missing — correct at runtime, invisible at
+ * build time. That is how a build ends up shipped without the feature it advertises,
+ * and it is exactly the failure a device test cannot diagnose from the outside. The
+ * check is cheap (one 4.7 MB read) and runs before every build's `preBuild`.
+ *
+ * The hash is *reported*, not enforced: replacing the model with a re-exported one is
+ * legitimate, and a hard failure there would be someone else's Tuesday. A mismatch is
+ * a warning plus the new hash, so the pinned value below can be updated deliberately.
+ *
+ * Note for `.gitignore` / AGENTS.md §2.5: this asset is a binary and is supposed to be
+ * provisioned rather than committed. It is committed today (see
+ * docs/AGENT_COORDINATION.md §6i); if it moves to the ignored `assets/models/` path,
+ * this task is what keeps the omission loud.
+ */
+val borderModelFile = layout.projectDirectory.file("src/main/assets/border_detect_224.tflite")
+val borderModelSha256 = "578f53b6c90ee9bc14b6ba350c3d261ffd6001d3e9b716a7ad571b6a4bdd1972"
+
+val verifyBorderModel by tasks.registering {
+    group = "verification"
+    description = "Checks that the TFLite border model is present and reports its SHA-256."
+    doLast {
+        val file = borderModelFile.asFile
+        if (!file.isFile || file.length() == 0L) {
+            throw GradleException(
+                "Missing border model: ${file.path}. The app will silently fall back to " +
+                    "the geometry detector. Provision it (docs/AGENT_COORDINATION.md §6i) " +
+                    "or drop the ML path deliberately."
+            )
+        }
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(file.readBytes())
+            .joinToString("") { "%02x".format(it) }
+        if (digest != borderModelSha256) {
+            logger.warn(
+                "border model hash changed (${digest.take(16)}…, pinned " +
+                    "${borderModelSha256.take(16)}…). If the model was re-sourced on " +
+                    "purpose, update `borderModelSha256` in app/build.gradle.kts."
+            )
+        }
+    }
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn(verifyBorderModel)
 }
