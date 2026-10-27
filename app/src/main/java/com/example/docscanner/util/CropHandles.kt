@@ -26,6 +26,12 @@ object CropHandles {
     const val BOTTOM_RIGHT = 2
     const val BOTTOM_LEFT = 3
 
+    /** Edge midpoint indices, matching original app's 8-handle CropView. */
+    const val EDGE_TOP = 10
+    const val EDGE_RIGHT = 11
+    const val EDGE_BOTTOM = 12
+    const val EDGE_LEFT = 13
+
     /**
      * Closest two corners of the same edge may get, as a fraction of the frame.
      *
@@ -47,20 +53,17 @@ object CropHandles {
     const val SNAP = 0.012f
 
     /**
-     * A copy of [quad] with corner [corner] moved by ([dx], [dy]).
+     * A copy of [quad] with corner or edge [handle] moved by ([dx], [dy]).
      *
-     * Only that corner moves; the other three are returned untouched, which is what
-     * makes a drag feel like moving a pin rather than reshaping a polygon. The moved
-     * corner is kept inside the frame and at least [MIN_GAP] away from the two
-     * corners it shares an edge with, so the quad cannot fold through itself.
+     * For corner handles, only that corner moves; the other three are returned untouched.
+     * For edge handles, both adjacent corners translate together in parallel.
+     * Every moved corner is kept inside the frame and at least [MIN_GAP] away from the
+     * corners it opposes, so the quad cannot fold through itself.
      *
-     * A zero delta returns an equal quad — the reason a tap is now harmless.
-     *
-     * @param corner one of [TOP_LEFT], [TOP_RIGHT], [BOTTOM_RIGHT], [BOTTOM_LEFT];
-     *   any other value returns [quad] unchanged.
+     * A zero delta returns an equal quad — the reason a tap is harmless.
      */
-    fun move(quad: QuadCorners, corner: Int, dx: Float, dy: Float): QuadCorners =
-        when (corner) {
+    fun move(quad: QuadCorners, handle: Int, dx: Float, dy: Float): QuadCorners =
+        when (handle) {
             TOP_LEFT -> quad.copy(
                 topLeftX = clamp(snap(quad.topLeftX + dx), 0f, quad.topRightX - MIN_GAP),
                 topLeftY = clamp(snap(quad.topLeftY + dy), 0f, quad.bottomLeftY - MIN_GAP)
@@ -80,6 +83,110 @@ object CropHandles {
                 bottomLeftX = clamp(snap(quad.bottomLeftX + dx), 0f, quad.bottomRightX - MIN_GAP),
                 bottomLeftY = clamp(snap(quad.bottomLeftY + dy), quad.topLeftY + MIN_GAP, 1f)
             )
+
+            EDGE_TOP -> {
+                if (dx == 0f && dy == 0f) return quad
+                val maxDy = minOf(
+                    quad.bottomLeftY - MIN_GAP - quad.topLeftY,
+                    quad.bottomRightY - MIN_GAP - quad.topRightY
+                )
+                val minDy = -minOf(quad.topLeftY, quad.topRightY)
+                val effectiveDy = dy.coerceIn(minDy, maxDy)
+
+                val minDx = -minOf(quad.topLeftX, quad.topRightX)
+                val maxDx = 1f - maxOf(quad.topLeftX, quad.topRightX)
+                val effectiveDx = dx.coerceIn(minDx, maxDx)
+
+                val newTLX = clamp(snap(quad.topLeftX + effectiveDx), 0f, quad.topRightX + effectiveDx - MIN_GAP)
+                val newTLY = clamp(snap(quad.topLeftY + effectiveDy), 0f, quad.bottomLeftY - MIN_GAP)
+                val newTRX = clamp(snap(quad.topRightX + effectiveDx), newTLX + MIN_GAP, 1f)
+                val newTRY = clamp(snap(quad.topRightY + effectiveDy), 0f, quad.bottomRightY - MIN_GAP)
+
+                quad.copy(
+                    topLeftX = newTLX,
+                    topLeftY = newTLY,
+                    topRightX = newTRX,
+                    topRightY = newTRY
+                )
+            }
+
+            EDGE_BOTTOM -> {
+                if (dx == 0f && dy == 0f) return quad
+                val minDy = maxOf(
+                    quad.topLeftY + MIN_GAP - quad.bottomLeftY,
+                    quad.topRightY + MIN_GAP - quad.bottomRightY
+                )
+                val maxDy = 1f - maxOf(quad.bottomLeftY, quad.bottomRightY)
+                val effectiveDy = dy.coerceIn(minDy, maxDy)
+
+                val minDx = -minOf(quad.bottomLeftX, quad.bottomRightX)
+                val maxDx = 1f - maxOf(quad.bottomLeftX, quad.bottomRightX)
+                val effectiveDx = dx.coerceIn(minDx, maxDx)
+
+                val newBLX = clamp(snap(quad.bottomLeftX + effectiveDx), 0f, quad.bottomRightX + effectiveDx - MIN_GAP)
+                val newBLY = clamp(snap(quad.bottomLeftY + effectiveDy), quad.topLeftY + MIN_GAP, 1f)
+                val newBRX = clamp(snap(quad.bottomRightX + effectiveDx), newBLX + MIN_GAP, 1f)
+                val newBRY = clamp(snap(quad.bottomRightY + effectiveDy), quad.topRightY + MIN_GAP, 1f)
+
+                quad.copy(
+                    bottomLeftX = newBLX,
+                    bottomLeftY = newBLY,
+                    bottomRightX = newBRX,
+                    bottomRightY = newBRY
+                )
+            }
+
+            EDGE_LEFT -> {
+                if (dx == 0f && dy == 0f) return quad
+                val maxDx = minOf(
+                    quad.topRightX - MIN_GAP - quad.topLeftX,
+                    quad.bottomRightX - MIN_GAP - quad.bottomLeftX
+                )
+                val minDx = -minOf(quad.topLeftX, quad.bottomLeftX)
+                val effectiveDx = dx.coerceIn(minDx, maxDx)
+
+                val minDy = -minOf(quad.topLeftY, quad.bottomLeftY)
+                val maxDy = 1f - maxOf(quad.topLeftY, quad.bottomLeftY)
+                val effectiveDy = dy.coerceIn(minDy, maxDy)
+
+                val newTLX = clamp(snap(quad.topLeftX + effectiveDx), 0f, quad.topRightX - MIN_GAP)
+                val newTLY = clamp(snap(quad.topLeftY + effectiveDy), 0f, quad.bottomLeftY + effectiveDy - MIN_GAP)
+                val newBLX = clamp(snap(quad.bottomLeftX + effectiveDx), 0f, quad.bottomRightX - MIN_GAP)
+                val newBLY = clamp(snap(quad.bottomLeftY + effectiveDy), newTLY + MIN_GAP, 1f)
+
+                quad.copy(
+                    topLeftX = newTLX,
+                    topLeftY = newTLY,
+                    bottomLeftX = newBLX,
+                    bottomLeftY = newBLY
+                )
+            }
+
+            EDGE_RIGHT -> {
+                if (dx == 0f && dy == 0f) return quad
+                val minDx = maxOf(
+                    quad.topLeftX + MIN_GAP - quad.topRightX,
+                    quad.bottomLeftX + MIN_GAP - quad.bottomRightX
+                )
+                val maxDx = 1f - maxOf(quad.topRightX, quad.bottomRightX)
+                val effectiveDx = dx.coerceIn(minDx, maxDx)
+
+                val minDy = -minOf(quad.topRightY, quad.bottomRightY)
+                val maxDy = 1f - maxOf(quad.topRightY, quad.bottomRightY)
+                val effectiveDy = dy.coerceIn(minDy, maxDy)
+
+                val newTRX = clamp(snap(quad.topRightX + effectiveDx), quad.topLeftX + MIN_GAP, 1f)
+                val newTRY = clamp(snap(quad.topRightY + effectiveDy), 0f, quad.bottomRightY + effectiveDy - MIN_GAP)
+                val newBRX = clamp(snap(quad.bottomRightX + effectiveDx), quad.bottomLeftX + MIN_GAP, 1f)
+                val newBRY = clamp(snap(quad.bottomRightY + effectiveDy), newTRY + MIN_GAP, 1f)
+
+                quad.copy(
+                    topRightX = newTRX,
+                    topRightY = newTRY,
+                    bottomRightX = newBRX,
+                    bottomRightY = newBRY
+                )
+            }
 
             else -> quad
         }

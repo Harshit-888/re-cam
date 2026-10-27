@@ -54,6 +54,9 @@ mlkit-text-recognition = { module = "com.google.mlkit:text-recognition", version
 # Explicit: LibraryStore serialises the library to JSON itself
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
 
+# TensorFlow Lite for real auto border detection matching the original app
+tensorflow-lite = { module = "org.tensorflow:tensorflow-lite", version = "2.16.1" }
+
 [plugins]
 android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

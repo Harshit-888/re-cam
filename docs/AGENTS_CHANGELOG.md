@@ -4,6 +4,32 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 — Antigravity — Round 38: Real TFLite Auto Border Detection & 8-Handle CropView with 1.5x Loupe
+
+Reverse engineered original app implementation (`base.apk` -> `qt3.java`, `ht3.java`, `ax0.java`, `p60.java`, `assets/border_detect_224.tflite`):
+
+### 1. Auto Border Detection (ML + Geometric Hybrid Pipeline)
+- Extracted and bundled `assets/border_detect_224.tflite` (4.78 MB) from original APK into `app/src/main/assets/`.
+- Added `org.tensorflow:tensorflow-lite:2.16.1` dependency in `gradle/libs.versions.toml` and `app/build.gradle.kts` (resolving AGP 9.0 namespace collisions).
+- Created `util/MlBorderDetector.kt`:
+  - Bilinear resize to 224x224 RGB Float32 tensor.
+  - Runs TFLite interpreter with 4 threads.
+  - Extracts 4 corner keypoints normalized [0..1] and 4 corner confidence scores.
+  - Threshold `meanConfidence >= 0.5f` matching original app.
+- Updated `DocumentDetector.kt`:
+  - `detect(src: Bitmap, context: Context? = null): Detection`: runs ML detector when available, falling back gracefully to step geometry when ML confidence is low or in local JVM unit tests.
+  - Initialized in `MainActivity.onCreate()` via `MlBorderDetector.init(applicationContext)`.
+
+### 2. Manual Border Fixing (Original App 8-Handle UX & Magnifying Loupe)
+- Updated `util/CropHandles.kt`:
+  - Added edge midpoint handles `EDGE_TOP (10)`, `EDGE_RIGHT (11)`, `EDGE_BOTTOM (12)`, `EDGE_LEFT (13)` in addition to corner handles 0..3.
+  - Implemented edge dragging arithmetic: translates both adjacent corners of the dragged edge in parallel while clamping and respecting `MIN_GAP` and frame boundaries.
+  - Extended unit tests in `CropHandlesTest.kt` verifying edge dragging and boundary integrity.
+- Updated `ui/editor/CropAndFilterScreen.kt`:
+  - `BorderCanvas` now hit-tests both corners and edge midpoint handles.
+  - Renders 4 circular corner handles AND 4 rounded-rectangle edge midpoint handles matching `ax0.java`.
+  - Added `MagnifyingLoupe` composable: when any corner handle is dragged, displays a 1.75x magnified circular loupe (124.dp) with precision crosshair reticles, positioned at the top corner opposite the user's touch so the finger never obscures visibility.
+
 ## 2026-10-27 — Antigravity — Rounds 36 & 37 build verification
 
 Verified Rounds 36 & 37 changes from Arena.ai.

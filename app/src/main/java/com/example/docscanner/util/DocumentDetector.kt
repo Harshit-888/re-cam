@@ -77,31 +77,52 @@ object DocumentDetector {
      * @return the quad plus a confidence flag. Never throws; on any failure it
      *   returns [QuadCorners.FULL_FRAME] with `confident = false`.
      */
-    fun detect(src: Bitmap): Detection = try {
-        detectInternal(src)
+    fun detect(src: Bitmap, context: android.content.Context? = null): Detection = try {
+        detectInternal(src, context)
     } catch (_: Throwable) {
         failed()
     }
 
     /** Convenience for call sites that only need the corners. */
-    fun detectQuad(src: Bitmap): QuadCorners = detect(src).corners
+    fun detectQuad(src: Bitmap, context: android.content.Context? = null): QuadCorners =
+        detect(src, context).corners
 
     // ------------------------------------------------------------------ core
 
     private fun failed() = Detection(QuadCorners.FULL_FRAME, confident = false, sidesFound = 0)
 
-    private fun detectInternal(src: Bitmap): Detection {
+    private fun detectInternal(src: Bitmap, context: android.content.Context? = null): Detection {
         if (src.isRecycled) return failed()
-        val luma = lumaOf(src) ?: return failed()
-        val found = DocumentQuad.detect(luma.pixels, luma.width, luma.height) ?: return failed()
-        return Detection(
-            corners = found.corners,
-            // Zero sides is the featureless-frame answer: the page fills the frame,
-            // or there is no page. Both are correctly "nothing to crop", so it is
-            // not reported as a failure the user has to fix by hand.
-            confident = found.sidesFound >= 3 || found.sidesFound == 0,
-            sidesFound = found.sidesFound
-        )
+
+        // 1. Try on-device TFLite model from original app (assets/border_detect_224.tflite)
+        val mlResult = MlBorderDetector.detect(src, context)
+        if (mlResult != null && mlResult.confident) {
+            return Detection(
+                corners = mlResult.corners,
+                confident = true,
+                sidesFound = 4
+            )
+        }
+
+        // 2. Fall back to geometric step detector if ML confidence is low or unavailable
+        val luma = lumaOf(src) ?: return if (mlResult != null) {
+            Detection(mlResult.corners, confident = false, sidesFound = 4)
+        } else failed()
+
+        val found = DocumentQuad.detect(luma.pixels, luma.width, luma.height)
+        if (found != null) {
+            return Detection(
+                corners = found.corners,
+                confident = found.sidesFound >= 3 || found.sidesFound == 0,
+                sidesFound = found.sidesFound
+            )
+        }
+
+        if (mlResult != null) {
+            return Detection(mlResult.corners, confident = false, sidesFound = 4)
+        }
+
+        return failed()
     }
 
     /** Brightness of the working-resolution copy of [src], row-major. */

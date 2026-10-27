@@ -57,8 +57,8 @@ adding a changelog entry and updating every caller in the same commit.
 | `ImageProcessingUtils.applyEnhancements(src, filter, rotation, corners)` | fun           | warp → rotate → filter, in that order                                                            |
 | `DocumentFilters.apply(src, filter, maxDimension)`                       | fun           | The real filter pipeline. Returns `src` for ORIGINAL/failure — compare identity before recycling |
 | `DocumentFilters.applyPreview(src, filter)`                              | fun           | Same pipeline at preview resolution (WYSIWYG)                                                    |
-| `DocumentDetector.detect(bitmap)`                                        | fun           | **Preferred.** `Detection(corners, confident)` — boundary-scan + RANSAC; never throws            |
-| `DocumentDetector.detectQuad(bitmap)`                                    | fun           | Compatibility shim for `detect().corners`                                                        |
+| `DocumentDetector.detect(bitmap, context)`                               | fun           | **Preferred.** `Detection(corners, confident)` — TFLite ML model + geometric fallback; never throws |
+| `DocumentDetector.detectQuad(bitmap, context)`                           | fun           | Compatibility shim for `detect().corners`                                                        |
 | `DocumentFilters.stretchPoints(hist)`                                    | fun           | Clamped black/white points; the blow-out guard                                                   |
 | `PerspectiveWarp.detectQuad(bitmap)`                                     | fun           | Thin delegate to `DocumentDetector` (kept for compatibility)                                     |
 | `PerspectiveWarp.warp(src, corners)`                                     | fun           | `Matrix.setPolyToPoly` projective warp                                                           |

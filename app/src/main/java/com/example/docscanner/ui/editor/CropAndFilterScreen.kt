@@ -8,10 +8,15 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -333,7 +338,7 @@ fun CropAndFilterScreen(
         // re-crop a page the user was happy with.
         if (current.corners.isFullFrame) {
             isAutoDetecting = true
-            val detection = withContext(Dispatchers.Default) { DocumentDetector.detect(decoded) }
+            val detection = withContext(Dispatchers.Default) { DocumentDetector.detect(decoded, context) }
             isAutoDetecting = false
             corners = detection.corners
             detectionFailed = !detection.confident
@@ -389,7 +394,7 @@ fun CropAndFilterScreen(
                     // user backing out of the screen must not leave a handful of
                     // 720 px bitmaps waiting for the collector.
                     val detection = try {
-                        withContext(Dispatchers.Default) { DocumentDetector.detect(bitmap) }
+                        withContext(Dispatchers.Default) { DocumentDetector.detect(bitmap, context) }
                     } finally {
                         bitmap.recycle()
                     }
@@ -538,7 +543,7 @@ fun CropAndFilterScreen(
         if (!force && cornersEdited) return
         scope.launch {
             isAutoDetecting = true
-            val detection = withContext(Dispatchers.Default) { DocumentDetector.detect(source) }
+            val detection = withContext(Dispatchers.Default) { DocumentDetector.detect(source, context) }
             corners = detection.corners
             cornersEdited = false
             detectionFailed = !detection.confident
@@ -985,6 +990,8 @@ private fun BorderCanvas(
         // A state read in the draw phase invalidates draw alone, so a drag now
         // costs one canvas redraw per frame instead of a screen recomposition.
         val liveQuad = remember(corners) { mutableStateOf(corners) }
+        var activeCornerBeingDragged by remember { mutableStateOf<Int?>(null) }
+        var touchIsOnLeftSide by remember { mutableStateOf(false) }
 
         // Everything the gesture reads, read *through a state holder* rather than
         // captured by value.
@@ -1024,10 +1031,6 @@ private fun BorderCanvas(
                      * `screen = centre + pan + zoom · R(rotation) · (canvas − centre)`
                      */
                     fun screenToCanvas(point: Offset): Offset {
-                        // The *current* pan and zoom, not the ones from when this
-                        // block was created: after a pinch, hit-testing with the
-                        // old transform would miss every handle that is visible on
-                        // screen.
                         val panNow = latestPan.value
                         val zoomNow = latestZoom.value
                         val vx = point.x - centerX - panNow.x
@@ -1041,29 +1044,13 @@ private fun BorderCanvas(
                     }
 
                     /**
-                     * The handle under [point], in **canvas pixels**.
-                     *
-                     * Three things were wrong with the old test, and together they
-                     * are the "the dots jump when I drag" report:
-                     *
-                     * * it compared squared distances in *normalised* coordinates
-                     *   against `GRAB_THRESHOLD = 0.05f`, i.e. ~22 % of the frame
-                     *   per axis — so a touch anywhere near the middle of the page
-                     *   grabbed whichever handle happened to be closest, and a drag
-                     *   meant to nudge one corner threw another one across the page;
-                     * * normalising x by the width and y by the height made the
-                     *   region anisotropic, so on a portrait page the horizontal
-                     *   reach was far larger than the vertical one;
-                     * * the radius did not follow the zoom, while the handles are
-                     *   drawn at a *constant on-screen size* (they divide by the
-                     *   zoom), so zooming in shrank the area you could actually hit.
-                     *
-                     * Now: a fingertip-sized radius in screen dp, converted into
-                     * canvas pixels by dividing by the zoom, compared isotropically.
+                     * Hit-tests 8 handles: 4 corners (0..3) and 4 edge midpoints (10..13),
+                     * matching the original app's CropView (ax0.java / p60.java).
                      */
-                    fun grabCornerAt(point: Offset): Int? {
+                    fun grabHandleAt(point: Offset): Int? {
                         val canvasPoint = screenToCanvas(point)
-                        val tolerance = (HANDLE_GRAB_DP.dp.toPx() / latestZoom.value).let { it * it }
+                        val cornerTolerance = (HANDLE_GRAB_DP.dp.toPx() / latestZoom.value).let { it * it }
+                        val edgeTolerance = ((HANDLE_GRAB_DP.dp.toPx() * 1.35f) / latestZoom.value).let { it * it }
                         val quad = liveQuad.value
                         val xs = floatArrayOf(
                             quad.topLeftX, quad.topRightX, quad.bottomRightX, quad.bottomLeftX
@@ -1071,34 +1058,47 @@ private fun BorderCanvas(
                         val ys = floatArrayOf(
                             quad.topLeftY, quad.topRightY, quad.bottomRightY, quad.bottomLeftY
                         )
-                        var bestIndex = -1
-                        var bestDistance = Float.MAX_VALUE
+                        var bestCorner = -1
+                        var bestCornerDist = Float.MAX_VALUE
                         for (index in 0..3) {
                             val dx = canvasPoint.x - xs[index] * frameW
                             val dy = canvasPoint.y - ys[index] * frameH
                             val distance = dx * dx + dy * dy
-                            if (distance < bestDistance) {
-                                bestDistance = distance
-                                bestIndex = index
+                            if (distance < bestCornerDist) {
+                                bestCornerDist = distance
+                                bestCorner = index
                             }
                         }
-                        return if (bestDistance <= tolerance) bestIndex else null
+                        if (bestCornerDist <= cornerTolerance) return bestCorner
+
+                        // Check edge midpoints
+                        val edgeMids = listOf(
+                            CropHandles.EDGE_TOP to Offset((xs[0] + xs[1]) / 2f * frameW, (ys[0] + ys[1]) / 2f * frameH),
+                            CropHandles.EDGE_RIGHT to Offset((xs[1] + xs[2]) / 2f * frameW, (ys[1] + ys[2]) / 2f * frameH),
+                            CropHandles.EDGE_BOTTOM to Offset((xs[3] + xs[2]) / 2f * frameW, (ys[3] + ys[2]) / 2f * frameH),
+                            CropHandles.EDGE_LEFT to Offset((xs[0] + xs[3]) / 2f * frameW, (ys[0] + ys[3]) / 2f * frameH)
+                        )
+                        var bestEdge = -1
+                        var bestEdgeDist = Float.MAX_VALUE
+                        for ((handleId, mid) in edgeMids) {
+                            val dx = canvasPoint.x - mid.x
+                            val dy = canvasPoint.y - mid.y
+                            val dist = dx * dx + dy * dy
+                            if (dist < bestEdgeDist) {
+                                bestEdgeDist = dist
+                                bestEdge = handleId
+                            }
+                        }
+                        if (bestEdgeDist <= edgeTolerance) return bestEdge
+
+                        return null
                     }
 
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
-                        // The grabbed corner is a local of *this gesture*. It used
-                        // to be read from the composable's parameter, which the
-                        // gesture could not see update — so it was permanently
-                        // null and the handle never moved.
-                        val grabbed = grabCornerAt(down.position)
+                        val grabbed = grabHandleAt(down.position)
                         reportGrabbed.value(grabbed)
                         var multiTouch = false
-                        // A handle only starts moving once the finger has actually
-                        // travelled. Before this, the first pointer event of *any*
-                        // touch near a handle wrote the finger's position into that
-                        // corner — so a tap (or the start of a pan) teleported a
-                        // corner halfway across the page instead of doing nothing.
                         var dragging = false
                         val touchSlop = viewConfiguration.touchSlop
 
@@ -1108,9 +1108,8 @@ private fun BorderCanvas(
                             val pressed = event.changes.count { it.pressed }
 
                             if (pressed >= 2) {
-                                // Once a second finger lands the gesture stays a
-                                // pinch even if one lifts, so nothing jumps.
                                 multiTouch = true
+                                activeCornerBeingDragged = null
                                 reportGrabbed.value(null)
                                 val zoomChange = event.calculateZoom()
                                 val panChange = event.calculatePan()
@@ -1138,24 +1137,19 @@ private fun BorderCanvas(
                                         dragging = true
                                     }
                                     if (dragging) {
-                                        // **Relative** movement, not "put the corner
-                                        // under the finger".
-                                        //
-                                        // The corner keeps its grab offset, so the
-                                        // handle follows the finger 1:1 from wherever
-                                        // it already was instead of leaping to the
-                                        // touch point — and a slow drag no longer
-                                        // overshoots because the finger was a few dp
-                                        // off the handle when it landed. The delta is
-                                        // taken between two *canvas* positions, so it
-                                        // is already corrected for zoom and rotation.
+                                        if (grabbed in 0..3) {
+                                            activeCornerBeingDragged = grabbed
+                                            touchIsOnLeftSide = change.position.x <= size.width / 2f
+                                        } else {
+                                            activeCornerBeingDragged = null
+                                        }
                                         val from = screenToCanvas(change.previousPosition)
                                         val to = screenToCanvas(change.position)
                                         val dx = (to.x - from.x) / frameW
                                         val dy = (to.y - from.y) / frameH
                                         liveQuad.value = CropHandles.move(
                                             quad = liveQuad.value,
-                                            corner = grabbed,
+                                            handle = grabbed,
                                             dx = dx,
                                             dy = dy
                                         )
@@ -1175,15 +1169,8 @@ private fun BorderCanvas(
                             }
                         } while (event.changes.any { it.pressed })
 
-                        // One hop to the screen, at the end of the gesture. The
-                        // comparison matters: a tap that never moved must not mark
-                        // the page as hand-cropped.
+                        activeCornerBeingDragged = null
                         reportGrabbed.value(null)
-                        // `latestCorners`, not `corners`: the gesture block is
-                        // suspended across many recompositions and still sees the
-                        // composition it was created in — the very bug this file
-                        // documents. Comparing against a stale quad could report an
-                        // unchanged crop, or swallow a changed one.
                         val committed = latestCorners.value
                         if (liveQuad.value != committed) {
                             reportCorners.value(liveQuad.value)
@@ -1220,11 +1207,7 @@ private fun BorderCanvas(
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         val w = size.width
                         val h = size.height
-                        // Inside the zoom layer, so strokes divide by the scale to
-                        // keep a constant on-screen weight while zoomed.
                         val invZoom = 1f / zoom
-                        // Draw-phase read: this is what keeps a drag off the
-                        // recomposition path. `corners` itself is never read here.
                         val shown = liveQuad.value
                         val points = listOf(
                             Offset(shown.topLeftX * w, shown.topLeftY * h),
@@ -1245,6 +1228,8 @@ private fun BorderCanvas(
                             color = accents.handleFill,
                             style = Stroke(width = 2.5.dp.toPx() * invZoom)
                         )
+
+                        // 4 corner handles (circles)
                         points.forEachIndexed { index, point ->
                             val active = grabbedCorner == index
                             drawCircle(
@@ -1258,8 +1243,140 @@ private fun BorderCanvas(
                                 center = point
                             )
                         }
+
+                        // 4 edge midpoint handles (rounded rectangles matching original app ax0.java)
+                        val edgeHandles = listOf(
+                            CropHandles.EDGE_TOP to Offset((points[0].x + points[1].x) / 2f, (points[0].y + points[1].y) / 2f),
+                            CropHandles.EDGE_RIGHT to Offset((points[1].x + points[2].x) / 2f, (points[1].y + points[2].y) / 2f),
+                            CropHandles.EDGE_BOTTOM to Offset((points[3].x + points[2].x) / 2f, (points[3].y + points[2].y) / 2f),
+                            CropHandles.EDGE_LEFT to Offset((points[0].x + points[3].x) / 2f, (points[0].y + points[3].y) / 2f)
+                        )
+                        val edgeSize = 14.dp.toPx() * invZoom
+                        val cornerRad = 3.5.dp.toPx() * invZoom
+                        edgeHandles.forEach { (handleId, mid) ->
+                            val active = grabbedCorner == handleId
+                            val sz = if (active) edgeSize * 1.35f else edgeSize
+                            val half = sz / 2f
+                            val rect = androidx.compose.ui.geometry.Rect(mid.x - half, mid.y - half, mid.x + half, mid.y + half)
+                            drawRoundRect(
+                                color = accents.handleRing,
+                                topLeft = rect.topLeft,
+                                size = rect.size,
+                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRad, cornerRad)
+                            )
+                            val innerMargin = 2.dp.toPx() * invZoom
+                            drawRoundRect(
+                                color = accents.handleFill,
+                                topLeft = Offset(rect.left + innerMargin, rect.top + innerMargin),
+                                size = androidx.compose.ui.geometry.Size(rect.width - innerMargin * 2f, rect.height - innerMargin * 2f),
+                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRad * 0.7f, cornerRad * 0.7f)
+                            )
+                        }
                     }
                 }
+            }
+
+            // 1.5x Magnifying loupe with crosshair lines (matching original app's ax0.java:562-626)
+            val cornerDragging = activeCornerBeingDragged
+            if (cornerDragging != null && cornerDragging in 0..3) {
+                val q = liveQuad.value
+                val (normX, normY) = when (cornerDragging) {
+                    CropHandles.TOP_LEFT -> q.topLeftX to q.topLeftY
+                    CropHandles.TOP_RIGHT -> q.topRightX to q.topRightY
+                    CropHandles.BOTTOM_RIGHT -> q.bottomRightX to q.bottomRightY
+                    CropHandles.BOTTOM_LEFT -> q.bottomLeftX to q.bottomLeftY
+                    else -> 0f to 0f
+                }
+                MagnifyingLoupe(
+                    image = image,
+                    cornerNormX = normX,
+                    cornerNormY = normY,
+                    isTouchOnLeft = touchIsOnLeftSide
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 1.5x Magnifying loupe with crosshair lines (matching original app's ax0.java:562-626).
+ *
+ * Appears when any corner handle is being dragged. Positions itself at the top corner
+ * opposite the finger touch (top-right if finger is on left half, top-left if finger is
+ * on right half), so the user's hand never blocks visibility of the alignment.
+ */
+@Composable
+private fun MagnifyingLoupe(
+    image: ImageBitmap,
+    cornerNormX: Float,
+    cornerNormY: Float,
+    isTouchOnLeft: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val accents = LocalDocAccents.current
+    val loupeDiameter = 124.dp
+    val alignment = if (isTouchOnLeft) Alignment.TopEnd else Alignment.TopStart
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        contentAlignment = alignment
+    ) {
+        Surface(
+            modifier = Modifier.size(loupeDiameter),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceContainerLowest,
+            shadowElevation = 10.dp,
+            border = BorderStroke(3.dp, accents.handleFill)
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val cx = size.width / 2f
+                val cy = size.height / 2f
+                val zoomFactor = 1.75f
+
+                val imgW = image.width.toFloat()
+                val imgH = image.height.toFloat()
+
+                val cornerPxX = cornerNormX * imgW
+                val cornerPxY = cornerNormY * imgH
+
+                val ovalPath = Path().apply {
+                    addOval(androidx.compose.ui.geometry.Rect(0f, 0f, size.width, size.height))
+                }
+
+                clipPath(ovalPath) {
+                    withTransform({
+                        translate(
+                            left = cx - cornerPxX * zoomFactor,
+                            top = cy - cornerPxY * zoomFactor
+                        )
+                        scale(scaleX = zoomFactor, scaleY = zoomFactor, pivot = Offset.Zero)
+                    }) {
+                        drawImage(image)
+                    }
+                }
+
+                // Crosshairs
+                val strokeW = 1.5.dp.toPx()
+                drawLine(
+                    color = accents.handleFill,
+                    start = Offset(0f, cy),
+                    end = Offset(size.width, cy),
+                    strokeWidth = strokeW
+                )
+                drawLine(
+                    color = accents.handleFill,
+                    start = Offset(cx, 0f),
+                    end = Offset(cx, size.height),
+                    strokeWidth = strokeW
+                )
+                // Center reticle ring
+                drawCircle(
+                    color = accents.handleFill,
+                    radius = 4.dp.toPx(),
+                    style = Stroke(width = strokeW)
+                )
             }
         }
     }

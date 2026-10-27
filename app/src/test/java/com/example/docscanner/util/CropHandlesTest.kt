@@ -106,6 +106,33 @@ class CropHandlesTest {
         assertEquals(inset, CropHandles.move(inset, 7, 0.3f, 0.3f))
     }
 
+    @Test
+    fun `dragging edge moves both adjacent corners`() {
+        val movedTop = CropHandles.move(inset, CropHandles.EDGE_TOP, 0f, 0.05f)
+        assertEquals(inset.topLeftY + 0.05f, movedTop.topLeftY, 1e-5f)
+        assertEquals(inset.topRightY + 0.05f, movedTop.topRightY, 1e-5f)
+        assertEquals(inset.bottomLeftY, movedTop.bottomLeftY, 0f)
+        assertEquals(inset.bottomRightY, movedTop.bottomRightY, 0f)
+
+        val movedLeft = CropHandles.move(inset, CropHandles.EDGE_LEFT, 0.04f, 0f)
+        assertEquals(inset.topLeftX + 0.04f, movedLeft.topLeftX, 1e-5f)
+        assertEquals(inset.bottomLeftX + 0.04f, movedLeft.bottomLeftX, 1e-5f)
+        assertEquals(inset.topRightX, movedLeft.topRightX, 0f)
+        assertEquals(inset.bottomRightX, movedLeft.bottomRightX, 0f)
+    }
+
+    @Test
+    fun `edge dragging respects min gap and frame bounds`() {
+        val extremeTop = CropHandles.move(inset, CropHandles.EDGE_TOP, 0f, 5f)
+        assertTrue(CropHandles.isSound(extremeTop))
+        assertEquals(inset.bottomLeftY - CropHandles.MIN_GAP, extremeTop.topLeftY, 1e-5f)
+
+        val extremeLeft = CropHandles.move(inset, CropHandles.EDGE_LEFT, -5f, 0f)
+        assertTrue(CropHandles.isSound(extremeLeft))
+        assertEquals(0f, extremeLeft.topLeftX, 0f)
+        assertEquals(0f, extremeLeft.bottomLeftX, 0f)
+    }
+
     private fun QuadCorners.asList() = listOf(
         topLeftX, topLeftY, topRightX, topRightY,
         bottomRightX, bottomRightY, bottomLeftX, bottomLeftY

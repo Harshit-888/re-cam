@@ -69,7 +69,7 @@ android {
         unitTests.isReturnDefaultValues = true
         unitTests.all {
             it.maxParallelForks = 1
-            it.jvmArgs("-Xmx512m")
+            it.jvmArgs("-Xmx256m", "-XX:+UseParallelGC")
         }
     }
 }
@@ -177,4 +177,7 @@ dependencies {
 
   // Material Icons Extended
   implementation("androidx.compose.material:material-icons-extended")
+
+  // TensorFlow Lite (matches original app ML border detection)
+  implementation(libs.tensorflow.lite)
 }
