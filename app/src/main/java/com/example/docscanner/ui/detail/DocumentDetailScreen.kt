@@ -659,6 +659,12 @@ fun PageGridItem(
                 }
             }
 
+            // These four are the most-hit controls on the screen — rotate and crop get
+            // used on nearly every page — and they used to be constrained to 32 dp,
+            // which is the size of the *hit area*, not just the icon. `IconButton`
+            // already reserves 48 dp around its 40 dp state layer; the explicit
+            // `.size(32.dp)` was undoing that. Left unconstrained, the row is 16 dp
+            // taller and every target is a finger wide.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -666,18 +672,18 @@ fun PageGridItem(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onMoveBackward, enabled = canMoveBackward, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = onMoveBackward, enabled = canMoveBackward) {
                     Icon(Icons.Default.ArrowLeft, contentDescription = "Move page earlier", modifier = Modifier.size(18.dp))
                 }
-                IconButton(onClick = onRotateClick, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = onRotateClick) {
                     Icon(Icons.Default.RotateRight, contentDescription = "Rotate", modifier = Modifier.size(18.dp))
                 }
-                IconButton(onClick = onCropClick, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = onCropClick) {
                     Icon(Icons.Outlined.Crop, contentDescription = "Crop and filter", modifier = Modifier.size(18.dp))
                 }
                 Box {
-                    IconButton(onClick = { showMenu = true }, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "More", modifier = Modifier.size(18.dp))
+                    IconButton(onClick = { showMenu = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More", modifier = Modifier.size(20.dp))
                     }
                     DropdownMenu(
                         expanded = showMenu,

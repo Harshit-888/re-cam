@@ -5,7 +5,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -60,6 +59,7 @@ import com.example.docscanner.model.MarkupStroke
 import com.example.docscanner.model.MarkupTool
 import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.theme.DocShapes
+import com.example.docscanner.ui.common.TapTarget
 import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.MarkupRenderer
 import kotlinx.coroutines.Dispatchers
@@ -265,26 +265,32 @@ fun MarkupDialog(
                 }
 
                 if (tool != MarkupTool.WHITEOUT) {
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Spacer(Modifier.height(4.dp))
+                    // The visible dot is 30 dp; the *target* is 48 dp, because a
+                    // colour picker you miss by 6 dp is a colour you did not choose.
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         INK_COLORS.forEach { ink ->
-                            val selectedInk = ink == colorArgb
-                            Box(
-                                modifier = Modifier
-                                    .size(30.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(ink))
-                                    .border(
-                                        width = if (selectedInk) 3.dp else 1.dp,
-                                        color = if (selectedInk) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.outlineVariant
-                                        },
-                                        shape = CircleShape
-                                    )
-                                    .clickable { colorArgb = ink }
-                            )
+                            TapTarget(
+                                onClick = { colorArgb = ink },
+                                label = inkLabel(ink),
+                                selected = ink == colorArgb
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(30.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(ink))
+                                        .border(
+                                            width = if (ink == colorArgb) 3.dp else 1.dp,
+                                            color = if (ink == colorArgb) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.outlineVariant
+                                            },
+                                            shape = CircleShape
+                                        )
+                                )
+                            }
                         }
                     }
                 }
@@ -325,6 +331,18 @@ fun MarkupDialog(
             }
         }
     }
+}
+
+/**
+ * Spoken name for an ink colour. "Ink colour 1" would be useless to a screen-reader
+ * user; the name is what makes the set navigable.
+ */
+private fun inkLabel(argb: Int): String = when (argb) {
+    0xFF111111.toInt() -> "Black ink"
+    0xFFC62828.toInt() -> "Red ink"
+    0xFF1565C0.toInt() -> "Blue ink"
+    0xFFF9A825.toInt() -> "Yellow ink"
+    else -> "Ink colour"
 }
 
 /** Preview decode size: the page is shown a third of a phone wide at most. */

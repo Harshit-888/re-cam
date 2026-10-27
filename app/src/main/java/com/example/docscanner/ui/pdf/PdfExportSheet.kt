@@ -102,6 +102,9 @@ import kotlinx.coroutines.withContext
 /** How long a selection colour takes to settle. Short, because it follows a tap. */
 private const val CHOICE_MS = 140
 
+/** Exit is deliberately shorter than entry — see the accordion in the paper section. */
+private const val EXIT_MS = 100
+
 /**
  * The share sheet: everything about the PDF is decided here, in one place.
  *
@@ -461,7 +464,8 @@ fun PdfExportSheet(
                     AnimatedVisibility(
                         visible = protect,
                         enter = fadeIn(tween(CHOICE_MS)) + expandVertically(tween(CHOICE_MS)),
-                        exit = fadeOut(tween(CHOICE_MS)) + shrinkVertically(tween(CHOICE_MS))
+                        // Short exit, same reason as the paper section below.
+                        exit = fadeOut(tween(EXIT_MS)) + shrinkVertically(tween(EXIT_MS))
                     ) {
                         Column(Modifier.padding(bottom = 12.dp)) {
                             OutlinedTextField(
@@ -829,7 +833,10 @@ private fun PaperSizeChooser(
             AnimatedVisibility(
                 visible = expanded,
                 enter = fadeIn(tween(CHOICE_MS)) + expandVertically(tween(CHOICE_MS)),
-                exit = fadeOut(tween(CHOICE_MS)) + shrinkVertically(tween(CHOICE_MS))
+                // Leaving is faster than arriving. The system answering the user
+                // should be quicker than the system presenting something to them;
+                // equal timings make collapsing feel like it is being dragged out.
+                exit = fadeOut(tween(EXIT_MS)) + shrinkVertically(tween(EXIT_MS))
             ) {
                 Column(
                     modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),

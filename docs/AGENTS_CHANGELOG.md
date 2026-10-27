@@ -4,6 +4,17 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 — Arena.ai — Round 47: UI/UX audit against the design-engineering skills
+
+- **New `docs/UI_UX_REVIEW.md`** — full audit against `emil-design-eng`, `mobile-native`, `animation-performance` and `review-animations` from `github.com/Harshit-888/skills`, in the `| Before | After | Why |` table those skills require, including what was checked and deliberately left alone.
+- **New `ui/common/TapTarget.kt`** — a 48 dp pressable wrapper for visuals smaller than that (`label`, optional `selected` for radio semantics, the app's `pressScale`). Exists so the drawing never dictates the hit area again.
+- **`ui/detail/DocumentDetailScreen.kt`** — the four page actions (move back, rotate, crop, overflow) lost their `Modifier.size(32.dp)`: `IconButton` already reserves 48 dp, and the explicit size was shrinking the **touch target** to 32 dp. The row is 16 dp taller; `MoreVert` icon 18 → 20 dp to match its 40 dp state layer.
+- **`ui/editor/MarkupDialog.kt`** — ink swatches are now `TapTarget` (48 dp target, 30 dp dot) with spoken names ("Black ink", …) published as a radio group, instead of four unlabelled 30 dp clickable boxes.
+- **`ui/camera/ScannerCameraScreen.kt`** — finish button `initialScale`/`targetScale` 0.6 → 0.92. It appears after every capture, so a big pop reads as lag rather than delight.
+- **`ui/pdf/PdfExportSheet.kt`** — both accordions now close in 100 ms (`EXIT_MS`) against 140 ms to open; the system answering should be faster than the system presenting.
+- Reviewed and **not** changed, with reasons recorded in the doc: `RevealWhen` (animates width, but is unused), the height-animating paper accordion (a disclosure has to change height), the 900 ms linear shutter spinner (constant motion), the 420 ms splash, and per-item list entrance animations (already deliberately omitted).
+- No change to filters, page geometry, `PdfGenerator`/`PdfWriter` output, captured pixels, colours or typography. **Nothing compiled here**; the review says which findings are code-verified and which need hardware.
+
 ## 2026-10-27 — Arena.ai — Round 46: annotation — pen, marker, whiteout
 
 - **New `model/Markup.kt`** — `MarkupTool` (`PEN`, `HIGHLIGHTER`, `WHITEOUT`), `MarkupPoint`, `MarkupStroke` (normalised 0…1, width as a fraction of the page's **short side**) and `MarkupHistory` (undo, redo, and a single-step undoable Clear). All `@Serializable`, all plain Kotlin.

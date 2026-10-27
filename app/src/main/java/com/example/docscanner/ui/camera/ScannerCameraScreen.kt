@@ -926,8 +926,14 @@ fun ScannerCameraScreen(
                             // default `SpringSpec` does not provide for
                             // `EnterTransition`; a fast tween is the honest choice
                             // here and settles in the same 140 ms.
-                            enter = fadeIn(tween(120)) + scaleIn(tween(180), initialScale = 0.6f),
-                            exit = fadeOut(tween(100)) + scaleOut(tween(140), targetScale = 0.6f)
+                            // 0.92, not 0.6. This button appears after *every*
+                            // capture — tens of times in a session, not a rare
+                            // celebration — and a big pop on something you see that
+                            // often stops reading as delight and starts reading as
+                            // lag. A barely-there scale still stops it appearing
+                            // from nothing, which is the only job it has.
+                            enter = fadeIn(tween(120)) + scaleIn(tween(180), initialScale = 0.92f),
+                            exit = fadeOut(tween(100)) + scaleOut(tween(140), targetScale = 0.92f)
                         ) {
                             FinishButton(onClick = { commitScan() })
                         }

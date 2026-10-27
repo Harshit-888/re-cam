@@ -1407,6 +1407,23 @@ change pages, which is exactly the Round 37 bug.
 - **Do not remove `PageStrip` from one stage.** See above.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
 
+## 6aj. Round 47: UI/UX audit (Arena, 2026-10-27)
+
+**New:** `docs/UI_UX_REVIEW.md`, `ui/common/TapTarget.kt`.
+**Edited:** `ui/detail/DocumentDetailScreen.kt`, `ui/editor/MarkupDialog.kt`,
+`ui/camera/ScannerCameraScreen.kt`, `ui/pdf/PdfExportSheet.kt`.
+
+- **`TapTarget(onClick, label, selected, size)`** is the way to make a small visual
+  pressable from here on. Do not put `clickable` directly on a drawing under 48 dp —
+  that is exactly the bug this round fixed, in two places.
+- Anything that sizes an `IconButton` below 48 dp shrinks its **touch target**, not
+  just its visual: `IconButton` already applies `minimumInteractiveComponentSize` and
+  an explicit `size()` overrides it. Leave the modifier off.
+- Motion constants stay in `theme/Motion.kt`; `PdfExportSheet` gained a local
+  `EXIT_MS = 100` because its accordions are sheet-local. Exits are faster than
+  enters throughout — keep it that way in new code.
+- Nothing visual changed outside these four files.
+
 ## 6ai. Round 46: annotation (Arena, 2026-10-27)
 
 **New:** `model/Markup.kt`, `util/MarkupRenderer.kt`, `ui/editor/MarkupDialog.kt`,
