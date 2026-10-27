@@ -4,6 +4,18 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 — Antigravity — Master Reverse Engineering Specification: all 34 activities, complete SQLite schema, native libraries, models & algorithms (`docs/ORIGINAL_APP_FULL_SPECIFICATION.md`)
+
+- Reverse-engineered the complete original APK (`base.apk` + `split_config.arm64_v8a.apk` + all 4 dex tables) using REA, JADX v1.5.6, SQLite inspector, and Ghidra.
+- Created `docs/ORIGINAL_APP_FULL_SPECIFICATION.md` detailing:
+  1. All 34 original activities, 2 content providers, and services mapped to clean-room Compose screens.
+  2. Master SQLite database schema (`document`, `page`, `paper_size`, `document_group`, `sync_history`, etc.) with full column definitions and trash lifecycle (`i_date_trash`).
+  3. All 50 international paper sizes pre-calibrated in points (`A0..A8`, `B0..B10`, `Letter`, `Legal`, `Tabloid`, `Executive`, `Business Card`).
+  4. Complete filter mathematical models and enums (`cv3` enhance types, `yu3` color types).
+  5. Complete camera and capture workflows (`CameraXActivity`, `PaperBorderView` states `CLEAR`/`LOOKUP`/`PAUSE`, IOU >= 0.95 auto-snap).
+  6. Complete editor blueprints for Background Eraser (`CleanupBgView`), Markup (`MarkupView`), and Digital Signature Pad (`SignaturePadActivity`).
+  7. Storage, template naming (`DocumentNameSettingActivity`), and ZIP backup/restore mechanics (`MyBackupActivity`).
+
 ## 2026-10-27 — Antigravity — Build & Configuration Cache fix for VerifyBorderModelTask; full verification of Rounds 38 & 39
 
 - `app/build.gradle.kts`: Converted `verifyBorderModel` task from ad-hoc script closure into `abstract class VerifyBorderModelTask : DefaultTask()` with `@get:InputFile abstract val modelFile: RegularFileProperty` and `@get:Input abstract val expectedSha256: Property<String>`, and imported `java.security.MessageDigest`. Resolves Gradle configuration-cache error `cannot serialize Gradle script object references`.
