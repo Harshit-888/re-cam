@@ -2,6 +2,7 @@ package com.example.docscanner.ui.settings
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -48,6 +49,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,7 +73,10 @@ import com.example.docscanner.model.PaperSize
 import com.example.docscanner.model.ThemeMode
 import com.example.docscanner.util.NativeSearch
 import com.example.docscanner.util.PerfTrace
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 /**
  * Preferences screen.
@@ -91,7 +96,11 @@ import java.util.Locale
 fun SettingsScreen(
     settings: AppSettings,
     onSettingsChange: ((AppSettings) -> AppSettings) -> Unit,
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    /** Writes a backup to [Uri] and returns the message to show. */
+    onExportBackup: suspend (Uri) -> String = { "Backup is unavailable in this build." },
+    /** Restores the backup at [Uri] and returns the message to show. */
+    onImportBackup: suspend (Uri) -> String = { "Restore is unavailable in this build." }
 ) {
     val context = LocalContext.current
     var activeDialog by remember { mutableStateOf<SettingsDialog?>(null) }
@@ -99,6 +108,39 @@ fun SettingsScreen(
     // installed and these flows are never written.
     val lastGesture by PerfTrace.lastGesture.collectAsState()
     val lastWindow by PerfTrace.lastWindow.collectAsState()
+
+    // ---------------------------------------------------------------- backup
+    //
+    // Both directions are SAF: the app never asks for storage permission to read or
+    // write a file the user picked, and the archive can live in Drive, on an SD card
+    // or anywhere else the picker can reach.
+    val scope = rememberCoroutineScope()
+    var backupBusy by remember { mutableStateOf(false) }
+    var pendingRestore by remember { mutableStateOf<Uri?>(null) }
+
+    fun runTransfer(uri: Uri, restore: Boolean) {
+        if (backupBusy) return
+        backupBusy = true
+        scope.launch {
+            val message = try {
+                if (restore) onImportBackup(uri) else onExportBackup(uri)
+            } catch (t: Throwable) {
+                (if (restore) "Restore failed: " else "Backup failed: ") +
+                    (t.message ?: t.javaClass.simpleName)
+            } finally {
+                backupBusy = false
+            }
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri -> if (uri != null) runTransfer(uri, restore = false) }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) pendingRestore = uri }
 
     // Saving to the public Pictures folder is only permission-free from Android 10
     // (scoped storage). On 8/9 the app needs WRITE_EXTERNAL_STORAGE, so ask at the
@@ -279,6 +321,42 @@ fun SettingsScreen(
             // them. "Run adb and paste the line" is a request that does not survive
             // contact with a phone; this does. Release builds never render it —
             // `PerfTrace` is not even installed there.
+            // --------------------------------------------------------- library
+            item { SectionDivider() }
+            item { SectionHeader("Library") }
+            item {
+                SettingsRow(
+                    title = "Back up library",
+                    subtitle = when {
+                        backupBusy -> "Working…"
+                        else -> "One .zip: every document, page and signature"
+                    },
+                    onClick = if (backupBusy) {
+                        null
+                    } else {
+                        {
+                            val stamp = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+                            exportLauncher.launch("docscanner-backup-$stamp.zip")
+                        }
+                    }
+                )
+            }
+            item {
+                SettingsRow(
+                    title = "Restore from backup",
+                    subtitle = "Merges — scans made after the backup are kept",
+                    onClick = if (backupBusy) {
+                        null
+                    } else {
+                        {
+                            importLauncher.launch(
+                                arrayOf("application/zip", "application/octet-stream")
+                            )
+                        }
+                    }
+                )
+            }
+
             if (PerfTrace.isEnabled) {
                 item { SectionDivider() }
                 item { SectionHeader("Performance (debug)") }
@@ -331,6 +409,41 @@ fun SettingsScreen(
 
             item { Spacer(modifier = Modifier.height(24.dp)) }
         }
+    }
+
+    // Restore is the one action here that can overwrite pages the user already has,
+    // so it is confirmed, with the merge rule stated plainly. The backup file itself
+    // has already been picked; this is the last chance to back out.
+    pendingRestore?.let { uri ->
+        AlertDialog(
+            onDismissRequest = { pendingRestore = null },
+            shape = DocShapes.dialog,
+            title = {
+                Text(
+                    "Restore from backup?",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                Text(
+                    "Documents in the backup are restored. Anything you have scanned " +
+                        "since is kept — restore merges, it does not replace.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingRestore = null
+                        runTransfer(uri, restore = true)
+                    }
+                ) { Text("Restore") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRestore = null }) { Text("Cancel") }
+            }
+        )
     }
 
     when (activeDialog) {

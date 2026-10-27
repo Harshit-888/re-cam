@@ -1407,6 +1407,27 @@ change pages, which is exactly the Round 37 bug.
 - **Do not remove `PageStrip` from one stage.** See above.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
 
+## 6af. Round 43: backup & restore (Arena, 2026-10-27)
+
+**New:** `util/BackupArchive.kt`, `test/.../util/BackupArchiveTest.kt`.
+**Edited:** `data/ScannerRepository.kt` (three new methods, nothing changed),
+`ui/settings/SettingsScreen.kt` (two new parameters with defaults, one new section),
+`Navigation.kt` (wires the two callbacks).
+
+- `SettingsScreen` gained `onExportBackup: suspend (Uri) -> String` and
+  `onImportBackup: suspend (Uri) -> String`, both defaulted, so any other call site
+  still compiles.
+- `ScannerRepository.exportBackup(uri)` / `importBackup(uri)` are **suspend** and run on
+  IO. Import merges; it never deletes a local-only document.
+- Archive format: `library.json` + `pages/*` + `signatures/*` + `backup.json`
+  (`format`/`formatVersion`/`schemaVersion`/files with SHA-256). If you change
+  `LibrarySnapshot`, bump `BackupArchive.FORMAT_VERSION` only if the *archive* layout
+  changes — a schema change alone is covered by `schemaVersion`.
+- App settings are not backed up. If that is wanted later it belongs in a separate
+  entry, not in `library.json`.
+- Nothing has been compiled here. The core is host-testable:
+  `./gradlew testDebugUnitTest --tests '*BackupArchiveTest'`.
+
 ## 6ae. Round 42: sixteen paper presets, grouped (Arena, 2026-10-27)
 
 **Touched:** `model/Models.kt`, `ui/pdf/PdfExportSheet.kt`, new

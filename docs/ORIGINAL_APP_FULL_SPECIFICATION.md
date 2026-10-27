@@ -331,7 +331,7 @@ The original app implements 5 enhancement filters via `cv3` and `yu3` enums:
 | **Markup & Annotation** | 60% Parity (Signature dialog, Watermark dialog live) | Build `MarkupCanvas.kt` |
 | **Background Eraser** | 0% Parity (Reverse engineering complete) | Build `CleanupBgCanvas.kt` |
 | **ID Card Scan Mode** | 0% Parity (Reverse engineering complete) | Add ID Card dual-capture mode |
-| **Backup / Restore** | 0% Parity (Reverse engineering complete) | Build `BackupRestoreManager.kt` |
+| **Backup / Restore** | Implemented in Round 43 (`util/BackupArchive.kt`) | Zip of library + pages, validated restore, merges rather than replaces |
 
 ---
 
@@ -397,7 +397,8 @@ Rust kernels, dashboard/library, PDF export (8 sizes, 4 margins), trash.
   removed, detection kept off the camera screen).
 - The `PaperBorderView` viewfinder tracker and the IOU ≥ 0.95 auto-shutter. Also a
   deliberate decision, not an oversight.
-- Markup & annotation canvas, Background Eraser, Backup/Restore, Cloud Sync.
+- Markup & annotation canvas, Background Eraser, Cloud Sync. (Backup/Restore closed in
+  Round 43 — `util/BackupArchive.kt`, see the changelog.)
 - 15 visible paper sizes (see 9.2).
 
 ### 9.4 §7.1 naming

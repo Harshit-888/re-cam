@@ -4,6 +4,17 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 — Arena.ai — Round 43: backup and restore (the library, as one zip)
+
+- **New `util/BackupArchive.kt`** — no Android imports, so all of it is unit-tested on the host. `create()` writes `library.json` + every referenced image + `backup.json` (format, format version, schema version, entry list with size and SHA-256 of each). `inspect()` reads and validates the manifest without extracting. `restore()` validates, extracts to a **staging directory**, and returns a `RestoredBackup` whose `commit()`/`discard()` are the only things that touch the live library. `merge()` unions two snapshots by id, backup winning collisions.
+- **Restore refuses anything that is not exactly what it wrote**: entry paths must match `pages/<name>` / `signatures/<name>` (no traversal, no nesting, no absolute paths), entries must be declared in the manifest and vice versa, sizes and SHA-256 must match, `library.json` must exist, caps are 20 000 entries / 256 MB per file / 2 GB total (checked against bytes actually read, not the zip header's claim), and a newer `format` or `schemaVersion` is rejected.
+- **Absolute paths are rewritten.** `ScannedPage` stores absolute paths, which are meaningless on another install; the archive stores `pages/<file>`, and restore maps it back under the current directories.
+- **`data/ScannerRepository.kt`**: `snapshotNow()`, `exportBackup(Uri)`, `importBackup(Uri)`. Import copies the picked stream to the cache, restores into staging, merges into the in-memory library, commits the files, then publishes the flows and writes `library.json` — **pixels first, then library**, so no page can appear before its file exists. A failure at any point leaves the live library untouched.
+- **`ui/settings/SettingsScreen.kt`**: new "Library" section with *Back up library* and *Restore from backup*, both through SAF (`CreateDocument("application/zip")` / `OpenDocument`), a busy state, and a confirmation dialog on restore that states the merge rule. Restore still needs no storage permission.
+- Restore is a **merge, not a replace**: documents and folders that only exist locally are kept.
+- **Not in the archive, deliberately:** app settings (theme, accent, paper size…). They are this install's preferences, not the user's scans, and restoring a stranger's accent colour is a surprise, not a feature.
+- **New `app/src/test/java/com/example/docscanner/util/BackupArchiveTest.kt`** (9 tests): round trip incl. commit and staging cleanup, a page reusing one file is packed once, missing image counted rather than dropped, discard writes nothing, and refusal of traversal / undeclared entry / checksum mismatch / declared-but-absent file / newer format / foreign format, plus merge semantics.
+
 ## 2026-10-27 — Arena.ai — Round 42: the paper chooser now offers what the original offers
 
 - **`model/Models.kt` — `PaperSize` goes from 8 entries to 16**, matching the fifteen rows the original marks `b_is_show_in_select_list = 1` in `app.db`, with its stored point values and order, plus our own `RECEIPT`. New entries: `B4`, `B5`, `LEDGER`, `TABLOID`, `ANSI_C`, `ANSI_D`, `ANSI_E`, `FOLIO`. New `group` property and `PaperGroup` enum (`ISO_A`, `ISO_B`, `AMERICAN`, `OTHER`), mirroring `paper_size_group`; `PaperSize.byGroup` gives declaration order grouped for rendering.

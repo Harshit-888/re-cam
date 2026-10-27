@@ -1,15 +1,21 @@
 package com.example.docscanner.data
 
 import android.content.Context
+import android.net.Uri
 import com.example.docscanner.model.AppSettings
 import com.example.docscanner.model.Document
 import com.example.docscanner.model.Folder
 import com.example.docscanner.model.LibrarySnapshot
 import com.example.docscanner.model.QuadCorners
 import com.example.docscanner.model.ScannedPage
+import com.example.docscanner.util.BackupArchive
 import com.example.docscanner.util.ImageStore
+import com.example.docscanner.util.PageImageLoader
 import com.example.docscanner.util.OcrEngine
 import com.example.docscanner.util.StartupWork
+import com.example.docscanner.util.ThumbnailStore
+import java.io.File
+import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +26,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -611,6 +618,96 @@ class ScannerRepository(context: Context) {
             }
         }
         return paths
+    }
+
+    // ------------------------------------------------------- backup & restore
+
+    /** The library exactly as it stands, without waiting for the write debounce. */
+    fun snapshotNow(): LibrarySnapshot = LibrarySnapshot(
+        schemaVersion = LibraryStore.CURRENT_SCHEMA_VERSION,
+        folders = _folders.value,
+        documents = _documents.value
+    )
+
+    /**
+     * Writes the library to [uri] as a `.zip` (see [BackupArchive]).
+     *
+     * Runs on IO; the caller is a coroutine started from the Settings screen. A
+     * failure throws — the UI turns it into a message. Writing a *partial* archive
+     * and reporting success is the one outcome that must not happen, so nothing here
+     * swallows an exception.
+     */
+    suspend fun exportBackup(uri: Uri): BackupArchive.Summary = withContext(Dispatchers.IO) {
+        val snapshot = snapshotNow()
+        val out = appContext.contentResolver.openOutputStream(uri)
+            ?: throw IOException("Could not open the chosen file for writing")
+        out.use { stream ->
+            BackupArchive.create(
+                output = stream,
+                snapshot = snapshot,
+                pagesDir = ImageStore.pagesDir(appContext),
+                signaturesDir = ImageStore.signaturesDir(appContext)
+            )
+        }
+    }
+
+    /**
+     * Restores a `.zip` backup from [uri], **merged** into the current library rather
+     * than replacing it: a backup taken last week knows nothing about this morning's
+     * scans. Documents and folders that only exist locally are kept; ones the backup
+     * also has take the backup's version.
+     *
+     * The archive is copied to the cache first, validated and extracted to a staging
+     * directory, and only then applied — so a truncated download or a corrupted zip
+     * fails without touching a single file of the live library.
+     */
+    suspend fun importBackup(uri: Uri): BackupArchive.Summary = withContext(Dispatchers.IO) {
+        val input = appContext.contentResolver.openInputStream(uri)
+            ?: throw IOException("Could not open the chosen file")
+        val stagedArchive = File(appContext.cacheDir, "restore-${System.nanoTime()}.zip")
+        try {
+            input.use { source ->
+                stagedArchive.outputStream().use { target -> source.copyTo(target) }
+            }
+            val restored = BackupArchive.restore(
+                archive = stagedArchive,
+                pagesDir = ImageStore.pagesDir(appContext),
+                signaturesDir = ImageStore.signaturesDir(appContext),
+                stagingParent = appContext.filesDir
+            )
+            val merged = BackupArchive.merge(snapshotNow(), restored.snapshot)
+            var committed = false
+            try {
+                restored.commit()
+                committed = true
+                // Publish only after the pixels are in place: a page that appears in
+                // the library before its file exists renders as a blank thumbnail and
+                // a failed export.
+                _folders.value = merged.folders
+                _documents.value = merged.documents
+                store.writeNowBlocking(merged)
+
+                // Thumbnails are keyed by path *and* the file's length and mtime, so a
+                // changed file produces a new key — but the memo of that key is keyed
+                // by path alone, and it was computed against the file this restore just
+                // overwrote. Forget those, and drop decoded bitmaps still in memory.
+                restored.snapshot.documents.forEach { document ->
+                    document.pages.forEach { page ->
+                        ThumbnailStore.invalidate(page.imageUri)
+                        ThumbnailStore.invalidate(page.originalImageUri)
+                        ThumbnailStore.invalidate(page.signatureOverlayUri)
+                    }
+                }
+                PageImageLoader.clear()
+                restored.summary
+            } finally {
+                // A failed move leaves staged files behind; the live library is
+                // untouched either way, so this only reclaims space.
+                if (!committed) restored.discard()
+            }
+        } finally {
+            stagedArchive.delete()
+        }
     }
 
     // -------------------------------------------------------- lifecycle
