@@ -1405,6 +1405,47 @@ change pages, which is exactly the Round 37 bug.
 - **Do not remove `PageStrip` from one stage.** See above.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
 
+## 6aa. Round 38 review: ML border detection must be able to load, and must be observable (Arena, 2026-10-27)
+
+### Two rules that now hold
+
+1. **`androidResources { noCompress += "tflite" }` is mandatory** for any model loaded
+   through `AssetManager.openFd()` + `FileChannel.map()` (i.e. `MlBorderDetector`). aapt2
+   deflates `.tflite` by default, `openFd` then throws, and the detector falls back to the
+   Kotlin geometry pass with no visible difference. Added in `app/build.gradle.kts` with
+   the reason spelled out. The same applies to any model added later.
+2. **`MlBorderDetector` logs under `DocScannerPerf`** (debug only, `PerfTrace.isEnabled`):
+   the model's real input/output tensor names and shapes on load, one line per detection
+   (`accepted` / `low confidence` with the mean score and the quad), and one line per
+   failure class with the exception message. If a device test looks like "auto-detect
+   didn't change", those three lines are the answer; without them the ML path and the
+   geometry path are indistinguishable.
+
+### Do not undo
+
+- **Do not remove `noCompress += "tflite"`.** It is the difference between the model
+  loading and not. (And do not "fix" a load failure by switching to `assets.open()` +
+  `readBytes()`: that copies 4.7 MB through the heap on every process start.)
+- **Do not re-add a permanent failure latch.** A failed load is retried on the next
+  detection; only the log line is throttled. One transient failure must not disable ML
+  for the session.
+- **Do not assume `StatefulPartitionedCall:0/1`.** The names and the `[1,1,4,2]` /
+  `[1,1,4]` output shapes are hard-coded from `ht3.java`; the `[ml] model loaded` line
+  prints what the file actually has. If they differ, `detect()` needs the real names, not
+  a bigger `catch`.
+- **A confident ML quad bypasses `DocumentQuad.validate`.** It goes into `Detection`
+  unvalidated (area ratio, side ratios, ordering). Check real pages before trusting it.
+
+### Known-open, needs a decision, not code
+
+The 4.78 MB `app/src/main/assets/border_detect_224.tflite` is **committed**, against
+`AGENTS.md` §2.5, `.gitignore` and §6i (ML assets are produced, never committed; the
+ignored location is `assets/models/`). Left in place on purpose: removing it deletes the
+file from every checkout, including the one being tested. To comply —
+`git rm --cached app/src/main/assets/border_detect_224.tflite`, ignore
+`app/src/main/assets/*.tflite`, keep the file on disk, and record its source.
+sha256: `578f53b6c90ee9bc14b6ba350c3d261ffd6001d3e9b716a7ad571b6a4bdd1972`.
+
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-27 (`./gradlew testDebugUnitTest assembleDebug` passed — Rounds 36 & 37).

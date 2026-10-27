@@ -65,6 +65,22 @@ android {
       }
     }
 
+    // `.tflite` must not be deflated.
+    //
+    // `MlBorderDetector` memory-maps the model with `AssetManager.openFd()` and
+    // `FileChannel.map()`, which is the only way to load a 4.7 MB model without
+    // copying it through the heap. `openFd` throws
+    // `FileNotFoundException: This file can not be opened as a file descriptor;
+    // it is probably compressed` for anything aapt2 deflated — and `.tflite` is
+    // not in aapt2's default no-compress list. Without this line the model never
+    // loads and the detector silently falls back to the Kotlin geometry pass,
+    // which looks exactly like "the ML feature does nothing". See
+    // docs/AGENT_COORDINATION.md §6i, which asked for this when the asset was
+    // first proposed.
+    androidResources {
+      noCompress += "tflite"
+    }
+
     testOptions {
         unitTests.isReturnDefaultValues = true
         unitTests.all {

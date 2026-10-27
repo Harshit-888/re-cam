@@ -4,6 +4,72 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 — Arena.ai — Round 38 review: the ML border path now loads, and says when it doesn't
+
+A review of Round 38 before a device test. Two code changes, both about the ML path being
+able to work at all (and being visible when it doesn't). **No change to the 8-handle
+canvas, the loupe, `CropHandles` arithmetic or the geometry detector.**
+
+### 1. `.tflite` must not be deflated — `app/build.gradle.kts`
+
+`MlBorderDetector` loads the model with `AssetManager.openFd()` + `FileChannel.map()`
+(the only sane way to use a 4.7 MB model without copying it through the heap). aapt2
+deflates anything not in its no-compress list, and `.tflite` is not in it, so `openFd`
+throws `FileNotFoundException: … it is probably compressed` — the detector then falls
+back to the Kotlin geometry pass, silently, and the round's headline feature looks like
+"nothing happened". `docs/AGENT_COORDINATION.md` §6i had already recorded that this line
+would be needed when the asset landed.
+
+```kotlin
+androidResources {
+  noCompress += "tflite"
+}
+```
+
+**If you add another model, it needs the same treatment** (or `useLegacyPackaging`, which
+costs an extraction at install time instead).
+
+### 2. `util/MlBorderDetector.kt` is no longer silent
+
+Every failure path returned `null` into the geometry fallback, which is correct
+behaviour but makes a broken model indistinguishable from a working one on a device.
+Now, under the `DocScannerPerf` tag and only when `PerfTrace.isEnabled` (debug):
+
+- `[ml] model loaded · input [1,224,224,3] FLOAT32 · outputs 0:'…'[…]` — the model's
+  **real** tensor names and shapes. The names in `detect()` (`StatefulPartitionedCall:0/1`)
+  are hard-coded from `ht3.java`; if that is wrong for this file, every inference throws,
+  and this line is how you find out.
+- `[ml] accepted|low confidence mean=0.83 quad=(…)→(…)` — one per detection, so a page
+  whose crop came from the model is distinguishable from one that came from the geometry
+  pass.
+- `[ml] model … could not be loaded: …` and `[ml] inference failed, falling back to
+  geometry: …` — once each, with the exception message.
+
+Also removed: the `isInitialized` latch that made **one** failed load permanent for the
+process. A transient failure (a low-memory moment while mapping 4.7 MB) used to disable
+ML for the rest of the session with nothing recorded anywhere.
+
+### Open, and deliberately not changed here
+
+- **The 4.78 MB model is committed** at `app/src/main/assets/border_detect_224.tflite`.
+  `AGENTS.md` §2.5 and `.gitignore` say ML assets are *produced*, never committed
+  (`assets/models/` is ignored for exactly this reason). It is left in place because
+  removing it would remove the file from every checkout — including the one this round is
+  about to be tested from — and the feature is the point of the round. To comply:
+  `git rm --cached app/src/main/assets/border_detect_224.tflite`, add
+  `app/src/main/assets/*.tflite` to `.gitignore`, keep the file on disk, and record the
+  provisioning source + checksum. sha256 of the current file:
+  `578f53b6c90ee9bc14b6ba350c3d261ffd6001d3e9b716a7ad571b6a4bdd1972`.
+- **`MlBorderDetector` does not validate `QuadCorners`.** A confident ML quad goes straight
+  into `Detection` and therefore into the warp, bypassing `DocumentQuad.validate` (area
+  ratio, side ratios, ordering). Worth a sanity check on real pages before trusting it.
+- **`gradle.properties` / `testOptions` heap was cut** (`-Xmx1536m` → `1280m`, unit tests
+  `512m` → `256m`). If `testDebugUnitTest` dies with `OutOfMemoryError`, that is why.
+- **APK size**: TFLite ships native libraries for four ABIs plus this asset — expect
+  roughly +15 MB on a 66 MB APK. No ABI split / `abiFilters` is configured, so all four
+  architectures are packaged even though the Rust kernels only build for the ones the
+  toolchain produced.
+
 ## 2026-10-27 — Antigravity — Round 38: Real TFLite Auto Border Detection & 8-Handle CropView with 1.5x Loupe
 
 Reverse engineered original app implementation (`base.apk` -> `qt3.java`, `ht3.java`, `ax0.java`, `p60.java`, `assets/border_detect_224.tflite`):

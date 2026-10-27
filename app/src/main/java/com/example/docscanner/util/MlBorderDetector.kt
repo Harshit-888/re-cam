@@ -2,6 +2,7 @@ package com.example.docscanner.util
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.util.Log
 import com.example.docscanner.model.QuadCorners
 import org.tensorflow.lite.Interpreter
 import java.io.FileInputStream
@@ -18,15 +19,30 @@ import java.nio.channels.FileChannel
  * heuristic / full-frame contour detection.
  */
 object MlBorderDetector {
+    private const val TAG = "DocScannerPerf"
     private const val MODEL_FILE = "border_detect_224.tflite"
     private const val INPUT_SIZE = 224
+
+    /**
+     * Why this object logs.
+     *
+     * Every failure path here returns `null` and lets `DocumentDetector` fall back to
+     * the Kotlin geometry pass — which is the right behaviour, but it means a broken
+     * model looks *identical* to a working one until you compare quads by eye. A
+     * device test then cannot tell "the model found nothing" from "the model never
+     * loaded". The two lines this object emits (once on load, once per failed
+     * inference, plus a summary per detection) answer that question from
+     * `adb logcat -s DocScannerPerf`. Debug builds only: [PerfTrace.isEnabled] is
+     * false in release.
+     */
+    private var reportedLoadFailure = false
+    private var reportedRunFailure = false
 
     @Volatile
     var appContext: Context? = null
 
     @Volatile
     private var interpreter: Interpreter? = null
-    private var isInitialized = false
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -35,7 +51,10 @@ object MlBorderDetector {
     @Synchronized
     private fun getOrInit(context: Context): Interpreter? {
         if (interpreter != null) return interpreter
-        if (isInitialized) return null
+        // A *successful* load is permanent; a failed one is not. Latching the failure
+        // meant one transient problem (a low-memory moment while mapping 4.7 MB)
+        // disabled ML detection for the whole process — for the rest of that session
+        // the editor silently used the geometry pass, with nothing anywhere saying so.
         return try {
             val assetFd = context.assets.openFd(MODEL_FILE)
             FileInputStream(assetFd.fileDescriptor).use { fis ->
@@ -50,13 +69,42 @@ object MlBorderDetector {
                 }
                 Interpreter(buffer, options).also {
                     interpreter = it
-                    isInitialized = true
+                    // Diagnostics must never be able to fail the load.
+                    runCatching { describe(it) }
                 }
             }
-        } catch (_: Throwable) {
-            isInitialized = true
+        } catch (t: Throwable) {
+            if (PerfTrace.isEnabled && !reportedLoadFailure) {
+                reportedLoadFailure = true
+                // The usual cause is a compressed asset: `openFd` refuses it, which
+                // means `androidResources { noCompress += "tflite" }` is missing
+                // from app/build.gradle.kts.
+                Log.w(TAG, "[ml] model $MODEL_FILE could not be loaded: ${t.message}")
+            }
             null
         }
+    }
+
+    /**
+     * Logs the model's own input/output contract, once.
+     *
+     * The tensor names and shapes below are hard-coded from the original app's
+     * `ht3.java`. If they are wrong for this file, every inference throws and the
+     * detector quietly falls back — so printing the real ones on load is what makes
+     * that discoverable without a debugger.
+     */
+    private fun describe(interpreter: Interpreter) {
+        if (!PerfTrace.isEnabled) return
+        val input = interpreter.getInputTensor(0)
+        val outputs = (0 until interpreter.outputTensorCount).joinToString(", ") { index ->
+            val tensor = interpreter.getOutputTensor(index)
+            "$index:'${tensor.name()}'${tensor.shape().contentToString()}"
+        }
+        Log.i(
+            TAG,
+            "[ml] model loaded · input ${input.shape().contentToString()} " +
+                "${input.dataType()} · outputs $outputs"
+        )
     }
 
     data class MlResult(
@@ -136,15 +184,39 @@ object MlBorderDetector {
                 bottomLeftY = rawCoords[3][0].coerceIn(0f, 1f)
             )
 
+            if (PerfTrace.isEnabled) {
+                // One line per detection: this is what tells a device test whether
+                // the ML pass is doing the work or the geometry fallback is.
+                Log.i(
+                    TAG,
+                    "[ml] ${if (meanScore >= 0.5f) "accepted" else "low confidence"} " +
+                        // Locale.US: a comma decimal separator would make the quad
+                        // unreadable in the very log line that exists to be read.
+                        "mean=${f2(meanScore)} quad=" +
+                        "(${f2(quad.topLeftX)},${f2(quad.topLeftY)})→" +
+                        "(${f2(quad.bottomRightX)},${f2(quad.bottomRightY)})"
+                )
+            }
+
             MlResult(
                 corners = quad,
                 meanConfidence = meanScore,
                 confident = meanScore >= 0.5f
             )
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            if (PerfTrace.isEnabled && !reportedRunFailure) {
+                reportedRunFailure = true
+                // Almost always a shape/name mismatch with `getOutputIndex` above, or
+                // an input tensor that is not float32 NHWC. Either way the fix is in
+                // this file, and this line is where to start.
+                Log.w(TAG, "[ml] inference failed, falling back to geometry: ${t.message}")
+            }
             null
         }
     }
+
+    /** Two decimals with a dot, whatever the device locale is set to. */
+    private fun f2(value: Float): String = String.format(java.util.Locale.US, "%.2f", value)
 
     private fun createDummyOutput(shape: IntArray): Any {
         return when (shape.size) {
