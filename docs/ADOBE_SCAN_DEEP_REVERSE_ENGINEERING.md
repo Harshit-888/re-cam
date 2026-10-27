@@ -1,8 +1,8 @@
 # Adobe Scan (com.adobe.scan.android) Deep Reverse Engineering Specification
 
-> **Target Package**: `com.adobe.scan.android`  
+> **Target Package**: `com.adobe.scan.android` (Version 26.10.06)  
 > **Source Artifacts**: `base.apk`, `split_config.arm64_v8a.apk`, `split_pdfEditClientResources.apk`  
-> **Reverse-Engineered Date**: October 2026  
+> **Analysis Methodology**: JADX Targeted Decompilation (`-XX:+UseParallelGC -Xmx1024m`), PyElfTools dynamic symbol analysis, TFLite FlatBuffers inspection, `aapt` resource extraction.  
 > **Target Rebuild Project**: `doc-scanner` (Jetpack Compose, CameraX, OpenCV/ONNX/TFLite, Rust NDK)
 
 ---
@@ -199,15 +199,130 @@ Decompiled from `com.adobe.scan2pdf.Scan2PDFShim` and `Scan2PDFUtils`:
 
 ---
 
-## 8. Concrete Roadmap for `doc-scanner` Parity
+## 8. Complete Activity Navigation & Topology
 
-To bring `doc-scanner` to identical performance with Adobe Scan:
+Decompiled from `AndroidManifest.xml` and Activity coordinators:
+
+```
+[SplashActivity]
+       │
+       ▼
+[CaptureActivity] ◄──────────────────────────────────┐
+       │ (Auto/Manual Snap)                          │
+       ├──────────────► [DocumentDetectionActivity]  │
+       │                (Batch Photo Crop)           │
+       │                                             │
+       ▼                                             │
+[ReviewActivity] ────────────────────────────────────┘
+       │ (Bottom Navigation Bar Actions)
+       ├─► [Add Page] ────────► [CaptureActivity]
+       ├─► [Reorder] ─────────► [ReorderActivity] (Drag & drop grid)
+       ├─► [Crop] ────────────► [CropView] (28dp midpoint drag + 2.5x loupe)
+       ├─► [Rotate] ──────────► Inline 90° clockwise cycle
+       ├─► [Filter] ──────────► [FilterOptionsDialog] (0, 2, 4, 6, 8)
+       ├─► [Clean Up] ────────► [EraserActivity / MagicEraserActivity]
+       ├─► [Markup] ──────────► [MarkupActivity / MarkupShapesActivity]
+       ├─► [Resize] ──────────► [ResizeActivity] (A4, Letter, Legal, etc.)
+       ├─► [Delete] ──────────► Inline page removal
+       └─► [Save PDF] ────────► [Scan2PDFShim] ──► [FileBrowserActivity]
+```
+
+---
+
+## 9. SQLite Persistence & Scan Session Schema
+
+Decompiled from `AppDatabase_Impl` (`og2`) and `Page.kt`:
+
+### 9.1 Room SQLite Table
+```sql
+CREATE TABLE IF NOT EXISTS `FileDescriptor` (
+    `mPrimaryKey` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    `uri_path` TEXT,
+    `modified_date` INTEGER NOT NULL,
+    `is_document` INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS `index_FileDescriptor_uri_path` ON `FileDescriptor` (`uri_path`);
+```
+
+### 9.2 In-Flight Scan Session Model (`document.json`)
+Each page within an active session contains the following state:
+```json
+{
+  "path": "/data/user/0/com.adobe.scan.android/cache/scan_101_1.jpg",
+  "crop_points": [
+    {"x": 0.082, "y": 0.115},
+    {"x": 0.914, "y": 0.098},
+    {"x": 0.942, "y": 0.884},
+    {"x": 0.061, "y": 0.895}
+  ],
+  "rotation": 0,
+  "filter": "auto",
+  "brightness": 0.0,
+  "contrast": 0.0,
+  "capture_mode": "DOCUMENT",
+  "page_scale": "A4",
+  "dewarped": false,
+  "manual_crop": false,
+  "book_mode_position": "none",
+  "eraser_filename": null,
+  "markup_filename": null
+}
+```
+
+---
+
+## 10. Editor Suite Tools
+
+### 10.1 Smart Cleanup & Inpainting (`SmartEraserAndroidShim`)
+- `initializeSmartEraser(EraserInput, EraserOutput)`:
+  - Takes the captured document bitmap and computes a synthetic background inpainting layer (`mBackgroundBmp`).
+  - As the user brushes over defects, fingers, or unwanted text, the brush replaces pixels with `mBackgroundBmp` or samples surrounding paper color via eyedropper.
+
+### 10.2 Page Resize Presets (`ResizeActivity`)
+Supported dimensions in PostScript points ($72\text{ pt} = 1\text{ inch}$):
+- **Auto-fit**: Preserves original aspect ratio of cropped quad.
+- **US Letter**: $612 \times 792\text{ pt}$ (Portrait) / $792 \times 612\text{ pt}$ (Landscape).
+- **US Legal**: $612 \times 1008\text{ pt}$ (Portrait) / $1008 \times 612\text{ pt}$ (Landscape).
+- **A4**: $595 \times 842\text{ pt}$ (Portrait) / $842 \times 595\text{ pt}$ (Landscape).
+- **A3**: $842 \times 1191\text{ pt}$ (Portrait) / $1191 \times 842\text{ pt}$ (Landscape).
+- **A5**: $420 \times 595\text{ pt}$ (Portrait) / $595 \times 420\text{ pt}$ (Landscape).
+
+### 10.3 Markup & Annotations (`MarkupActivity`, `MarkupShapesActivity`)
+- Freehand pen with thickness and opacity controls.
+- Semi-transparent text highlighter.
+- Geometric shapes (rectangle, circle, arrow, line) with customizable fill and border color.
+
+---
+
+## 11. Specialized Capture Modes
+
+1. **Document**: Default single/multi-page scanning with quadrilateral edge detection.
+2. **Book Mode**:
+   - Detects book spine in center.
+   - Splits viewfinder into two separate page crops (`mCCornersInfoVec[0]` and `mCCornersInfoVec[1]`).
+   - Automatically orders left page (`book_mode_position = "left"`) followed by right page (`book_mode_position = "right"`).
+3. **ID Card Mode**:
+   - Dual-step capture: "Scan front of ID card" $\rightarrow$ "Scan back of ID card".
+   - Automatically composites both sides onto a single page with aligned layout.
+4. **Whiteboard Mode**:
+   - Perspective warp compensation for off-axis viewing angles.
+   - Aggressive thresholding (Filter Level 4) removing ambient reflections and whiteboard glare.
+5. **Business Card Mode**:
+   - Enforces 3.5:2 aspect ratio lock.
+   - Triggers automatic OCR contact parsing with direct export to Android Contacts via vCard (`AddContactActivity`).
+
+---
+
+## 12. Concrete Rebuild Parity Checklist for `doc-scanner`
 
 | Feature Area | Current `doc-scanner` | Adobe Scan Parity Implementation |
 |---|---|---|
-| **Viewfinder Loop** | Raw camera preview | Implement 250ms interval timer with 1..3 confidence accumulator and tolerance threshold $0.1$. |
+| **Viewfinder Loop** | Raw camera preview | 250ms interval timer with 1..3 confidence accumulator and tolerance threshold $0.1$. |
 | **Model** | OpenCV Canny contours | Integrate `capture_6_22_23.tflite` (320x320 MobileNetV2) via TFLite / LiteRT Android library. |
-| **Edge Dragging** | Corner handles only | Add midpoint edge handles (28dp touch radius) that translate both adjacent corners simultaneously. |
-| **Magnifier Loupe**| Rectangular preview | Exact 80dp circular lens, 2.5x zoom, 3dp border, with centered horizontal & vertical crosshairs. |
+| **Edge Dragging** | Corner handles only | Midpoint edge handles (28dp touch radius) translating both adjacent corners simultaneously. |
+| **Magnifier Loupe**| Rectangular preview | 80dp circular lens, 2.5x zoom, 3dp border, with centered horizontal & vertical crosshairs. |
 | **Color Filters** | Basic RGB thresholds | CIELAB shadow removal ($L^*$ channel normalization) + Paper tint subtraction + Color boost. |
 | **Hints Banner** | Static text | Progressive hints: "Looking for document" $\rightarrow$ "Hold steady" $\rightarrow$ Auto-capture trigger at 2.5s. |
+| **Cleanup Tool** | Not implemented | Smart Eraser with clean paper background synthesis. |
+| **Paper Presets** | Default A4 only | Auto-fit, Letter, Legal, A3, A4, A5 with portrait/landscape toggles. |
+| **PDF Searchability**| Image-only PDF | Injected invisible text layer over OCR bounding boxes. |
