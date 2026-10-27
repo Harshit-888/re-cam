@@ -82,6 +82,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
@@ -113,6 +114,7 @@ import com.example.docscanner.ui.common.PageThumbnail
 import com.example.docscanner.ui.common.PillButton
 import com.example.docscanner.ui.common.SegmentedPill
 import com.example.docscanner.ui.common.TonalIconButton
+import com.example.docscanner.ui.common.ZoomablePageView
 import com.example.docscanner.util.CropHandles
 import com.example.docscanner.util.DocumentDetector
 import com.example.docscanner.util.ImageProcessingUtils
@@ -263,6 +265,16 @@ fun CropAndFilterScreen(
      * all.
      */
     var keepFilterOnNextLoad by remember { mutableStateOf(false) }
+
+    // Zoom is per-inspection, not per-session. Both stages now zoom, and they mean
+    // different things: in the crop stage you magnify a corner to place a handle, in
+    // the filter stage you magnify a texture to choose a look. Carrying 3× from one
+    // to the other drops the user into the middle of a page they were about to look
+    // at whole — so switching stages always starts fitted.
+    LaunchedEffect(stage) {
+        zoom = 1f
+        pan = Offset.Zero
+    }
 
     // Pages whose borders the user has confirmed in this session.
     val borderedPages = remember(docId) { mutableStateMapOf<String, Boolean>() }
@@ -601,6 +613,11 @@ fun CropAndFilterScreen(
         // corners in hand is deciding crops. Only the first one keeps the choice
         // (see `keepFilterOnNextLoad`).
         keepFilterOnNextLoad = stage == Stage.FILTERS
+        // Zoom is page state. Carrying a 3× zoom onto a page the user has never
+        // seen drops them into the middle of it with no idea where they are; a
+        // swipe (which goes through here) must always land fitted.
+        zoom = 1f
+        pan = Offset.Zero
         activePageId = target.id
     }
 
@@ -787,6 +804,14 @@ fun CropAndFilterScreen(
                         selectedFilter = selectedFilter,
                         onSelectFilter = { selectedFilter = it },
                         thumbs = filterThumbs,
+                        zoom = zoom,
+                        onZoomIn = { zoom = (zoom * ZOOM_FACTOR).coerceAtMost(MAX_ZOOM) },
+                        onZoomOut = {
+                            val next = (zoom / ZOOM_FACTOR).coerceAtLeast(1f)
+                            zoom = next
+                            if (next <= 1.0001f) pan = Offset.Zero
+                        },
+                        onResetZoom = { zoom = 1f; pan = Offset.Zero },
                         primaryLabel = when {
                             isSaving -> "Applying…"
                             !reviewMode -> "Save page"
@@ -833,7 +858,27 @@ fun CropAndFilterScreen(
                     onZoomPanChange = { newZoom, newPan -> zoom = newZoom; pan = newPan }
                 )
 
-                else -> FilterPreview(image = image, aspect = previewAspect)
+                else -> FilterPreview(
+                    image = image,
+                    aspect = previewAspect,
+                    zoom = zoom,
+                    pan = pan,
+                    onZoomPanChange = { newZoom, newPan -> zoom = newZoom; pan = newPan },
+                    // Swiping in the filter stage is how the user compares one look
+                    // across pages: `goToPage` keeps the chosen filter here (that is
+                    // what `keepFilterOnNextLoad` is for), so a swipe shows the *same*
+                    // filter on the next page rather than that page's stored one.
+                    onSwipePrev = if (activeIndex > 0) {
+                        { goToPage(activeIndex - 1) }
+                    } else {
+                        null
+                    },
+                    onSwipeNext = if (hasNextPage) {
+                        { goToPage(activeIndex + 1) }
+                    } else {
+                        null
+                    }
+                )
             }
 
             // Status banners live at the top of the canvas so they never cover the
@@ -1384,7 +1429,15 @@ private fun MagnifyingLoupe(
 
 /** The corrected, filtered page — the same pixels the bake will write. */
 @Composable
-private fun FilterPreview(image: ImageBitmap, aspect: Float) {
+private fun FilterPreview(
+    image: ImageBitmap,
+    aspect: Float,
+    zoom: Float,
+    pan: Offset,
+    onZoomPanChange: (Float, Offset) -> Unit,
+    onSwipePrev: (() -> Unit)?,
+    onSwipeNext: (() -> Unit)?
+) {
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
@@ -1396,18 +1449,70 @@ private fun FilterPreview(image: ImageBitmap, aspect: Float) {
         val availableAspect = maxWidth / maxHeight
         val width = if (availableAspect > aspect) maxHeight * aspect else maxWidth
         val height = width / aspect
-        Surface(
-            shape = DocShapes.page,
-            shadowElevation = 10.dp,
-            color = MaterialTheme.colorScheme.surfaceContainerLowest,
-            modifier = Modifier.size(width = width, height = height)
-        ) {
-            Image(
-                bitmap = image,
-                contentDescription = "Filtered page preview",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize()
-            )
+
+        // The gesture lives outside the Surface so the whole canvas is pinchable —
+        // aiming a pinch at a 20 dp margin and having it do nothing is the kind of
+        // thing that reads as "zoom is broken" rather than "aim better".
+        ZoomablePageView(
+            zoom = zoom,
+            pan = pan,
+            onZoomPanChange = onZoomPanChange,
+            onSwipePrev = onSwipePrev,
+            onSwipeNext = onSwipeNext,
+            // The page, not the frame: this preview letterboxes a portrait page in a
+            // wider box, and clamping pan to the frame would let the page be dragged
+            // out of view into margins that were never part of it.
+            contentSize = with(LocalDensity.current) {
+                Size(width.toPx(), height.toPx())
+            },
+            modifier = Modifier.fillMaxSize(),
+            content = {
+                Surface(
+                    shape = DocShapes.page,
+                    shadowElevation = 10.dp,
+                    color = MaterialTheme.colorScheme.surfaceContainerLowest,
+                    modifier = Modifier.size(width = width, height = height)
+                ) {
+                    Image(
+                        bitmap = image,
+                        contentDescription = "Filtered page preview",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+        )
+
+        // Only while zoomed, so it never competes with the filter strip for attention.
+        // Tapping it returns to fit — a zoom you cannot get out of is worse than one
+        // you could not get into.
+        if (zoom > 1.01f) {
+            Surface(
+                shape = DocShapes.pill,
+                color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.92f),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 4.dp, end = 4.dp)
+                    .clickable { onZoomPanChange(1f, Offset.Zero) }
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Icon(
+                        Icons.Default.FitScreen,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "${(zoom * 100).roundToInt()}%",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
         }
     }
 }
@@ -1573,6 +1678,10 @@ private fun FilterControls(
     selectedFilter: FilterType,
     onSelectFilter: (FilterType) -> Unit,
     thumbs: Map<FilterType, ImageBitmap>,
+    zoom: Float,
+    onZoomIn: () -> Unit,
+    onZoomOut: () -> Unit,
+    onResetZoom: () -> Unit,
     primaryLabel: String,
     primaryIcon: androidx.compose.ui.graphics.vector.ImageVector,
     isSaving: Boolean,
@@ -1610,13 +1719,32 @@ private fun FilterControls(
 
         Spacer(Modifier.height(14.dp))
 
-        PillButton(
-            text = primaryLabel,
-            onClick = onPrimary,
-            icon = primaryIcon,
-            enabled = !isSaving,
-            modifier = Modifier.fillMaxWidth()
-        )
+        // Same zoom pill, same place, same behaviour as the crop stage — the stage
+        // switch should not also switch how the page is inspected. Pinching works
+        // on the preview itself; this is for people who would rather tap.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Always present, not only once zoomed: a control that appears after
+            // you already know the gesture is a control for people who did not
+            // need it. Same pill, same position as the crop stage.
+            ZoomCluster(
+                zoom = zoom,
+                onZoomIn = onZoomIn,
+                onZoomOut = onZoomOut,
+                onReset = onResetZoom,
+                modifier = Modifier.weight(1f)
+            )
+            PillButton(
+                text = primaryLabel,
+                onClick = onPrimary,
+                icon = primaryIcon,
+                enabled = !isSaving,
+                modifier = Modifier.weight(1.4f)
+            )
+        }
     }
 }
 

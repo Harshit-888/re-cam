@@ -1407,6 +1407,33 @@ change pages, which is exactly the Round 37 bug.
 - **Do not remove `PageStrip` from one stage.** See above.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
 
+## 6ak. Round 48: filter preview zoom + swipe, contextual detail bar (Arena, 2026-10-27)
+
+**New:** `ui/common/ZoomablePageView.kt`.
+**Edited:** `ui/editor/CropAndFilterScreen.kt`, `ui/detail/DocumentDetailScreen.kt`.
+
+- **Do not add a third pinch gesture.** `ZoomablePageView(zoom, pan, onZoomPanChange,
+  onSwipePrev, onSwipeNext, contentSize, maxZoom)` is the shared one. The border canvas
+  keeps its own (it has four grabbed handles and `HANDLE_GRAB_DP`), but any *other*
+  page view should use this. The filter preview's inability to zoom came from having
+  no gesture at all, not from a broken one.
+- **`zoom`/`pan` in `CropAndFilterScreen` are now genuinely shared by both stages.**
+  They are reset on stage change and in `goToPage()`. If you add a third stage or a
+  new way to change pages, reset the zoom there too.
+- **Swipe is gated on `zoom <= 1.001` and on a single finger.** Zoomed in, horizontal
+  drags must pan. Do not "fix" this by allowing swipe at any zoom.
+- **`PageGridItem(page, canMoveBackward, canMoveForward, selected = false,
+  onSelectClick = {}, onViewClick, …)`** — two new optional params. Existing call
+  sites compile untouched.
+- **Detail bottom bar is selection-driven.** Document state: `Add page` + `Export PDF`.
+  Page state: `Crop`, `Annotate`, `Sign`, `More`. Adding an action means deciding which
+  state it belongs to, not appending a fifth cell. Long-press selects a page; `Back`
+  clears the selection.
+- **`signatureOverlayUri` is applied to the picked page**, not page 1. Do not
+  reintroduce a document-level `firstOrNull()` signature bake.
+- Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed, and
+  pinch/swipe/selection need a device pass.
+
 ## 6aj. Round 47: UI/UX audit (Arena, 2026-10-27)
 
 **New:** `docs/UI_UX_REVIEW.md`, `ui/common/TapTarget.kt`.
