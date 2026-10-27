@@ -1407,6 +1407,26 @@ change pages, which is exactly the Round 37 bug.
 - **Do not remove `PageStrip` from one stage.** See above.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
 
+## 6ac. Round 40: the ML border model's real tensor layout (Arena, 2026-10-27)
+
+**Claimed:** `util/MlBorderDetector.kt` output binding only. No other file touched.
+Full evidence in `docs/ORIGINAL_ML_BORDER_PATH.md`.
+
+- The shipped `border_detect_224.tflite` has **six** outputs. Only two are used:
+  `StatefulPartitionedCall:1` `[1,1,4,2]` (8 floats, four corners as `(y, x)`) and
+  `StatefulPartitionedCall:0` `[1,1,4]` (4 floats, one score per corner).
+  `StatefulPartitionedCall:5` is also `[1,1,4]` and is **not** the scores — a size-based
+  lookup can pick it.
+- Binding is now by name, with an unambiguous-size fallback, and a refusal + log when
+  neither is possible. Anything that reads `MlBorderDetector` sees the same public API
+  (`detect(bitmap, context): MlResult?`); nothing to change on your side.
+- Input encoding is `0…255`, coords are normalised `0…1`, gate is `mean >= 0.5f`, and the
+  original detects on a bitmap downscaled to fit 640×640 with native OpenCV as its
+  fallback (we use the Kotlin geometry pass there — unchanged).
+- If you rebuild: the one new log line is `[ml] corners = StatefulPartitionedCall:1
+  [1, 1, 4, 2], scores = StatefulPartitionedCall:0 [1, 1, 4]`. If you see the
+  `[ml] cannot tell the corner tensor…` line instead, the asset changed.
+
 ## 6ab. Round 39: the ML quad is validated, the decoder stops assuming, and the build checks the model (Arena, 2026-10-27)
 
 ### The contract the ML path now keeps

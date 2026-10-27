@@ -16,6 +16,14 @@ Newest entry at the top.
   6. Complete editor blueprints for Background Eraser (`CleanupBgView`), Markup (`MarkupView`), and Digital Signature Pad (`SignaturePadActivity`).
   7. Storage, template naming (`DocumentNameSettingActivity`), and ZIP backup/restore mechanics (`MyBackupActivity`).
 
+## 2026-10-27 — Arena.ai — Round 40: the ML border path was decompiled, and our output binding was wrong
+
+- **New doc: `docs/ORIGINAL_ML_BORDER_PATH.md`** — the original APK's ML border path read out of the committed DEX files (`er5`/`ht3`/`qt3`/`sw3`/`it3`) with androguard, and out of the committed model with tflite-runtime. Call graph, preprocessing, all six outputs, postprocessing, the 0.5 gate, and a measured 0–255-vs-0–1 experiment.
+- **`util/MlBorderDetector.kt` — output binding fixed.** The model has **six** outputs and **two** of them are four floats wide: `StatefulPartitionedCall:0` (the real per-corner scores, `[1,1,4]`) and `StatefulPartitionedCall:5` (not the scores, also `[1,1,4]`). The Round 39 rule "8 floats = corners, 4 floats = scores" could bind the scores to `:5`, which would report ≈0.2 confidence on a good page and silently fall through to the geometry pass. Now: bind **by name** (`StatefulPartitionedCall:1` / `:0`), fall back to size only when it is unambiguous, and otherwise decline the model with a `[ml]` log line instead of guessing. New one-line log: `[ml] corners = … [, …], scores = …`.
+- Verified against the file itself (not just the decompile): input `serving_default_input:0` `[1,224,224,3]` float32; corners are normalised `0…1` in **`(y, x)`** order; the encoding is **`0…255`** (mean corner score 0.99 vs 0.53 for `0…1` on the same image); the gate is `mean >= 0.5f`; the original detects on a bitmap downscaled to fit **640×640** and runs native OpenCV in parallel as its fallback.
+- No change to quad geometry, filters, page geometry, PDF output or capture behaviour. No new dependency: the analysis tooling (`androguard`, `tflite_runtime`) was installed in the agent sandbox only and is not referenced by the app.
+- Still not compiled here (no Android SDK/Maven access in this sandbox); Antigravity's build of Rounds 38–39 is the last green build.
+
 ## 2026-10-27 — Antigravity — Build & Configuration Cache fix for VerifyBorderModelTask; full verification of Rounds 38 & 39
 
 - `app/build.gradle.kts`: Converted `verifyBorderModel` task from ad-hoc script closure into `abstract class VerifyBorderModelTask : DefaultTask()` with `@get:InputFile abstract val modelFile: RegularFileProperty` and `@get:Input abstract val expectedSha256: Property<String>`, and imported `java.security.MessageDigest`. Resolves Gradle configuration-cache error `cannot serialize Gradle script object references`.
