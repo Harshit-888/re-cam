@@ -324,14 +324,74 @@ Each page within an active session contains the following state:
 
 ---
 
-## 10. Editor Suite Tools
+## 10. Complete Editor & Services Suite
 
-### 10.1 Smart Cleanup & Inpainting (`SmartEraserAndroidShim`)
-- `initializeSmartEraser(EraserInput, EraserOutput)`:
-  - Takes the captured document bitmap and computes a synthetic background inpainting layer (`mBackgroundBmp`).
-  - As the user brushes over defects, fingers, or unwanted text, the brush replaces pixels with `mBackgroundBmp` or samples surrounding paper color via eyedropper.
+### 10.1 Smart Cleanup & Inpainting (`MagicEraserActivity` / `SmartEraserAndroidShim`)
+- **Native Pipeline**:
+  - `initializeSmartEraser(EraserInput, EraserOutput)` generates an inpainting background layer `mBackgroundBmp`.
+  - Computes paper tint matrix across clean page regions.
+- **Color Eyedropper (`ColorLoupe` & `ColorPickerBubble`)**:
+  - Dragging the eyedropper over the document opens `ColorLoupe`, displaying a magnified circular preview of the pixel directly under the touch point.
+  - Automatically samples the paper tint ($L^*, a^*, b^*$) to dynamically match natural background color when erasing blemishes or stray markings.
+- **Controls**:
+  - Brush Size Slider (5dp to 50dp).
+  - Two-finger pinch-to-zoom and pan navigation while brush tool is active.
+  - Multi-level Undo / Redo history stack.
 
-### 10.2 Page Resize Presets (`ResizeActivity`)
+### 10.2 Markup & Shapes Annotation (`MarkupActivity`, `MarkupShapesActivity`)
+- **Drawing State Machine (`MarkupDrawingInfo`)**:
+  - Manages vector stroke collections (`markupPaths`).
+  - Supports automatic orientation coordinate re-mapping (`MarkupPaths90`) so markups rotate seamlessly with page 90° clockwise/counter-clockwise operations.
+- **Drawing Primitives**:
+  - `drawPath`: Freehand pencil/pen tool with configurable stroke width and color.
+  - `drawHighlight`: Semi-transparent highlighter with multiply blend mode (`PorterDuff.Mode.MULTIPLY`) that sits beneath printed text.
+  - `drawLine`: Straight line anchor with snap-to-axis guidance.
+  - `drawRect` & `drawRoundRect`: Bounding rectangles with optional fill and outline colors.
+  - `drawMarkupSelectionOutlines`: Hit-testing and selection bounding box allowing drawn annotations to be translated, scaled, or deleted after creation.
+- **Color Selector**: Integrates `MarkupColorOptionsBottomsheet` with Spectrum color palette presets plus hex input.
+
+### 10.3 Batch Gallery Photo Import (`ImportPhotoActivity`, `ImportPhotoScreen`)
+- **Asynchronous Processing (`ImportPhotoTask`)**:
+  - User selects one or multiple images from Android MediaStore.
+  - Parallel coroutine pipeline dispatches each image to the boundary detection model (`capture_6_22_23.tflite`).
+  - Automatically computes perspective crop quads (`crop_points`). If no clear quadrilateral document boundary is detected with sufficient confidence, it falls back to full-image extents.
+  - Appends processed pages into the active scanning session with origin metadata (`ImportedPageSourceInfo`).
+
+### 10.4 PDF Merge / Combine Engine (`CombineActivity`, `CombineSelectionActivity`)
+- **Workflow**:
+  - `CombineSelectionActivity` allows users to select 2 or more previously scanned PDFs.
+  - `CombineFileListAdapter` provides drag handles to reorder source files before concatenation.
+  - Engine reads PDF page trees, merges `/Pages` dictionaries, renumbers internal object IDs (`/ObjStm`), and generates a unified multi-page document without re-compressing existing JPEG streams.
+
+### 10.5 PDF Compression Engine (`CompressActivity`)
+- **Preset Tiers (`CompressionLevel`)**:
+  - **High Quality**: Resamples images to ~150 DPI with JPEG quality 75. Suitable for standard viewing while reducing large scan sizes by ~40-50%.
+  - **Low Quality (Smallest Size)**: Downsamples images to 72-96 DPI with JPEG quality 50. Optimizes documents for email attachments and weak cellular uploads.
+  - **Original / Default**: Retains original camera image resolution and lossless PDF structure.
+
+### 10.6 Business Card Contact Extractor (`AddContactActivity`)
+- **Parsing Architecture**:
+  - Triggered automatically when scanning in `BUSINESS_CARD` capture mode.
+  - OCR bounding box tokens are parsed by heuristic entity extractors:
+    - Name (First, Last)
+    - Organization & Job Title
+    - Telephone numbers (Work, Mobile)
+    - Email Address
+    - Web URL
+    - Physical Address
+  - `AddContactActivity` presents side-by-side card preview (`AddContactImageView`) and editable form fields.
+  - One-tap export to Android `ContactsContract` or `.vcf` vCard download.
+
+### 10.7 Smart File Naming (`DefaultFileNameActivity`)
+- **Naming Pattern Engine**:
+  - Default template: `Adobe Scan {Date}` (e.g. `Adobe Scan Oct 27, 2026`).
+  - Configurable dynamic tokens:
+    - `{Date}`: Formatted as `MMM d, yyyy` or `yyyy-MM-dd`.
+    - `{Time}`: `h:mm a`.
+    - `{DocType}`: Document, Whiteboard, Receipt, Business Card, ID Card.
+    - Custom user prefix/suffix strings.
+
+### 10.8 Page Resize Presets (`ResizeActivity`)
 Supported dimensions in PostScript points ($72\text{ pt} = 1\text{ inch}$):
 - **Auto-fit**: Preserves original aspect ratio of cropped quad.
 - **US Letter**: $612 \times 792\text{ pt}$ (Portrait) / $792 \times 612\text{ pt}$ (Landscape).
@@ -339,11 +399,6 @@ Supported dimensions in PostScript points ($72\text{ pt} = 1\text{ inch}$):
 - **A4**: $595 \times 842\text{ pt}$ (Portrait) / $842 \times 595\text{ pt}$ (Landscape).
 - **A3**: $842 \times 1191\text{ pt}$ (Portrait) / $1191 \times 842\text{ pt}$ (Landscape).
 - **A5**: $420 \times 595\text{ pt}$ (Portrait) / $595 \times 420\text{ pt}$ (Landscape).
-
-### 10.3 Markup & Annotations (`MarkupActivity`, `MarkupShapesActivity`)
-- Freehand pen with thickness and opacity controls.
-- Semi-transparent text highlighter.
-- Geometric shapes (rectangle, circle, arrow, line) with customizable fill and border color.
 
 ---
 
