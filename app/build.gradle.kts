@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
@@ -223,14 +225,16 @@ dependencies {
  * docs/AGENT_COORDINATION.md §6i); if it moves to the ignored `assets/models/` path,
  * this task is what keeps the omission loud.
  */
-val borderModelFile = layout.projectDirectory.file("src/main/assets/border_detect_224.tflite")
-val borderModelSha256 = "578f53b6c90ee9bc14b6ba350c3d261ffd6001d3e9b716a7ad571b6a4bdd1972"
+abstract class VerifyBorderModelTask : DefaultTask() {
+    @get:InputFile
+    abstract val modelFile: RegularFileProperty
 
-val verifyBorderModel by tasks.registering {
-    group = "verification"
-    description = "Checks that the TFLite border model is present and reports its SHA-256."
-    doLast {
-        val file = borderModelFile.asFile
+    @get:Input
+    abstract val expectedSha256: Property<String>
+
+    @TaskAction
+    fun verify() {
+        val file = modelFile.get().asFile
         if (!file.isFile || file.length() == 0L) {
             throw GradleException(
                 "Missing border model: ${file.path}. The app will silently fall back to " +
@@ -238,17 +242,25 @@ val verifyBorderModel by tasks.registering {
                     "or drop the ML path deliberately."
             )
         }
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val digest = MessageDigest.getInstance("SHA-256")
             .digest(file.readBytes())
             .joinToString("") { "%02x".format(it) }
-        if (digest != borderModelSha256) {
+        val pinned = expectedSha256.get()
+        if (digest != pinned) {
             logger.warn(
                 "border model hash changed (${digest.take(16)}…, pinned " +
-                    "${borderModelSha256.take(16)}…). If the model was re-sourced on " +
+                    "${pinned.take(16)}…). If the model was re-sourced on " +
                     "purpose, update `borderModelSha256` in app/build.gradle.kts."
             )
         }
     }
+}
+
+val verifyBorderModel = tasks.register<VerifyBorderModelTask>("verifyBorderModel") {
+    group = "verification"
+    description = "Checks that the TFLite border model is present and reports its SHA-256."
+    modelFile.set(layout.projectDirectory.file("src/main/assets/border_detect_224.tflite"))
+    expectedSha256.set("578f53b6c90ee9bc14b6ba350c3d261ffd6001d3e9b716a7ad571b6a4bdd1972")
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {

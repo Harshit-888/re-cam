@@ -4,6 +4,12 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 — Antigravity — Build & Configuration Cache fix for VerifyBorderModelTask; full verification of Rounds 38 & 39
+
+- `app/build.gradle.kts`: Converted `verifyBorderModel` task from ad-hoc script closure into `abstract class VerifyBorderModelTask : DefaultTask()` with `@get:InputFile abstract val modelFile: RegularFileProperty` and `@get:Input abstract val expectedSha256: Property<String>`, and imported `java.security.MessageDigest`. Resolves Gradle configuration-cache error `cannot serialize Gradle script object references`.
+- Ran `.\gradlew.bat testDebugUnitTest --rerun-tasks --no-daemon`: all 25 test tasks passed cleanly (`QuadSanityTest`, `CropHandlesTest`, `DocumentDetectorTest`, etc.).
+- Ran `.\gradlew.bat assembleDebug --no-daemon`: built `app-debug.apk` successfully (85 MB) with configuration cache active.
+
 ## 2026-10-27 — Arena.ai — Round 39: the ML border path answers safely, and the build checks the model
 
 Follow-up to the Round 38 review, closing the runtime risks that were listed as open.
