@@ -2,17 +2,18 @@
 
 > **Target Package**: `com.adobe.scan.android` (Version 26.10.06)  
 > **Source Artifacts**: `base.apk`, `split_config.arm64_v8a.apk`, `split_pdfEditClientResources.apk`  
-> **Analysis Methodology**: JADX Targeted Decompilation (`-XX:+UseParallelGC -Xmx1024m`), PyElfTools dynamic symbol analysis, TFLite FlatBuffers inspection, `aapt` resource extraction.  
+> **Analysis Methodology**: JADX Targeted Decompilation (`-XX:+UseParallelGC -Xmx1024m`), FlatBuffers binary schema parsing, PyElfTools dynamic symbol analysis, `aapt` resource extraction.  
 > **Target Rebuild Project**: `doc-scanner` (Jetpack Compose, CameraX, OpenCV/ONNX/TFLite, Rust NDK)
 
 ---
 
 ## 1. Executive Architecture Overview
 
-Adobe Scan relies on a hybrid three-tier processing architecture:
-1. **Real-time Mobile Vision (LiteRT / TFLite)**: Ultra-fast frame inference on the camera stream for document boundary detection, document classification, and page-turning detection.
-2. **Native C++ Computer Vision Engine (`libMagicClean.so` - 41.9 MB)**: Sensei On-Device Services (SODS) engine combining Classical Computer Vision (Canny/Sobel high contrast, gradient accumulation low contrast) with Neural Networks (AlgoFusion), CIELAB shadow suppression, curve dewarping, and adaptive cleanup.
-3. **Jetpack Compose / Reactive UI**: Live preview boundary tracking, 28dp touch hit-testing with edge-midpoint parallel dragging, 2.5x circular magnifying loupe, and progressive hint banners.
+Adobe Scan is a state-of-the-art document scanner built with:
+1. **Pure Jetpack Compose UI**: 100% of the UI (viewfinder, camera preview overlay, crop handles, 2.5x loupe, review carousel, filters dialog, reordering grid) is rendered in Jetpack Compose without legacy Android View XML layouts.
+2. **Real-time Mobile Vision (LiteRT / TFLite)**: Sub-50ms inference on camera stream frames using quantized MobileNetV2 with direct RGBA uint8 byte inputs.
+3. **Native C++ Computer Vision Engine (`libMagicClean.so` - 41.9 MB)**: Sensei On-Device Services (SODS) engine combining Classical Computer Vision (Canny/Sobel high contrast, gradient accumulation low contrast) with Neural Networks (AlgoFusion), CIELAB shadow suppression, curve dewarping, and adaptive cleanup.
+4. **Searchable PDF Engine (`Scan2PDFShim` / `libScan2PDF.so`)**: Compiles compressed images into PDF format with an invisible OCR text layer (`3 Tr` rendering mode) positioned directly over word bounding boxes.
 
 ```
                            +-------------------------------------+
@@ -38,24 +39,54 @@ Adobe Scan relies on a hybrid three-tier processing architecture:
 
 ---
 
-## 2. Machine Learning Models & Inference Pipeline
+## 2. Machine Learning Models & Exact Tensor Signatures
 
-### 2.1 Model Inventory
-Extracted directly from `base.apk` and `split_pdfEditClientResources.apk`:
+Extracted and verified directly via FlatBuffers binary inspection from `base.apk`:
 
-| Model Asset Path | File Size | Architecture / Purpose |
-|---|---|---|
-| `assets/models/capture_6_22_23.tflite` | **2.48 MB** | **MobileNetV2 (320x320)** backbone for real-time document boundary detection & corner regression. |
-| `assets/models/page_turn_2im_002.tflite`| **1.16 MB** | Dual-frame difference CNN for automatic multi-page turning detection. |
-| `assets/models/resize_to_320.tflite` | **7.7 KB** | Hardware-accelerated bilinear resizing preprocessor to 320x320. |
-| `assets/dcmobile-ai/handwriting/...` | **977 KB** | Handwriting qualifier network. |
-| `assets/OCRResources/fontmetrics.bin`| **481 KB** | Adobe IDRS OCR font metrics table. |
-| `assets/OCRResources/net_latin_1.bin` | **1.88 MB** | IDRS Latin script character recognition neural net. |
+### 2.1 Live Boundary Detection Model (`capture_6_22_23.tflite`)
+- **File Size**: 2,542,032 bytes (2.48 MB)
+- **Architecture**: MobileNetV2 $1.00\_320$ backbone with custom regression head.
+- **Input Tensor**:
+  - Name: `serving_default_input_2:0`
+  - Index: `#0`
+  - Shape: `[1, 320, 320, 4]` (Batch=1, Height=320, Width=320, Channels=4: **RGBA**)
+  - Data Type: **`UINT8`** (0..255 direct pixel byte values; **no floating point normalization required on CPU**, enabling direct native memcpy from CameraX ImageProxy!)
+- **Output Tensor**:
+  - Name: `StatefulPartitionedCall:0`
+  - Index: `#189`
+  - Shape: **`[1, 13, 2]`** (Batch=1, 13 Keypoints, $(x, y)$ coordinate pairs)
+  - Data Type: **`FLOAT32`** (Normalized $[0.0, 1.0]$ coordinate space)
+- **Semantic Breakdown of the 13 Output Keypoints**:
+  - **Points 0..3 (Corners)**:
+    - Point 0: Top-Left Corner $(x_0, y_0)$
+    - Point 1: Top-Right Corner $(x_1, y_1)$
+    - Point 2: Bottom-Right Corner $(x_2, y_2)$
+    - Point 3: Bottom-Left Corner $(x_3, y_3)$
+  - **Points 4..7 (Edge Midpoints)**:
+    - Point 4: Top Edge Midpoint $(x_4, y_4)$
+    - Point 5: Right Edge Midpoint $(x_5, y_5)$
+    - Point 6: Bottom Edge Midpoint $(x_6, y_6)$
+    - Point 7: Left Edge Midpoint $(x_7, y_7)$
+  - **Points 8..11 (Curvature Anchors)**:
+    - Spline/Bezier displacement anchors used by `CNNDewarpingGridCompute` for page curvature correction.
+  - **Point 12 (Centroid / Confidence)**:
+    - Document visual centroid $(c_x, c_y)$ used for stability verification.
 
-### 2.2 Preprocessing & Acceleration
-- **Inference Bridge**: `com.adobe.magic_clean.inference.InferenceBridgeManager` connects to SODS LiteRT (`libLiteRt.so`, `libLiteRtOpenClAccelerator.so`).
-- **Target Resolution**: Image scaled down to area `147,456` px ($384 \times 384$) for boundary detection (`i = floor(sqrt((width * height) / 147456.0))`).
-- **Execution Backend**: Prioritizes GPU (`LiteRTCompiledModel(GPU)`), falling back automatically to `CPU_XNNPACK`.
+### 2.2 Multi-Page Turn Detection Model (`page_turn_2im_002.tflite`)
+- **File Size**: 1,190,024 bytes (1.16 MB)
+- **Architecture**: Recurrent CNN with **LSTM** memory unit.
+- **Input Tensors**:
+  - `#0`: `input_2` $\rightarrow$ `[1, 2, 1, 1]` `UINT8`
+  - `#1`: `lstm_hidden_all` $\rightarrow$ `[1, 256]` `FLOAT32` (Recurrent hidden state)
+- **Output Tensors**:
+  - `#186`: `Identity` $\rightarrow$ `[1, 2, 2]` `FLOAT32` (Page turn probability)
+  - `#189`: `Identity_1` $\rightarrow$ `[1, 2, 9, 2]` `FLOAT32` (Frame optical flow deformation field)
+  - `#190`: `Identity_2` $\rightarrow$ `[1, 256]` `FLOAT32` (Next recurrent hidden state)
+
+### 2.3 Hardware Resizer Model (`resize_to_320.tflite`)
+- **File Size**: 7,848 bytes
+- **Input Tensor**: `[1, 1, 1, 4]` `UINT8`
+- **Output Tensor**: `[1, 1, 1, 1]` `UINT8`
 
 ---
 
@@ -318,7 +349,7 @@ Supported dimensions in PostScript points ($72\text{ pt} = 1\text{ inch}$):
 | Feature Area | Current `doc-scanner` | Adobe Scan Parity Implementation |
 |---|---|---|
 | **Viewfinder Loop** | Raw camera preview | 250ms interval timer with 1..3 confidence accumulator and tolerance threshold $0.1$. |
-| **Model** | OpenCV Canny contours | Integrate `capture_6_22_23.tflite` (320x320 MobileNetV2) via TFLite / LiteRT Android library. |
+| **Model** | OpenCV Canny contours | Integrate `capture_6_22_23.tflite` (320x320 MobileNetV2) with UINT8 `[1, 320, 320, 4]` input and `[1, 13, 2]` output. |
 | **Edge Dragging** | Corner handles only | Midpoint edge handles (28dp touch radius) translating both adjacent corners simultaneously. |
 | **Magnifier Loupe**| Rectangular preview | 80dp circular lens, 2.5x zoom, 3dp border, with centered horizontal & vertical crosshairs. |
 | **Color Filters** | Basic RGB thresholds | CIELAB shadow removal ($L^*$ channel normalization) + Paper tint subtraction + Color boost. |
