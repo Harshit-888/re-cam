@@ -96,6 +96,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -139,6 +140,7 @@ import com.example.docscanner.util.DocumentSearch
 import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.PageImageLoader
 import com.example.docscanner.util.PerfTrace
+import com.example.docscanner.util.StartupWork
 import com.example.docscanner.util.ThumbnailStore
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -469,16 +471,26 @@ fun DashboardScreen(
     //
     // Cheap by construction: twelve covers at ~6 ms each on the decode threads,
     // with a `peek` skip for anything already warm (which is everything the first
-    // screen just loaded). It is deliberately *not* gated on
-    // idleness — the whole point is to finish before the first fling starts — and it
-    // is keyed on the library so a newly scanned document warms its own cover.
+    // screen just loaded). It is keyed on the library so a newly scanned document
+    // warms its own cover.
+    //
+    // It runs *without* the idle gate — the whole point is to be warm before the
+    // first fling — but it yields the moment a finger lands (see the stamp check in
+    // the loop): a speculative pre-warm that keeps decoding through a real gesture
+    // is not a pre-warm, it is contention.
     LaunchedEffect(activeDocs, isGridView, coverSize, listCoverSize) {
         if (activeDocs.isEmpty()) return@LaunchedEffect
         // Let the first frame, its layout and its own tile requests go first: the
         // loop decodes one page at a time and must not delay the screen itself.
-        delay(WARM_START_DELAY_MS)
+        // Awaiting a drawn frame is exact, where the old 48 ms sleep only guessed
+        // at how long composition would take on this device — and on a slow cold
+        // start it guessed short, which is why the warm-up used to land *in* the
+        // first frames instead of after them.
+        withFrameNanos { }
+        StartupWork.awaitQuiet(0, "cover-prewarm")
         val perRow = if (isGridView) GRID_COLUMNS else 1
         val size = if (isGridView) coverSize else listCoverSize
+        val stamp = StartupWork.interactionStamp()
         val last = (perRow * WARM_ROWS - 1).coerceAtMost(activeDocs.lastIndex)
         for (index in 0..last) {
             // The finger wins. This loop exists to make the *first* fling smooth,
@@ -486,7 +498,10 @@ fun DashboardScreen(
             // are actually visible — carrying on with a speculative pre-warm is
             // exactly the contention this round is removing. The work is not lost:
             // the prefetcher picks those rows up as they come into view.
+            // Includes the first *touch*, not only a scroll: on a fast device a
+            // finger can land before the fling is reported as in progress.
             if (gridState.isScrollInProgress || listState.isScrollInProgress) return@LaunchedEffect
+            if (!StartupWork.isUndisturbedSince(stamp)) return@LaunchedEffect
             val cover = activeDocs.getOrNull(index)?.pages?.firstOrNull()?.imageUri
                 ?: continue
             if (PageImageLoader.peek(cover, size.width, size.height) != null) continue
@@ -502,10 +517,17 @@ fun DashboardScreen(
     // per page plus a 2400 px decode; running that alongside the first fling is
     // exactly what made the library feel slow right after launch even though the
     // dashboard itself was doing less work than before.
-    LaunchedEffect(Unit) {
-        delay(LAUNCH_QUIET_MS + OCR_START_DELAY_MS)
+    LaunchedEffect(repository) {
+        StartupWork.awaitQuiet(OCR_IDLE_MS, "ocr-backfill")
         repository.backfillTextInBackground(
-            isBusy = { gridState.isScrollInProgress || listState.isScrollInProgress }
+            // Paused by a gesture *or* by any recent touch, not just by a scroll:
+            // someone tapping through cards is also somebody who should not be
+            // sharing four cores with an ML Kit inference.
+            isBusy = {
+                gridState.isScrollInProgress ||
+                    listState.isScrollInProgress ||
+                    StartupWork.idleMs() < OCR_IDLE_MS
+            }
         )
     }
 
@@ -515,7 +537,10 @@ fun DashboardScreen(
     LaunchedEffect(gridState, listState) {
         snapshotFlow { gridState.isScrollInProgress || listState.isScrollInProgress }
             .distinctUntilChanged()
-            .collect { scrolling -> PerfTrace.setScrolling(scrolling) }
+            .collect { scrolling ->
+                PerfTrace.setScrolling(scrolling)
+                StartupWork.setScrolling(scrolling)
+            }
     }
 
     // Pages saved before thumbnails existed still have to be decoded in full the
@@ -530,8 +555,11 @@ fun DashboardScreen(
                 if (scrolling) return@collectLatest
                 // Repair, not launch work: a page without a stored thumbnail is
                 // rare, and the ones that exist can be built while the user reads
-                // the list rather than while they open it.
-                delay(LAUNCH_QUIET_MS + THUMBNAIL_PRIME_DELAY_MS)
+                // the list rather than while they open it. `awaitQuiet` is what
+                // makes that true — a fixed delay fires whether or not the user
+                // is still settling in, and `collectLatest` only cancels on a
+                // scroll, not on a tap.
+                StartupWork.awaitQuiet(REPAIR_IDLE_MS, "thumbnail-repair")
                 val uris = repository.documents.value
                     .asSequence()
                     .filterNot { it.isTrash }
@@ -1127,43 +1155,33 @@ private const val PREFETCH_ROWS = 2
 private const val WARM_ROWS = 6
 
 /**
- * How long the app is left alone after launch before *any* background work starts.
+ * How long the app must be **untouched** before recognised text is backfilled.
  *
- * This is the answer to "the library is fine, but it stutters for a few seconds
- * after opening". Nothing about the first seconds is caused by the grid: it is the
- * page decodes, thumbnail writes and text recognition that all decide launch is
- * the right moment to begin. They are wrong — launch is the one moment the user is
- * guaranteed to be touching the list. So the first two seconds belong to the UI
- * alone, and everything that is nobody's emergency waits for them.
+ * Round 36 replaced the old fixed delays (`LAUNCH_QUIET_MS + OCR_START_DELAY_MS`
+ * = 5.2 s after composition) with this. The delay was the bug, not the remedy: it
+ * fired five seconds into the session whether the user was reading the list, mid
+ * fling, or had just put the phone down, and the pass it started is the most
+ * expensive thing in the app — one ML Kit inference plus a 2400 px decode per
+ * page, up to [com.example.docscanner.data.ScannerRepository]'s batch limit, on the
+ * same cores the frame needs. Five seconds into a fresh open is also exactly when
+ * people are still scrolling a library they have not seen since yesterday.
+ *
+ * Now the pass starts only after 2.5 s in which no pointer touched the screen and
+ * nothing is scrolling, and every touch resets that clock (see `StartupWork`).
+ * Search over an old library is a few seconds later; the frames are never
+ * interrupted by work the user did not ask for.
  */
-private const val LAUNCH_QUIET_MS = 2200L
+private const val OCR_IDLE_MS = 2_500L
 
 /**
- * How long the library gets to itself before background text recognition starts.
+ * How long the list must be still before pages saved without a thumbnail are
+ * rebuilt.
  *
- * Long enough for launch, the first paint and the first scroll to be over; short
- * enough that search finds older pages within seconds of opening the app. Counted
- * *after* [LAUNCH_QUIET_MS], not from process start.
+ * The repair decodes a full page and encodes a JPEG per page, so it is far heavier
+ * per page than a cover load. It also has no deadline: those pages already render,
+ * just slowly. Hence the longer quiet window.
  */
-private const val OCR_START_DELAY_MS = 3000L
-
-/**
- * How long the list has to be still before legacy thumbnails are built.
- *
- * Long enough that it never fires between two flicks of the same scroll gesture;
- * short enough that a library is warm by the time anyone browses it.
- */
-private const val THUMBNAIL_PRIME_DELAY_MS = 1200L
-
-/**
- * How long the first screen gets before its neighbours are warmed into memory.
- *
- * Three frames. The tiles that are already on screen have issued their own loads
- * during the first composition, so this loop cannot preempt them however early it
- * starts; it only has to wait long enough that the first frame is not competing
- * with it for the decode threads.
- */
-private const val WARM_START_DELAY_MS = 48L
+private const val REPAIR_IDLE_MS = 4_000L
 
 /** Pause between thumbnail-repair chunks, so the decoder cannot saturate a core. */
 private const val PRIME_CHUNK_PAUSE_MS = 350L

@@ -1309,6 +1309,68 @@ the backdrop was hard-coded to the light tone.
 - **Still uncompiled in this sandbox** (no JDK/SDK). Round 34's sheet and everything in
   this round want `./gradlew testDebugUnitTest assembleDebug` on a machine that has one.
 
+## 6y. Round 36: output size on the file-size chooser, and startup work waits for the user (Arena, 2026-10-27, round 36)
+
+### New shared pieces
+
+| symbol | file | contract |
+| :--- | :--- | :--- |
+| `StartupWork` | `util/StartupWork.kt` | the app's **only** way to schedule speculative background work: `awaitQuiet(ms, reason)`, `runWhenQuiet(...)`, `dispatcher` (single thread), `markInteraction()`, `setForeground()`, `setScrolling()` |
+| `PdfSizeEstimate` | `util/PdfSizeEstimate.kt` | `estimate(pages, maxImageDimensionPx): Map<PdfCompression, Long>`, `format(bytes): String` |
+
+**If you need to run something nobody is waiting for, gate it on `StartupWork`. Do not
+add `delay(…)` to defer launch work** — that is the defect this round removed (see
+below). If you add a new speculative pass, call `awaitQuiet` first and check
+`isUndisturbedSince` between items.
+
+### Fixed delays that were deleted
+
+`DashboardScreen`: `LAUNCH_QUIET_MS` (2 200), `OCR_START_DELAY_MS` (3 000),
+`THUMBNAIL_PRIME_DELAY_MS` (1 200), `WARM_START_DELAY_MS` (48) are **gone**, replaced by
+`OCR_IDLE_MS` (2 500), `REPAIR_IDLE_MS` (4 000) and `withFrameNanos`.
+`ScannerRepository.ORPHAN_SWEEP_DELAY_MS` is now **`ORPHAN_SWEEP_IDLE_MS` (6 000)** — same
+job, idle-gated instead of timed.
+
+### Why (for whoever reads the next "it lags on launch" report)
+
+The three passes started at 48 ms, 3.4 s and 5.2 s after composition, and the orphan
+sweep at 5 s — all unconditional. The 5.2 s pass is ML Kit: one inference + a 2400 px
+decode per page (up to 24), each page followed by a full `library.json` write and a
+dashboard emission. That is the ~10 s of jank. Nothing about it was the grid.
+
+Measured, not asserted: `adb logcat -s DocScannerPerf` prints
+`library.json read: … in X ms`, `launch: library ready … ms`,
+`[startup] ocr-backfill allowed after … ms idle`, `ocr-backfill finished: … in X ms`,
+`orphan-sweep removed … in X ms`. Ask for those five lines before changing anything here.
+
+Also removed: the per-document OCR apply and `OCR_BATCH_SPACING_MS`. The backfill uses
+the new `ScannerRepository.setPageOcrTextsBulk` and emits the dashboard **once** per
+batch. A per-document apply plus a sleep is the pattern that repainted the list two
+dozen times during launch — do not bring it back.
+
+### PDF sheet: what is safe to touch
+
+`PdfSizeEstimate` is read-only and is **not** in the write path — `PdfGenerator`,
+`PdfWriter`, `PdfImages`, geometry and filters are unchanged, and the estimate cannot
+change the bytes of a PDF. `CompressionCard(level, selected, sizeLabel, onClick,
+modifier)` now requires `sizeLabel`; it is `heightIn(min = 88.dp)` with label / estimate
+/ detail rows, and the sheet prints `12 pages ≈ 6.6 MB · …` under the grid.
+
+### Do not undo
+
+- **Do not reintroduce a fixed delay for OCR, thumbnail repair or the orphan sweep.**
+  A timer fires whether or not the user is mid-gesture; that is how the ten seconds
+  happened.
+- **Do not call `StartupWork.markInteraction()` from more than one place** — one root
+  `pointerInput` on the `Initial` pass is deliberate: it sees every gesture and consumes
+  none.
+- **Do not do the size measurement in composition.** It stats files; it belongs in
+  `produceState`/IO, which is where it is.
+- **Do not add a second size-formatting helper.** KB below 1 MB, MB above, decimal
+  units — `PdfSizeEstimate.format`.
+- Mock regenerated for both palettes; if you touch the card, re-run
+  `python3 docs/design/render_pdf_sheet.py` from the **repo root**.
+
 ## 7. Known-good state
 
 Last verified build: **Verified by Antigravity** on 2026-10-26 (`./gradlew testDebugUnitTest assembleDebug` passed — Rounds 34 & 35).

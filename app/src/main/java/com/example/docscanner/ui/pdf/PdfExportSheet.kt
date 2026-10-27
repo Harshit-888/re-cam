@@ -13,8 +13,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,12 +21,15 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -56,6 +57,7 @@ import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -87,12 +89,13 @@ import com.example.docscanner.ui.common.InfoPill
 import com.example.docscanner.ui.common.LoadingDots
 import com.example.docscanner.ui.common.SectionLabel
 import com.example.docscanner.util.PdfGenerator
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import com.example.docscanner.util.PdfSizeEstimate
 import java.io.File
 import java.util.Locale
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** How long a selection colour takes to settle. Short, because it follows a tap. */
 private const val CHOICE_MS = 140
@@ -189,6 +192,23 @@ fun PdfExportSheet(
     // The one line that explains the *chosen* size, instead of four lines that
     // explain all of them at once.
     val compressionSummary = remember(compression) { compressionMeta(compression) }
+
+    // What each level would actually produce, in KB/MB.
+    //
+    // Measured off disk (page bytes and pixel counts, see [PdfSizeEstimate]) the
+    // first time the sheet opens and then left alone: the numbers do not depend on
+    // the paper size or the margins, only on the pages and the export resolution.
+    // `produceState` keeps that measurement off the composition, so the sheet opens
+    // at full speed and the four numbers appear a frame later instead of a scroll
+    // later.
+    val sizeEstimates by produceState<Map<PdfCompression, Long>>(
+        initialValue = emptyMap(),
+        pages,
+        settings.resolution
+    ) {
+        value = PdfSizeEstimate.estimate(pages, baseConfig.maxImageDimensionPx)
+    }
+    val selectedSize = sizeEstimates[compression]?.let(PdfSizeEstimate::format)
 
     // A swipe-down is a dismissal, and dismissing is what cancels the export: the
     // writing coroutine belongs to this composition's scope, so a sheet that slides
@@ -323,12 +343,14 @@ fun PdfExportSheet(
                     CompressionCard(
                         level = PdfCompression.ORIGINAL,
                         selected = compression == PdfCompression.ORIGINAL,
+                        sizeLabel = sizeEstimates[PdfCompression.ORIGINAL]?.let(PdfSizeEstimate::format),
                         onClick = { compression = PdfCompression.ORIGINAL },
                         modifier = Modifier.weight(1f)
                     )
                     CompressionCard(
                         level = PdfCompression.BALANCED,
                         selected = compression == PdfCompression.BALANCED,
+                        sizeLabel = sizeEstimates[PdfCompression.BALANCED]?.let(PdfSizeEstimate::format),
                         onClick = { compression = PdfCompression.BALANCED },
                         modifier = Modifier.weight(1f)
                     )
@@ -337,12 +359,14 @@ fun PdfExportSheet(
                     CompressionCard(
                         level = PdfCompression.SMALL,
                         selected = compression == PdfCompression.SMALL,
+                        sizeLabel = sizeEstimates[PdfCompression.SMALL]?.let(PdfSizeEstimate::format),
                         onClick = { compression = PdfCompression.SMALL },
                         modifier = Modifier.weight(1f)
                     )
                     CompressionCard(
                         level = PdfCompression.TINY,
                         selected = compression == PdfCompression.TINY,
+                        sizeLabel = sizeEstimates[PdfCompression.TINY]?.let(PdfSizeEstimate::format),
                         onClick = { compression = PdfCompression.TINY },
                         modifier = Modifier.weight(1f)
                     )
@@ -350,7 +374,15 @@ fun PdfExportSheet(
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                compressionSummary,
+                // The chosen level's *total*, next to the line that explains it:
+                // "12 pages ≈ 24.6 MB" answers the question the section asks, and it
+                // changes the moment the choice does.
+                if (selectedSize == null) {
+                    compressionSummary
+                } else {
+                    val unit = if (totalPages == 1) "page" else "pages"
+                    "$totalPages $unit ≈ $selectedSize · $compressionSummary"
+                },
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 8.dp)
@@ -845,15 +877,21 @@ private fun PaperOption(
 /**
  * One compression level as a card you can compare at a glance.
  *
- * The label is the promise and the line under it is the cost, which is the order
- * people read in: "Balanced" then "looks the same, far smaller". The selected
- * card is the only one with a filled container and a check, so the current answer
- * is unmistakable in a row of four.
+ * Top to bottom: the promise, **the number**, then the detail. "Balanced" alone
+ * never answered the only question the section asks — how big is the file going to
+ * be — so the estimate gets its own line, in the accent colour and one step above
+ * the detail text in weight. It is the row people scan; the words are what they
+ * read once they have picked.
+ *
+ * The selected card is the only one with a filled container and a check, so the
+ * current answer is unmistakable in a grid of four.
  */
 @Composable
 private fun CompressionCard(
     level: PdfCompression,
     selected: Boolean,
+    /** "2.4 MB" once the estimate is in; `null` while it is still being measured. */
+    sizeLabel: String?,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -874,10 +912,13 @@ private fun CompressionCard(
     }
     Column(
         modifier = modifier
-            // 76 dp, not 68: the detail line wraps to two lines at half width on a
-            // small phone ("Looks the same, far smaller"), and a clipped second line
-            // is worse than a shorter label.
-            .height(76.dp)
+            // Three lines now: label, estimate, up to two lines of detail. A
+            // *minimum* rather than a fixed height, because the estimate line and
+            // the detail wrap differently at a 1.3x font scale on a 320 dp phone —
+            // and a clipped third line is exactly the failure the previous revision
+            // shipped. The row still puts both cards at the same height in practice:
+            // they carry the same structure.
+            .heightIn(min = 88.dp)
             .pressScale(interactions)
             .clip(DocShapes.cardSmall)
             .background(container)
@@ -910,6 +951,21 @@ private fun CompressionCard(
                 )
             }
         }
+        Spacer(Modifier.height(2.dp))
+        // The estimate, on its own line.
+        //
+        // A non-breaking space is reserved while the measurement is in flight so the
+        // four cards do not grow a line under the user's finger when the numbers
+        // arrive a frame later. `≈` because it is an estimate: the number comes from
+        // measuring the stored pages, not from encoding them.
+        Text(
+            if (sizeLabel == null) "\u00A0" else "≈ $sizeLabel",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = if (selected) content.copy(alpha = 0.9f) else MaterialTheme.colorScheme.primary,
+            maxLines = 1,
+            softWrap = false
+        )
         Spacer(Modifier.height(2.dp))
         Text(
             level.detail,

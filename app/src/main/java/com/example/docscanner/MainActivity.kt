@@ -10,14 +10,21 @@ import androidx.activity.viewModels
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.docscanner.data.LibraryViewModel
 import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.model.ThemeMode
@@ -25,6 +32,7 @@ import com.example.docscanner.theme.DocScannerTheme
 import com.example.docscanner.ui.common.LaunchSplash
 import com.example.docscanner.util.FramePacing
 import com.example.docscanner.util.PerfTrace
+import com.example.docscanner.util.StartupWork
 
 /** How long the launch screen takes to hand over to the library. */
 private const val SPLASH_FADE_MS = 300
@@ -74,31 +82,81 @@ class MainActivity : ComponentActivity() {
         PerfTrace.attachWindow(window)
 
         setContent {
-            // The repository is built on an IO thread while [LaunchSplash] is on
-            // screen: `LibraryStore.load()` reads and parses `library.json`, and
-            // doing that on the thread that owes the system a frame within 8 ms
-            // delays every frame behind it — the parse, the first library emission
-            // and the first cover decodes then all land in the same window.
-            //
-            // The state lives in the ViewModel, so on a rotation the library is
-            // already there: no splash, no re-parse, straight back to the screen the
-            // user was on.
-            val ready by library.repository.collectAsState()
+            UserActivityGate {
+                // The repository is built on an IO thread while [LaunchSplash] is on
+                // screen: `LibraryStore.load()` reads and parses `library.json`, and
+                // doing that on the thread that owes the system a frame within 8 ms
+                // delays every frame behind it — the parse, the first library
+                // emission and the first cover decodes then all land in the same
+                // window.
+                //
+                // The state lives in the ViewModel, so on a rotation the library is
+                // already there: no splash, no re-parse, straight back to the screen
+                // the user was on.
+                val ready by library.repository.collectAsState()
 
-            Crossfade(
-                targetState = ready,
-                animationSpec = tween(durationMillis = SPLASH_FADE_MS),
-                label = "launch"
-            ) { repo ->
-                if (repo == null) {
-                    // The system bar icons follow the system theme here: the user's
-                    // own override is one of the things still being read.
-                    ApplySystemBarStyle(darkTheme = isSystemInDarkTheme())
-                    LaunchSplash()
-                } else {
-                    AppContent(repository = repo)
+                Crossfade(
+                    targetState = ready,
+                    animationSpec = tween(durationMillis = SPLASH_FADE_MS),
+                    label = "launch"
+                ) { repo ->
+                    if (repo == null) {
+                        // The system bar icons follow the system theme here: the
+                        // user's own override is one of the things still being read.
+                        ApplySystemBarStyle(darkTheme = isSystemInDarkTheme())
+                        LaunchSplash()
+                    } else {
+                        AppContent(repository = repo)
+                    }
                 }
             }
+        }
+    }
+
+    /**
+     * Tells [StartupWork] when the user is actually using the app, and wraps the app
+     * so it can.
+     *
+     * Two signals, both cheap:
+     *
+     * * **Touches.** One `pointerInput` on the **parent** of everything, observing on
+     *   the `Initial` pass so it sees every gesture in the app and consumes none of
+     *   them. The parent matters: Compose hit-tests siblings front to back, so a
+     *   full-size observer composed *next to* the app would simply never be hit
+     *   behind a scrollable list. A parent sees the Initial pass before any child
+     *   does, whether or not that child consumes the gesture.
+     * * **Foreground.** `ON_START`/`ON_STOP` on the activity lifecycle. Work that
+     *   starts while the app is in the background is work whose result nobody sees,
+     *   on a process the system is about to freeze.
+     */
+    @Composable
+    private fun UserActivityGate(content: @Composable () -> Unit) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            awaitPointerEvent(PointerEventPass.Initial)
+                            StartupWork.markInteraction()
+                        }
+                    }
+                }
+        ) {
+            content()
+        }
+
+        val lifecycleOwner = LocalLifecycleOwner.current
+        DisposableEffect(lifecycleOwner) {
+            val observer = LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_START -> StartupWork.setForeground(true)
+                    Lifecycle.Event.ON_STOP -> StartupWork.setForeground(false)
+                    else -> Unit
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
         }
     }
 

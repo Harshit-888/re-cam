@@ -4,25 +4,26 @@ import android.content.Context
 import com.example.docscanner.model.AppSettings
 import com.example.docscanner.model.Document
 import com.example.docscanner.model.Folder
-import com.example.docscanner.model.QuadCorners
 import com.example.docscanner.model.LibrarySnapshot
+import com.example.docscanner.model.QuadCorners
 import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.OcrEngine
+import com.example.docscanner.util.StartupWork
+import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import java.util.UUID
 
 /**
  * Single source of truth for documents and folders.
@@ -34,23 +35,15 @@ import java.util.UUID
  * **No global singleton.** Instances are created by `MainActivity` with the
  * application context and passed down; see `AGENTS.md` §2.6.
  *
- * The constructor reads `library.json` synchronously (a few KB of JSON). That is
- * deliberate: it means the first composition already sees the restored library
- * instead of flashing an empty state.
+ * The constructor reads `library.json` synchronously — a few KB on an empty library,
+ * and tens to hundreds of KB once pages carry recognised text. That is deliberate: the
+ * first composition then sees the restored library instead of flashing an empty state.
+ * It runs on `Dispatchers.IO` (see `LibraryViewModel`) and is timed, so its cost is
+ * visible as `library.json read: … in X ms` on the `DocScannerPerf` tag rather than
+ * being guessed at.
  */
 /** How many pages one background text-recognition pass may handle. */
 private const val OCR_BACKFILL_BATCH = 24
-
-/**
- * Pause between the documents of a backfill pass.
- *
- * Each applied result emits a new library snapshot, and every snapshot is a
- * recomposition of the home screen plus a rewrite of the whole `library.json`
- * (which contains all of this text). Unspaced, a fresh install re-indexed the
- * library two dozen times inside the first seconds of use — while the user was
- * scrolling it. One short gap per *document* is invisible; one per page was not.
- */
-private const val OCR_BATCH_SPACING_MS = 220L
 
 /**
  * How long a paused backfill waits before asking again whether it may run.
@@ -64,15 +57,19 @@ private const val OCR_BATCH_SPACING_MS = 220L
 private const val OCR_PAUSE_POLL_MS = 250L
 
 /**
- * How long after launch the orphan sweep runs.
+ * How long the app must be untouched before the orphan sweep runs.
  *
  * Page files that no document points at — a discarded scan, an import that failed
  * halfway, a capture interrupted by a crash — otherwise stay on disk forever at
  * one to three megabytes each. The sweep is a directory listing plus a handful of
- * `delete` calls on `Dispatchers.IO`; the delay only keeps it away from the first
- * frames, which is when the user is most likely to be scrolling.
+ * `delete` calls, so it is not the expensive part of start-up on its own; what
+ * made it one was *when* it ran. A flat 5 s timer put a recursive listing and a
+ * batch of unlinks on the same IO threads as the cover decodes and the text
+ * backfill, in the same second, every launch. It now waits for a real pause
+ * (`StartupWork`), which on a library someone is actively scrolling can be a
+ * while — the files are not going anywhere.
  */
-private const val ORPHAN_SWEEP_DELAY_MS = 5000L
+private const val ORPHAN_SWEEP_IDLE_MS = 6_000L
 
 class ScannerRepository(context: Context) {
 
@@ -81,7 +78,7 @@ class ScannerRepository(context: Context) {
     private val store = LibraryStore(appContext, scope)
     private val settingsStore = SettingsStore(appContext, scope)
 
-    private val restored: LibrarySnapshot? = store.load()
+    private val restored: LibrarySnapshot? = loadLibrary()
 
     private val _settings = MutableStateFlow(settingsStore.load() ?: AppSettings())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
@@ -130,11 +127,37 @@ class ScannerRepository(context: Context) {
         }
 
         // Delete page files nothing references. Late, off the main thread, and
-        // after the restored library is known: see ORPHAN_SWEEP_DELAY_MS.
+        // after the restored library is known: see ORPHAN_SWEEP_IDLE_MS.
         scope.launch {
-            delay(ORPHAN_SWEEP_DELAY_MS)
-            ImageStore.sweepOrphans(appContext, referencedPageFiles())
+            StartupWork.runWhenQuiet(ORPHAN_SWEEP_IDLE_MS, "orphan-sweep") {
+                val startedAt = System.nanoTime()
+                val removed = ImageStore.sweepOrphans(appContext, referencedPageFiles())
+                val ms = (System.nanoTime() - startedAt) / 1_000_000
+                StartupWork.trace("orphan-sweep removed $removed file(s) in $ms ms")
+            }
         }
+    }
+
+    /**
+     * Reads `library.json`, timed.
+     *
+     * The read is blocking and happens before the first composition, so its cost is
+     * exactly the cost of the launch screen: on a library with a thousand pages the
+     * JSON carries a page entry and an OCR string each, and the parse is the one
+     * piece of start-up that cannot be deferred. Logged so that a "the app takes ten
+     * seconds to open" report can be answered with a number rather than a guess:
+     *
+     *     adb logcat -s DocScannerPerf
+     */
+    private fun loadLibrary(): LibrarySnapshot? {
+        val startedAt = System.nanoTime()
+        val snapshot = store.load()
+        val ms = (System.nanoTime() - startedAt) / 1_000_000
+        val pages = snapshot?.documents?.sumOf { it.pages.size } ?: 0
+        StartupWork.trace(
+            "library.json read: ${snapshot?.documents?.size ?: 0} doc(s), $pages page(s) in $ms ms"
+        )
+        return snapshot
     }
 
     // ------------------------------------------------------------- reads
@@ -370,6 +393,30 @@ class ScannerRepository(context: Context) {
     }
 
     /**
+     * Applies recognised text for **many** documents in one library update.
+     *
+     * The batched sibling of [setPageOcrTexts]: one emission for a whole backfill
+     * instead of one per document. See `backfillTextInBackground`.
+     */
+    fun setPageOcrTextsBulk(textsByDoc: Map<String, Map<String, String>>) {
+        if (textsByDoc.isEmpty()) return
+        _documents.update { docs ->
+            docs.map { doc ->
+                val texts = textsByDoc[doc.id]
+                if (texts.isNullOrEmpty()) {
+                    doc
+                } else {
+                    doc.copy(
+                        pages = doc.pages.map { page ->
+                            texts[page.id]?.let { page.copy(ocrText = it) } ?: page
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    /**
      * Recognises the text of every page of [docId] that does not have it yet.
      *
      * Fire-and-forget on the repository's own scope: a capture must never wait for
@@ -416,9 +463,13 @@ class ScannerRepository(context: Context) {
             }
             .take(limit)
         if (pending.isEmpty()) return
+        StartupWork.trace("ocr-backfill: ${pending.size} page(s) queued")
         scope.launch {
+            val startedAt = System.nanoTime()
+            var done = 0
+            val recognised = LinkedHashMap<String, MutableMap<String, String>>()
             pending.groupBy({ it.first }, { it.second }).forEach { (docId, pages) ->
-                val texts = LinkedHashMap<String, String>()
+                val texts = recognised.getOrPut(docId) { LinkedHashMap() }
                 for (page in pages) {
                     // Before every *page*, not every document.
                     //
@@ -430,12 +481,26 @@ class ScannerRepository(context: Context) {
                     // a gesture only once, at the start.
                     while (isBusy()) delay(OCR_PAUSE_POLL_MS)
                     OcrEngine.readPage(page.imageUri)?.let { texts[page.id] = it }
+                    done++
                 }
-                setPageOcrTexts(docId, texts)
-                // Let the frame, the JSON write and the index settle before the
-                // next document lands on top of them.
-                delay(OCR_BATCH_SPACING_MS)
             }
+            // One library update for the whole batch, not one per document.
+            //
+            // `documents` is what the dashboard collects, so every emission re-sorts
+            // the library, rebuilds the date labels and re-runs every visible card.
+            // Applying per document meant up to twenty-four of those inside ten
+            // seconds — each one a full list repaint during the exact window this
+            // round exists to keep quiet. The text is only useful once it is
+            // searchable anyway, and there is nothing to show in the meantime.
+            //
+            // The cost of batching: a process killed mid-pass loses the pages it had
+            // already recognised, and they are picked up on the next launch. That is
+            // the right trade for a background pass nobody is waiting for.
+            setPageOcrTextsBulk(recognised)
+            val ms = (System.nanoTime() - startedAt) / 1_000_000
+            StartupWork.trace(
+                "ocr-backfill finished: $done page(s) in ${recognised.size} doc(s), $ms ms"
+            )
         }
     }
 

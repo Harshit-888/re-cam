@@ -4,6 +4,93 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 — Arena.ai — Round 36: the export sheet says how big the file will be, and the ten-second launch is answered
+
+Two requests, verbatim:
+
+> while choosing the file size also show the output file size either in KB if less
+> than 1 MB , i still want to know why the app lags for about 10 seconds when opened
+> freshly
+
+### 1. Per-option output size (new files, new parameters)
+
+`util/PdfSizeEstimate.kt` — **new, no dependencies, never writes anything**:
+
+```kotlin
+suspend fun PdfSizeEstimate.estimate(pages, maxImageDimensionPx): Map<PdfCompression, Long>
+fun PdfSizeEstimate.format(bytes: Long): String   // "742 KB" / "1.4 MB"
+```
+
+It does not encode. For an evenly spread sample of up to 24 pages it reads the page
+file's **length** and its **pixel count** (`inJustDecodeBounds`), derives that page's
+bytes-per-pixel, then models what `PdfGenerator` will embed: pixel count after the
+export-resolution cap and the level's `pixelScale`, encoded as PNG for `ORIGINAL`
+(×2.2 vs a stored JPEG unless the bake is already `.png`) or JPEG at the level's
+`jpegQuality` (`(q/92)^3.3`). Plus 1.6 KB of PDF structure per page.
+
+`PdfGenerator`, `PdfWriter`, `PdfImages`, page geometry and filters are **untouched**:
+this is a read-only estimate, and the produced file is byte-for-byte what it was.
+
+- `ui/pdf/PdfExportSheet.kt`: `CompressionCard` gained a **required** `sizeLabel: String?`
+  parameter (no default — a new call site should be forced to decide) and is now
+  `heightIn(min = 88.dp)` with three rows: label + check, the estimate, up to two lines
+  of detail. The sheet measures once via `produceState`, keyed on `pages` and
+  `settings.resolution`, and shows `12 pages ≈ 6.6 MB · JPEG quality 85 · …` under the
+  grid. A non-breaking space reserves the line while measuring, so nothing grows a row
+  under the user's finger.
+- `docs/design/render_pdf_sheet.py` draws the new line; both PNGs re-rendered
+  (`pdf_export_sheet.png`, `pdf_export_sheet_dark.png`, 1116 × 1240).
+
+### 2. The ten-second launch — cause, fix, and how to prove it
+
+The fixed delays were the bug. `DashboardScreen` started its three background passes
+at **48 ms**, **3.4 s** and **5.2 s** after composition and `ScannerRepository` ran the
+orphan sweep at **5 s**, regardless of what the user was doing. The 5.2 s one is text
+recognition: one ML Kit inference plus a 2400 px decode per page, up to 24 pages, each
+page followed by a full `library.json` write and a dashboard emission — the exact
+window in which someone is still scrolling a library they have not opened since
+yesterday. Ten seconds of jank is that pass plus the thumbnail repair on the same cores.
+
+**New:** `util/StartupWork.kt` — a gate, not a timer.
+
+| symbol | what it does |
+| :--- | :--- |
+| `markInteraction()` | called by one root `pointerInput` on the `Initial` pass (`MainActivity.ObserveUserActivity`) — one volatile write per pointer event, consumes nothing |
+| `setForeground(Boolean)` | `ON_START` / `ON_STOP` |
+| `setScrolling(Boolean)` | reported by the dashboard alongside `PerfTrace.setScrolling` |
+| `awaitQuiet(quietMs, reason)` | suspends until foreground, not scrolling, and untouched for `quietMs` |
+| `runWhenQuiet(...)` | the same, then runs the block on `dispatcher` |
+| `dispatcher` | `Dispatchers.IO.limitedParallelism(1)` — speculative work gets one thread, never a core per pass |
+| `interactionStamp()` / `isUndisturbedSince()` | for loops that should abandon themselves on the first touch |
+
+**Deleted constants** (do not reintroduce a fixed startup delay):
+
+`DashboardScreen`: `LAUNCH_QUIET_MS`, `OCR_START_DELAY_MS`, `THUMBNAIL_PRIME_DELAY_MS`,
+`WARM_START_DELAY_MS` → `OCR_IDLE_MS` (2 500), `REPAIR_IDLE_MS` (4 000), plus one
+`withFrameNanos` for the cover pre-warm.
+`ScannerRepository`: `ORPHAN_SWEEP_DELAY_MS` → **`ORPHAN_SWEEP_IDLE_MS` (6 000)**.
+
+Behavioural consequences: on a library someone is actively scrolling, recognition and
+thumbnail repair can be deferred for as long as they keep touching the screen — that is
+the point. Search over a legacy library appears a few seconds later than before and the
+frames are never interrupted by it.
+
+**New API:** `ScannerRepository.setPageOcrTextsBulk(Map<docId, Map<pageId, text>>)`. The
+backfill now accumulates the whole batch and applies it **once**, so the dashboard
+re-sorts and repaints once instead of up to 24 times inside ten seconds. `OCR_BATCH_SPACING_MS`
+(220 ms between documents) is deleted along with the per-document apply it spaced out.
+
+**Instrumentation** (all `Log.i`, tag `DocScannerPerf`, debug only): `library.json read:
+N doc(s), M page(s) in X ms`, `launch: library ready … ms`, `[startup] ocr-backfill
+allowed after …`, `ocr-backfill finished: N page(s) in X ms`, `orphan-sweep removed N
+file(s) in X ms`. `adb logcat -s DocScannerPerf` now separates "how long did the read
+take" from "how long did the background passes compete with frames".
+
+### Known-good state
+
+Not compiled in this sandbox (no JDK, no Android SDK). `./gradlew testDebugUnitTest
+assembleDebug` still owed on a machine that has them.
+
 ## 2026-10-26 (night) — Antigravity — Rounds 34 & 35 build verification & compilation fixes
 
 Verified Rounds 34 & 35 changes from Arena.ai. Fixed 2 compilation errors:

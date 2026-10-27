@@ -4,6 +4,7 @@ import android.app.Application
 import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.docscanner.util.StartupWork
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -62,6 +63,14 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             // warm start shows a logo rather than a one-frame flash.
             val elapsed = SystemClock.elapsedRealtime() - startedAt
             if (elapsed < SPLASH_MIN_MS) delay(SPLASH_MIN_MS - elapsed)
+            // Time from process-visible launch to the library being on screen.
+            // Printed as one line so a "it takes ten seconds to open" report can be
+            // split into its two halves: the read (logged by `ScannerRepository`)
+            // and everything the system did before us.
+            StartupWork.trace(
+                "launch: library ready ${SystemClock.elapsedRealtime() - startedAt} ms " +
+                    "after the ViewModel was created (read ${elapsed} ms)"
+            )
             _repository.value = built
         }
     }

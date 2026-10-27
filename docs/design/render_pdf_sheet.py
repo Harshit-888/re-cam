@@ -325,24 +325,32 @@ def render_after(expanded=False, w=360, h=1240):
 
     # ---- file size
     y = label(d, x, y, "File size")
+    # (name, detail, selected, estimated size) — the size is the whole point of the
+    # round: the model anchors on each page's stored bytes-per-pixel, so these are
+    # 12 pages of ~3000 x 2250 px colour scans at 300 DPI.
     levels = [
-        ("Original", "Lossless, largest file", False),
-        ("Balanced", "Looks the same, far smaller", True),
-        ("Small", "Good for email", False),
-        ("Tiny", "Smallest, soft small text", False),
+        ("Original", "Lossless, largest file", False, "18.5 MB"),
+        ("Balanced", "Looks the same, far smaller", True, "6.6 MB"),
+        ("Small", "Good for email", False, "2.2 MB"),
+        ("Tiny", "Smallest, soft small text", False, "390 KB"),
     ]
     for row in range(2):
         for col in range(2):
-            name, detail, sel = levels[row * 2 + col]
+            name, detail, sel, size = levels[row * 2 + col]
             ox = x + col * (156 + 8)
-            oy = y + row * (76 + 8)
-            d.rounded_rectangle([ox, oy, ox + 156, oy + 76], radius=20,
+            oy = y + row * (88 + 8)
+            # 88 dp, not 76: label, estimate, two lines of detail — the same three
+            # rows the Compose card builds (`heightIn(min = 88.dp)`).
+            d.rounded_rectangle([ox, oy, ox + 156, oy + 88], radius=20,
                                 fill=PRIMARY_CONTAINER if sel else SURFACE_LOW)
             fg = ON_PRIMARY_CONTAINER if sel else ON_SURFACE
-            text(d, (ox + 12, oy + 11), name, 14, True, fg)
+            text(d, (ox + 12, oy + 10), name, 14, True, fg)
             if sel:
-                d.line([(ox + 122, oy + 20), (ox + 127, oy + 25), (ox + 136, oy + 14)],
+                d.line([(ox + 122, oy + 19), (ox + 127, oy + 24), (ox + 136, oy + 13)],
                        fill=fg, width=2)
+            # The number, on its own line, in the accent colour when unselected.
+            text(d, (ox + 12, oy + 30), "\u2248 " + size, 11, True,
+                 fg if sel else PRIMARY)
             words = detail.split()
             line, lines = "", []
             for word in words:
@@ -354,11 +362,11 @@ def render_after(expanded=False, w=360, h=1240):
                     line = probe
             lines.append(line)
             for i, ln in enumerate(lines[:2]):
-                text(d, (ox + 12, oy + 34 + i * 13), ln, 10, False,
+                text(d, (ox + 12, oy + 50 + i * 13), ln, 10, False,
                      ON_PRIMARY_CONTAINER if sel else ON_SURFACE_VARIANT)
-    y += 2 * 76 + 8 + 8
-    text(d, (x + 8, y), "JPEG quality 85 \u00b7 every pixel \u00b7 smaller file", 10,
-         False, ON_SURFACE_VARIANT)
+    y += 2 * 88 + 8 + 8
+    text(d, (x + 8, y), "12 pages \u2248 6.6 MB \u00b7 JPEG quality 85 \u00b7 every pixel \u00b7 smaller file",
+         10, False, ON_SURFACE_VARIANT)
     y += 24
 
     # ---- layout

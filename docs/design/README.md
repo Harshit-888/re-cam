@@ -29,7 +29,7 @@ Colours, kept in step with `res/values/colors.xml`:
 Regenerate with `python3 docs/design/render_pdf_sheet.py` (Pillow); it writes both the
 light and the dark file from one source of truth. The script mirrors
 the dp values and the light palette so the drawing stays honest: 1 px = 1 dp, the same
-20 dp sheet padding, 16 dp card padding, 40 dp chips, 54 dp paper cards, 76 dp
+20 dp sheet padding, 16 dp card padding, 40 dp chips, 54 dp paper cards, 88 dp
 compression cards and 56 dp CTA. It is a *layout* drawing — real type metrics differ by
 a couple of pixels per line, which is why the text is measured and ellipsised rather
 than pasted at fixed positions.
@@ -47,5 +47,10 @@ What the three tiles argue, in order:
    question asked every time; margins are a 2 × 2 of equal chips that cannot orphan;
    each toggle is a whole tappable row; and the CTA carries a caption naming exactly
    what will be written — "12 pages · A4 · Balanced".
+   Since Round 36 each file-size card also carries its **estimated output size**
+   ("≈ 18.5 MB", "≈ 6.6 MB", "≈ 2.2 MB", "≈ 390 KB" — KB below a megabyte, MB above),
+   and the line under the grid reads "12 pages ≈ 6.6 MB · JPEG quality 85 · …". The
+   numbers are from `util/PdfSizeEstimate.kt`, which measures the stored pages instead
+   of guessing; tiny is under 1 MB on purpose, so the KB format is visible in the mock.
 3. **After, paper expanded.** Eight sizes in a two-column grid with their dimensions,
    the current one filled and checked. Choosing one folds the grid away again.
