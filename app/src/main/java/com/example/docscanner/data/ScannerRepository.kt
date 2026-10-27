@@ -1,14 +1,21 @@
 package com.example.docscanner.data
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
 import android.net.Uri
 import com.example.docscanner.model.AppSettings
 import com.example.docscanner.model.Document
+import com.example.docscanner.model.FilterType
 import com.example.docscanner.model.Folder
 import com.example.docscanner.model.LibrarySnapshot
 import com.example.docscanner.model.QuadCorners
 import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.util.BackupArchive
+import com.example.docscanner.util.CardComposition
 import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.PageImageLoader
 import com.example.docscanner.util.OcrEngine
@@ -77,6 +84,13 @@ private const val OCR_PAUSE_POLL_MS = 250L
  * while — the files are not going anywhere.
  */
 private const val ORPHAN_SWEEP_IDLE_MS = 6_000L
+
+/** A4 at 200 dpi: readable when printed, cheap to compose. */
+private const val A4_PX_WIDTH = 1654
+private const val A4_PX_HEIGHT = 2339
+
+/** Each card is scaled into a half-page cell, so decoding larger is waste. */
+private const val CARD_SOURCE_DIMENSION = 1600
 
 class ScannerRepository(context: Context) {
 
@@ -709,6 +723,91 @@ class ScannerRepository(context: Context) {
             stagedArchive.delete()
         }
     }
+
+    // ------------------------------------------------------------- ID card
+
+    /**
+     * Front and back of an ID card on one A4 page, as a new document.
+     *
+     * The original app does this as a two-step capture mode; this does it from two
+     * pages that already exist, so it works on a re-scan as well as a fresh one and
+     * touches nothing about how the camera captures. The layout arithmetic is
+     * [CardComposition] (unit-tested); this is only the drawing.
+     *
+     * The page is written as **PNG**: a card is flat colour and small text, exactly
+     * the content JPEG rings around, and `AGENTS.md` already makes lossless the rule
+     * for pages that are not photographs. The composed page is stored under the same
+     * `_edited.png` name every re-bake uses, so the orphan sweep and thumbnail keys
+     * treat it as an ordinary page.
+     *
+     * @return the new document, or `null` when either image cannot be read.
+     */
+    suspend fun createIdCardDocument(
+        frontPageId: String,
+        backPageId: String,
+        title: String,
+        folderId: String? = null
+    ): Document? = withContext(Dispatchers.IO) {
+        val allPages = _documents.value.flatMap { it.pages }
+        val front = allPages.firstOrNull { it.id == frontPageId } ?: return@withContext null
+        val back = allPages.firstOrNull { it.id == backPageId } ?: return@withContext null
+
+        val frontBitmap = ImageStore.loadBitmap(appContext, front.imageUri, CARD_SOURCE_DIMENSION)
+            ?: return@withContext null
+        val backBitmap = ImageStore.loadBitmap(appContext, back.imageUri, CARD_SOURCE_DIMENSION)
+        if (backBitmap == null) {
+            frontBitmap.recycle()
+            return@withContext null
+        }
+
+        val composed = try {
+            val page = CardComposition.Size(A4_PX_WIDTH, A4_PX_HEIGHT)
+            val placement = CardComposition.placement(
+                page = page,
+                front = CardComposition.Size(frontBitmap.width, frontBitmap.height),
+                back = CardComposition.Size(backBitmap.width, backBitmap.height)
+            ) ?: return@withContext null
+
+            Bitmap.createBitmap(A4_PX_WIDTH, A4_PX_HEIGHT, Bitmap.Config.ARGB_8888).also { target ->
+                val canvas = Canvas(target)
+                // Paper, not transparency: the PNG is embedded in a PDF, and a
+                // transparent sheet composites to whatever the viewer decides is
+                // behind it.
+                canvas.drawColor(Color.WHITE)
+                val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+                canvas.drawBitmap(frontBitmap, null, placement.front.toRect(), paint)
+                canvas.drawBitmap(backBitmap, null, placement.back.toRect(), paint)
+            }
+        } finally {
+            frontBitmap.recycle()
+            backBitmap.recycle()
+        }
+
+        try {
+            val pageId = UUID.randomUUID().toString()
+            val file = ImageStore.editedLosslessFile(appContext, pageId)
+            ImageStore.writePng(composed, file)
+            addDocument(
+                title = title,
+                folderId = folderId,
+                pages = listOf(
+                    ScannedPage(
+                        id = pageId,
+                        documentId = "", // assigned by addDocument
+                        pageIndex = 0,
+                        imageUri = file.absolutePath,
+                        // Already composed: do not run a filter over it.
+                        filterType = FilterType.ORIGINAL,
+                        corners = QuadCorners()
+                    )
+                )
+            )
+        } finally {
+            if (!composed.isRecycled) composed.recycle()
+        }
+    }
+
+    private fun CardComposition.Box.toRect(): Rect = Rect(left, top, right, bottom)
 
     // -------------------------------------------------------- lifecycle
 

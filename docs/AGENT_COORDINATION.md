@@ -1407,6 +1407,22 @@ change pages, which is exactly the Round 37 bug.
 - **Do not remove `PageStrip` from one stage.** See above.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
 
+## 6ag. Round 44: ID card composition (Arena, 2026-10-27)
+
+**New:** `util/CardComposition.kt`, `test/.../util/CardCompositionTest.kt`.
+**Edited:** `data/ScannerRepository.kt` (one new suspend method + three file-level
+constants), `ui/detail/DocumentDetailScreen.kt` (one app-bar action, one dialog).
+
+- `Repository.createIdCardDocument(frontPageId, backPageId, title, folderId)` returns the
+  new `Document?`. It writes `pages/<newId>_edited.png`, so a composed page is
+  indistinguishable from a re-baked page to the orphan sweep and thumbnail store.
+- `CardComposition` takes page sizes in **pixels** of whatever bitmap is being drawn
+  into; it has no notion of points or dpi. A4 at 200 dpi is `1654 × 2339`.
+- The composed page uses `FilterType.ORIGINAL` deliberately: it is already finished, and
+  any filter over it would double-process the card.
+- Camera capture semantics are untouched. If a two-step (front, then back) capture flow
+  is added later, it should call the same repository method.
+
 ## 6af. Round 43: backup & restore (Arena, 2026-10-27)
 
 **New:** `util/BackupArchive.kt`, `test/.../util/BackupArchiveTest.kt`.

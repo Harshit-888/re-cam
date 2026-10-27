@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import android.widget.Toast
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.ArrowBack
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.BrandingWatermark
+import androidx.compose.material.icons.outlined.CreditCard
 import androidx.compose.material.icons.outlined.Crop
 import androidx.compose.material.icons.outlined.Draw
 import androidx.compose.material.icons.outlined.Edit
@@ -102,6 +104,8 @@ fun DocumentDetailScreen(
     var showSignatureDialog by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var showWatermarkDialog by remember { mutableStateOf(false) }
+    var showIdCardDialog by remember { mutableStateOf(false) }
+    var idCardBusy by remember { mutableStateOf(false) }
 
     // Deleting a page is destructive and irreversible — the capture, the JPEG bake
     // and the lossless bake all go — and it used to happen on a single tap of a
@@ -150,6 +154,22 @@ fun DocumentDetailScreen(
                     }
                     IconButton(onClick = { showPdfExportSheet = true }) {
                         Icon(Icons.Outlined.PictureAsPdf, contentDescription = "Export PDF")
+                    }
+                    // Only meaningful for exactly two pages: front and back. Shown
+                    // rather than hidden so the feature is discoverable, and disabled
+                    // with a reason rather than lying about what a tap will do.
+                    IconButton(
+                        onClick = { showIdCardDialog = true },
+                        enabled = document.pages.size == 2 && !idCardBusy
+                    ) {
+                        Icon(
+                            Icons.Outlined.CreditCard,
+                            contentDescription = if (document.pages.size == 2) {
+                                "Combine the two pages as an ID card"
+                            } else {
+                                "ID card needs exactly two pages"
+                            }
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -371,6 +391,67 @@ fun DocumentDetailScreen(
                         repository.updatePage(docId, target.id) { baked }
                     }
                 }
+            }
+        )
+    }
+
+    if (showIdCardDialog) {
+        val front = document.pages.getOrNull(0)
+        val back = document.pages.getOrNull(1)
+        AlertDialog(
+            onDismissRequest = { showIdCardDialog = false },
+            shape = DocShapes.dialog,
+            title = {
+                Text(
+                    "Combine as ID card?",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                Text(
+                    "Page 1 becomes the front and page 2 the back, side by side on one " +
+                        "A4 page. The original pages are kept and a new document is " +
+                        "created.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showIdCardDialog = false
+                        if (front == null || back == null) return@TextButton
+                        idCardBusy = true
+                        scope.launch {
+                            // A failure here is a failed write, not a crash: the page
+                            // may be unreadable or the disk full.
+                            val created = try {
+                                repository.createIdCardDocument(
+                                    frontPageId = front.id,
+                                    backPageId = back.id,
+                                    title = "${document.title} (ID card)",
+                                    folderId = document.folderId
+                                )
+                            } catch (t: Throwable) {
+                                null
+                            } finally {
+                                idCardBusy = false
+                            }
+                            Toast.makeText(
+                                context,
+                                if (created != null) {
+                                    "Created ${created.title}"
+                                } else {
+                                    "Could not read one of the two pages"
+                                },
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                ) { Text("Combine") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showIdCardDialog = false }) { Text("Cancel") }
             }
         )
     }

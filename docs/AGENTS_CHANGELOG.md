@@ -4,6 +4,15 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 — Arena.ai — Round 44: ID card — two pages onto one sheet
+
+- **New `util/CardComposition.kt`** — pure geometry, no Android imports: `placement(page, front, back)` returns where the two cards go, `defaultAxis()` splits a portrait page left/right and a landscape one top/bottom, margins and the gap are 5 % / 4 % of the page's short side. Aspect ratio preserved, both cells equal, nothing outside the printable area, no overlap. Returns `null` when the page cannot hold the requested margin/gap.
+- **`data/ScannerRepository.createIdCardDocument(frontPageId, backPageId, title, folderId)`** — decodes both pages at 1600 px, composes onto A4 at 200 dpi (1654 × 2339) on a **white** background (a transparent sheet composites to whatever the viewer chooses), writes **PNG** to the ordinary `_edited.png` slot so the orphan sweep and thumbnail keys treat it as a normal page, and creates a new document with one page (filter `ORIGINAL`, full-frame quad). Source pages are untouched.
+- **`ui/detail/DocumentDetailScreen.kt`** — a card icon in the app bar, enabled only when the document has exactly two pages, with a confirmation dialog that says page 1 is the front, page 2 the back, and that the originals are kept. Failure to read either page is a toast, not a crash.
+- The camera is **not** touched: this works from pages that already exist, so capture semantics (4:3, FIT_CENTER, MAXIMIZE_QUALITY, flash/torch, shutter sound, auto-save, batch vs single, discard cleanup) are unchanged. A two-step capture flow can be layered on later without changing this.
+- **New `app/src/test/java/com/example/docscanner/util/CardCompositionTest.kt`** (11 tests). Two of them were written wrong first and corrected against a Python port of the algorithm: two scans with *different* aspects legitimately get equal widths but different heights, and a 10 × 10 page still lays out under fractional margins (only an explicitly impossible margin or gap yields `null`).
+- **Not compiled here.** The geometry was simulated end to end; the compositing path has not been run.
+
 ## 2026-10-27 — Arena.ai — Round 43: backup and restore (the library, as one zip)
 
 - **New `util/BackupArchive.kt`** — no Android imports, so all of it is unit-tested on the host. `create()` writes `library.json` + every referenced image + `backup.json` (format, format version, schema version, entry list with size and SHA-256 of each). `inspect()` reads and validates the manifest without extracting. `restore()` validates, extracts to a **staging directory**, and returns a `RestoredBackup` whose `commit()`/`discard()` are the only things that touch the live library. `merge()` unions two snapshots by id, backup winning collisions.
