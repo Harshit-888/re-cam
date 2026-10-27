@@ -1407,6 +1407,24 @@ change pages, which is exactly the Round 37 bug.
 - **Do not remove `PageStrip` from one stage.** See above.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
 
+## 6ai. Round 46: annotation (Arena, 2026-10-27)
+
+**New:** `model/Markup.kt`, `util/MarkupRenderer.kt`, `ui/editor/MarkupDialog.kt`,
+`test/.../model/MarkupTest.kt`. **Edited:** `model/Models.kt` (`ScannedPage.markup`),
+`util/PageRenderer.kt` (replay step), `ui/detail/DocumentDetailScreen.kt` (menu item).
+
+- **`ScannedPage.markup` is persisted data, not pixels.** If you add another
+  destructive-looking step to `PageRenderer`, put it **before** the markup replay;
+  annotations are the top layer by definition.
+- `MarkupStroke.widthFraction` is relative to the **short side** of the page, so a
+  stroke keeps its apparent weight in either orientation. Don't change that to width
+  or height alone without checking the portrait/landscape pair in `MarkupTest`.
+- `MarkupRenderer.draw(canvas, strokes, width, height)` is the single drawing path.
+  The preview and the bake must both go through it or they will drift; there is a
+  `draw(bitmap, strokes)` overload for the bake.
+- Anything that already copies a `ScannedPage` (crop, rotate, signature, watermark)
+  keeps the markup automatically, because it is a field on the page.
+
 ## 6ah. Round 45: print (Arena, 2026-10-27)
 
 **New:** `util/PdfPrinter.kt`. **Edited:** `ui/pdf/PdfExportSheet.kt` only.

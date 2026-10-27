@@ -77,6 +77,7 @@ import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.ui.common.PageThumbnail
 import com.example.docscanner.ui.pdf.PdfExportSheet
 import com.example.docscanner.ui.signature.SignaturePadDialog
+import com.example.docscanner.ui.editor.MarkupDialog
 import com.example.docscanner.util.PageRenderer
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -105,6 +106,7 @@ fun DocumentDetailScreen(
     var showRenameDialog by remember { mutableStateOf(false) }
     var showWatermarkDialog by remember { mutableStateOf(false) }
     var showIdCardDialog by remember { mutableStateOf(false) }
+    var markupTarget by remember { mutableStateOf<ScannedPage?>(null) }
     var idCardBusy by remember { mutableStateOf(false) }
 
     // Deleting a page is destructive and irreversible — the capture, the JPEG bake
@@ -325,7 +327,8 @@ fun DocumentDetailScreen(
                             }
                         },
                         onMoveBackward = { repository.movePage(docId, index, index - 1) },
-                        onMoveForward = { repository.movePage(docId, index, index + 1) }
+                        onMoveForward = { repository.movePage(docId, index, index + 1) },
+                        onAnnotateClick = { markupTarget = page }
                     )
                 }
             }
@@ -387,6 +390,30 @@ fun DocumentDetailScreen(
                         context,
                         target.copy(signatureOverlayUri = signaturePath)
                     )
+                    if (baked != null) {
+                        repository.updatePage(docId, target.id) { baked }
+                    }
+                }
+            }
+        )
+    }
+
+    // Annotation is stored on the page as strokes and replayed by the renderer on
+    // every bake, so it survives a filter change made later. The re-bake here is only
+    // so the thumbnail and the viewer show the ink immediately.
+    markupTarget?.let { target ->
+        MarkupDialog(
+            page = target,
+            onDismiss = { markupTarget = null },
+            onSave = { strokes ->
+                markupTarget = null
+                scope.launch {
+                    val current = repository.getDocumentById(docId)
+                        ?.pages?.find { it.id == target.id } ?: return@launch
+                    repository.updatePage(docId, target.id) { it.copy(markup = strokes) }
+                    val baked = runCatching {
+                        PageRenderer.bake(context, current.copy(markup = strokes))
+                    }.getOrNull()
                     if (baked != null) {
                         repository.updatePage(docId, target.id) { baked }
                     }
@@ -571,6 +598,7 @@ fun PageGridItem(
     onRotateClick: () -> Unit,
     onMoveBackward: () -> Unit,
     onMoveForward: () -> Unit,
+    onAnnotateClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -671,6 +699,14 @@ fun PageGridItem(
                             onClick = {
                                 showMenu = false
                                 onMoveBackward()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Annotate") },
+                            leadingIcon = { Icon(Icons.Outlined.Draw, contentDescription = null) },
+                            onClick = {
+                                showMenu = false
+                                onAnnotateClick()
                             }
                         )
                         DropdownMenuItem(

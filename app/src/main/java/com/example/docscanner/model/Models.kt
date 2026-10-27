@@ -162,7 +162,13 @@ data class ScannedPage(
     val corners: QuadCorners = QuadCorners(),
     val ocrText: String = "",
     val watermarkText: String? = null,
-    val signatureOverlayUri: String? = null
+    val signatureOverlayUri: String? = null,
+    /**
+     * Hand annotations, in page order, drawn **on top of** the baked page. Kept as
+     * data rather than painted into the file so a later filter change does not erase
+     * them — see [MarkupStroke].
+     */
+    val markup: List<MarkupStroke> = emptyList()
 )
 
 @Immutable

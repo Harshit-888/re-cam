@@ -56,6 +56,29 @@ object PageRenderer {
                 }
             }
 
+            // Annotations go on last: they are the user's ink over a finished page,
+            // so nothing — not the filter, not the perspective warp, not a signature
+            // stamp — sits on top of them or distorts them. They are stored on the
+            // page rather than baked in, so this replay happens on every re-bake and
+            // changing the filter afterwards does not erase them.
+            if (page.markup.isNotEmpty()) {
+                result = if (result.isMutable) {
+                    result
+                } else {
+                    // `applyEnhancements` may hand back a bitmap it considers
+                    // immutable (or one shared with `source`); the caller's `finally`
+                    // still recycles whatever `result` ends up being.
+                    val mutable = result.copy(Bitmap.Config.ARGB_8888, true)
+                    if (mutable != null) {
+                        if (result !== source) result.recycle()
+                        mutable
+                    } else {
+                        result
+                    }
+                }
+                MarkupRenderer.draw(result, page.markup)
+            }
+
             val savedPath = ImageStore.saveEditedPage(
                 context = context,
                 pageId = page.id,

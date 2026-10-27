@@ -4,6 +4,17 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 — Arena.ai — Round 46: annotation — pen, marker, whiteout
+
+- **New `model/Markup.kt`** — `MarkupTool` (`PEN`, `HIGHLIGHTER`, `WHITEOUT`), `MarkupPoint`, `MarkupStroke` (normalised 0…1, width as a fraction of the page's **short side**) and `MarkupHistory` (undo, redo, and a single-step undoable Clear). All `@Serializable`, all plain Kotlin.
+- **`model/Models.kt` — `ScannedPage` gains `markup: List<MarkupStroke> = emptyList()`.** Annotations are **stored on the page, not baked into the file**, because `PageRenderer` rebuilds a page from its pristine capture on every bake: anything flattened would vanish the next time a filter changed. Old `library.json` files stay readable — the field defaults to empty.
+- **New `util/MarkupRenderer.kt`** — one drawing routine used by both the preview and the bake, with quadratic smoothing through segment midpoints (the signature pad's curve, for the same reason: a finger emits few, far-apart samples) and a multiplied, translucent highlighter so the text underneath stays legible.
+- **`util/PageRenderer.kt`** — replays `page.markup` **last**, after the filter and after the signature overlay, onto a mutable copy when necessary. Nothing sits on top of the user's ink.
+- **New `ui/editor/MarkupDialog.kt`** — page preview with a drawing overlay, tool chips, four ink colours, three widths, undo/redo/clear, Done/Cancel. Strokes are normalised against the preview's size, so a stroke drawn at 1400 px lands identically on the 3200 px bake.
+- **`ui/detail/DocumentDetailScreen.kt`** — "Annotate" in each page's overflow menu; saving updates the page then re-bakes so the thumbnail and viewer show the ink immediately.
+- **New `app/src/test/java/com/example/docscanner/model/MarkupTest.kt`** (12 tests). Writing them found a real flaw in my first `MarkupHistory`: after `clear()` the undo stack was empty, so "Clear is undoable" was false. Reworked to keep the cleared strokes for one undo, to forget them once new work starts, and each case is exercised against a Python port of the final algorithm.
+- **Not compiled here.** The model is host-tested; the dialog and the compositing path have not been run.
+
 ## 2026-10-27 — Arena.ai — Round 45: printing, from the same PDF that gets shared
 
 - **New `util/PdfPrinter.kt`** — `canPrint(context, config)` and `print(context, file, jobName, paperSize)` over `PrintManager`. The adapter copies the already-generated PDF into the descriptor the print service hands back, so **what prints is byte-identical to what the share sheet would have sent** — no second renderer, no second appearance.
