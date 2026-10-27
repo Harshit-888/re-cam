@@ -1407,6 +1407,20 @@ change pages, which is exactly the Round 37 bug.
 - **Do not remove `PageStrip` from one stage.** See above.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
 
+## 6ah. Round 45: print (Arena, 2026-10-27)
+
+**New:** `util/PdfPrinter.kt`. **Edited:** `ui/pdf/PdfExportSheet.kt` only.
+
+- `PdfPrinter.print(context, file, jobName, paperSize)` opens the system print dialog
+  for a PDF already on disk. It returns `false` rather than throwing; callers show a
+  message.
+- It needs an **Activity** context, and it cannot print an encrypted PDF. Both are
+  checked by `canPrint()` and surfaced in the sheet before the attempt.
+- `PaperSize` is the only geometry input: points → mils (`× 1000/72`). If another paper
+  table is ever added, printing follows it automatically.
+- `PdfExportSheet` now shares one `generateThen` path between share and print. If you
+  change the export config, change it there — not in two places.
+
 ## 6ag. Round 44: ID card composition (Arena, 2026-10-27)
 
 **New:** `util/CardComposition.kt`, `test/.../util/CardCompositionTest.kt`.

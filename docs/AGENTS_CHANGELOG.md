@@ -4,6 +4,14 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-27 — Arena.ai — Round 45: printing, from the same PDF that gets shared
+
+- **New `util/PdfPrinter.kt`** — `canPrint(context, config)` and `print(context, file, jobName, paperSize)` over `PrintManager`. The adapter copies the already-generated PDF into the descriptor the print service hands back, so **what prints is byte-identical to what the share sheet would have sent** — no second renderer, no second appearance.
+- Paper size is converted to **mils** (`pt × 1000/72`), because `PrintAttributes.MediaSize` takes thousandths of an inch; getting that wrong prints at ~1/14 scale and only shows in the preview. `setMinMargins(NO_MARGINS)`, since `PdfGenerator` already bakes the margins into the page geometry.
+- Printing is refused with a reason, not a failure, when there is no `Activity` context (the `PrintManager` API needs one) or when the PDF is password-protected — the framework opens the file itself to render it and an encrypted file fails there, not here.
+- **`ui/pdf/PdfExportSheet.kt`** — the generation code is now one `generateThen { file -> … }` path shared by *Share* and a new **Print instead** text button (disabled, with the reason, when the PDF will be encrypted). No change to what the export button produces.
+- The Android `PrintManager` path is the only thing here that cannot be exercised without a device; the size conversion and the gating rules are the parts that would fail silently, and they are the parts written down above.
+
 ## 2026-10-27 — Arena.ai — Round 44: ID card — two pages onto one sheet
 
 - **New `util/CardComposition.kt`** — pure geometry, no Android imports: `placement(page, front, back)` returns where the two cards go, `defaultAxis()` splits a portrait page left/right and a landscape one top/bottom, margins and the gap are 5 % / 4 % of the page's short side. Aspect ratio preserved, both cells equal, nothing outside the printable area, no overlap. Returns `null` when the page cannot hold the requested margin/gap.

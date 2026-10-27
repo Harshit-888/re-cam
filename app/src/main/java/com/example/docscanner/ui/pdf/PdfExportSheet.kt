@@ -52,6 +52,7 @@ import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
@@ -89,6 +90,7 @@ import com.example.docscanner.ui.common.InfoPill
 import com.example.docscanner.ui.common.LoadingDots
 import com.example.docscanner.ui.common.SectionLabel
 import com.example.docscanner.util.PdfGenerator
+import com.example.docscanner.util.PdfPrinter
 import com.example.docscanner.util.PdfSizeEstimate
 import java.io.File
 import java.util.Locale
@@ -530,27 +532,19 @@ fun PdfExportSheet(
 
             Spacer(Modifier.height(20.dp))
 
-            ExportCta(
-                label = when {
-                    isGenerating && totalPages > 4 -> "Encoding $totalPages pages…"
-                    isGenerating -> "Compiling pages…"
-                    mergeSources.size > 1 -> "Merge & share PDF"
-                    else -> "Generate & share PDF"
-                },
-                // What the button will actually do, in the user's words, under the
-                // button: the sheet's last line before it commits.
-                caption = when {
-                    isGenerating -> "Keep this screen open until it finishes"
-                    totalPages == 0 -> "Nothing to export yet"
-                    !passwordReady -> "Add a password to continue"
-                    mergeSources.size > 1 -> "$totalPages pages from ${mergeSources.size} documents"
-                    else -> "$totalPages pages · ${selectedPaperSize.shortLabel} · " +
-                        compression.label
-                },
-                busy = isGenerating,
-                enabled = canExport,
-                onClick = {
-                    if (!canExport) return@ExportCta
+            // One generation path for both actions, so what is printed is exactly
+            // what would have been shared. `PrintManager` needs a real Activity and
+            // cannot open an encrypted PDF itself, so printing is gated on both and
+            // says which is missing rather than failing later. The password only
+            // reaches the file when `protect` is on, so that — not the config's
+            // default — is what decides.
+            val willBeEncrypted = protect && password.isNotBlank()
+            val canPrint = PdfPrinter.canPrint(
+                context,
+                config = baseConfig.copy(password = if (willBeEncrypted) password else "")
+            )
+            val generateThen: (onReady: (File) -> Unit) -> Unit = { onReady ->
+                if (canExport && !isGenerating) {
                     isGenerating = true
                     val config = baseConfig.copy(
                         paperSize = selectedPaperSize,
@@ -573,16 +567,7 @@ fun PdfExportSheet(
                         }
                         isGenerating = false
                         result
-                            .onSuccess { file ->
-                                sharePdf(
-                                    context = context,
-                                    file = file,
-                                    title = file.nameWithoutExtension,
-                                    emailTo = settings.emailTo,
-                                    emailSubject = settings.emailSubject
-                                )
-                                onDismiss()
-                            }
+                            .onSuccess(onReady)
                             .onFailure { error ->
                                 Toast.makeText(
                                     context,
@@ -592,7 +577,81 @@ fun PdfExportSheet(
                             }
                     }
                 }
+            }
+
+            ExportCta(
+                label = when {
+                    isGenerating && totalPages > 4 -> "Encoding $totalPages pages…"
+                    isGenerating -> "Compiling pages…"
+                    mergeSources.size > 1 -> "Merge & share PDF"
+                    else -> "Generate & share PDF"
+                },
+                // What the button will actually do, in the user's words, under the
+                // button: the sheet's last line before it commits.
+                caption = when {
+                    isGenerating -> "Keep this screen open until it finishes"
+                    totalPages == 0 -> "Nothing to export yet"
+                    !passwordReady -> "Add a password to continue"
+                    mergeSources.size > 1 -> "$totalPages pages from ${mergeSources.size} documents"
+                    else -> "$totalPages pages · ${selectedPaperSize.shortLabel} · " +
+                        compression.label
+                },
+                busy = isGenerating,
+                enabled = canExport,
+                onClick = {
+                    generateThen { file ->
+                        sharePdf(
+                            context = context,
+                            file = file,
+                            title = file.nameWithoutExtension,
+                            emailTo = settings.emailTo,
+                            emailSubject = settings.emailSubject
+                        )
+                        onDismiss()
+                    }
+                }
             )
+
+            // Printing renders the *same* PDF the share button would have sent, so the
+            // two cannot drift. It is a text button rather than a second filled button
+            // because sharing is what most scans are for; printing is the exception.
+            if (canExport) {
+                Spacer(Modifier.height(2.dp))
+                TextButton(
+                    onClick = {
+                        generateThen { file ->
+                            val started = PdfPrinter.print(
+                                context = context,
+                                file = file,
+                                jobName = file.nameWithoutExtension,
+                                paperSize = selectedPaperSize
+                            )
+                            if (started) {
+                                onDismiss()
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "No print service is available on this device",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    },
+                    enabled = !isGenerating && canPrint,
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .padding(top = 2.dp)
+                ) {
+                    Text(
+                        if (canPrint) {
+                            "Print instead"
+                        } else {
+                            "Printing needs an unprotected PDF"
+                        },
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            }
 
             Spacer(Modifier.height(10.dp))
             Text(
