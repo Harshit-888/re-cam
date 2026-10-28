@@ -4,6 +4,39 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-28 — Arena.ai — Adobe Scan vs this app's filters (research, no code change)
+
+New document: **`docs/FILTER_COMPARISON_ADOBE_VS_DOC_SCANNER.md`** — the first read of
+`adobe-scan/` that compares its filter stack with ours. **No file in `app/src/` changed;
+`adobe-scan/` was read only.**
+
+Decoded from the artifacts (not from the write-ups alone): Adobe Scan 26.10.06 exposes five
+presets whose dialog indices map to cleaning levels `0, 2, 4, 6, 8`
+(`MagicCleanEdgeDetection_m8d`'s static block plus `m(int)`), and the five names in the dex
+are `FilterOriginalColor`, `FilterAutoColor`, `FilterWhiteboard`, `FilterGrayscale`,
+`FilterLightText`. **Its default is the colour shadow-removing preset — the same choice this
+app makes with `MAGIC_COLOR`.** Its cleaning nets (shadow removal, doc classification) are
+not in the APK at all: `setupSenseiModels` builds them under `getCacheDir()`, i.e. they are
+downloaded at runtime.
+
+Two findings that matter for future work:
+
+1. **Faint ink is the real gap.** Transcribing our own tables shows both document filters
+   key the curve on the *absolute* difference from paper, so a mark 18 levels below paper
+   (92 % reflectance: light pencil, fax, thermal receipt header, faded stamp) comes out at
+   248 (Magic Color) / 231 (Clear B&W) — almost paper. Adobe ships a whole preset for this
+   (`Light Text`, level 8). Recommended first port; pure LUT, no new pipeline.
+2. **The scene classifier is dead code.** `DocumentFilters.classifiesAsDocument()` and the
+   `GAIN_KNEE_*` / `GAIN_CAP_*` pair are referenced only from tests — no production path
+   calls them — so every image handed to Magic Color is treated as a document.
+3. **18 of `DocumentFilters.kt`'s 52 `const val`s are unused** (`SAUVOLA_*`,
+   `AA_SUPERSAMPLE`, `OTSU_SAMPLE_STRIDE`, `MAGIC_COLOR_SATURATION`, `SHARPEN_*`,
+   `CURVE_GAMMA`, `GAIN_*`, …), and `ORIGINAL_APP_FILTER_SPEC.md` §10 still reads as if
+   Clear B&W ran Otsu/Sauvola. It does not. Documentation debt that misleads diagnosis of
+   "B&W looks soft" reports.
+
+Nothing above is implemented; 1–2 change filter output and therefore need an explicit ask.
+
 ## 2026-10-28 — Arena.ai — Round 60: the annotate buttons that hid themselves
 
 Third report of *"the annotate menu buttons are still getting disappeared when clicked to
