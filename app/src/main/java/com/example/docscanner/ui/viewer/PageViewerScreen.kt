@@ -13,7 +13,6 @@ import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -66,10 +65,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
-import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
@@ -952,13 +947,12 @@ private val ShelfPadding = 8.dp
  * Three rows and no app bar: what the ink *is* (tool), what it looks like (colour and
  * weight), and what to do with it (undo, redo, clear, cancel, save).
  *
- * **The two switches are `SingleChoiceSegmentedButtonRow`s; the action row is the
- * connected group.** That split is deliberate and was learned the hard way: a
- * single-choice switch and an action bar are different controls, and building the switch
- * out of the action bar's cell — a plate, a state layer, a ripple, a press scale and a
- * shape that animates through three corner radii — gave the two most-used controls on
- * this shelf five independent ways to stop drawing their label. See the notes on the row
- * itself and on `ConnectedButtonGroup`.
+ * All three rows are one `ConnectedButtonGroup` each — the same cells the reader's verbs
+ * use, because this shelf *replaces* that one and has to look like it. What changed when
+ * the "the buttons disappear when I tap" report was fixed is inside the cell
+ * (`ConnectedButtonGroup`) and inside this shelf (nothing is disabled by the tool
+ * choice), **not** the control: the plate, the ink, the shapes and the sizes the user
+ * sees are the ones that were already there.
  *
  * Everything here writes into one [MarkupSession]; the drawing itself is
  * [MarkupInkSurface], over the page, and the store is the same `persistMarkup` the
@@ -1059,80 +1053,63 @@ private fun AnnotateShelf(
             )
         }
 
-        // ## The two switches are Material 3's own segmented button, not the connected group
+        // ## Tool and weight: the connected group, unchanged
         //
-        // They used to be two `ConnectedButtonGroup`s of label-only cells, on the theory
-        // that "one component everywhere" beats "the right component per job". It does
-        // not: a *single-choice switch* is a different control from an *action bar*, and
-        // the group was built for the second one. A cell of the group is a plate plus a
-        // state layer plus a ripple plus a press scale, all clipped into a shape that
-        // animates between 8 dp, 4 dp and a full pill — a lot of machinery for two words,
-        // and every piece of it is a way for the word to disappear.
+        // These two rows are the same `ConnectedButtonGroup` of label-only cells this
+        // shelf has always used — same plate (`surfaceContainerLowest`), same ink
+        // (`onSurfaceVariant`), same accent and the same 44 dp cells. No component was
+        // swapped: the complaint was about behaviour, not style.
         //
-        // `SingleChoiceSegmentedButtonRow` is the M3 control for exactly this: exclusive
-        // tools, connected shapes, a system-drawn selected container, and no custom
-        // painting anywhere near the label. It is also what the full-screen annotate
-        // screen has always used (`MarkupScreen`), so the two hosts of the same
-        // `MarkupSession` now show the same control — which is what "one component"
-        // should have meant in the first place.
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            MarkupTool.entries.forEachIndexed { index, option ->
-                SegmentedButton(
-                    selected = markup.tool == option,
-                    onClick = { markup.tool = option },
-                    shape = SegmentedButtonDefaults.itemShape(
-                        index = index,
-                        count = MarkupTool.entries.size
-                    ),
-                    colors = shelfSegmentedColors(),
-                    label = {
-                        Text(
-                            option.label,
-                            style = MaterialTheme.typography.labelMedium,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
+        // The "disappearing button" report is fixed *inside* the cell (no ink-coloured
+        // ripple bounded to the label; no whole-cell alpha for the disabled state) and
+        // *inside this shelf* (nothing is disabled when the eraser is chosen), so what the
+        // finger sees at rest is pixel-for-pixel what it saw before.
+        ConnectedButtonGroup(
+            actions = listOf(
+                ConnectedAction(
+                    label = "Pen",
+                    selected = markup.tool == MarkupTool.PEN,
+                    onClick = { markup.tool = MarkupTool.PEN }
+                ),
+                ConnectedAction(
+                    label = "Marker",
+                    selected = markup.tool == MarkupTool.HIGHLIGHTER,
+                    onClick = { markup.tool = MarkupTool.HIGHLIGHTER }
+                ),
+                ConnectedAction(
+                    label = "Erase",
+                    selected = markup.tool == MarkupTool.WHITEOUT,
+                    onClick = { markup.tool = MarkupTool.WHITEOUT }
                 )
-            }
-        }
+            ),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            accentColor = MaterialTheme.colorScheme.primary,
+            onAccentColor = MaterialTheme.colorScheme.onPrimary,
+            cellHeight = 44.dp
+        )
 
         Spacer(Modifier.height(ShelfPadding))
 
-        // ## One control per row, because two controls per row is what clips a label
-        //
-        // The colour swatches and the weight switch used to share this line: 4 x 34 dp of
-        // swatch plus the 8 dp gap left ~200 dp for three segmented cells, and "Medium"
-        // needs more of a cell than that at a large font scale. A clipped label is the
-        // same complaint as a missing one. Each switch now owns a full-width row, and the
-        // swatches spread across theirs (`SpaceEvenly`) instead of huddling on the left.
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Swatches on a 34 dp grid, so the four dots are spaced by the same rhythm as
+            // the cells beside them instead of being a tight cluster that then collides
+            // with the weight group.
             MarkupInkColors.forEach { ink ->
                 val interactions = remember { MutableInteractionSource() }
-                val pressed by interactions.collectIsPressedAsState()
                 val chosen = ink == markup.colorArgb
-                // A swatch has no label to lose, but it kept the same two habits the
-                // switch had: a ripple of the *ink* painted over the dot, and an alpha
-                // layer over the whole target while erasing. Both are gone. The press is
-                // a 12 % squeeze of the dot — a transform, drawn under nothing, and the
-                // selection is the ring, which is present in every state including
-                // "erasing" (where it is the colour your next pen stroke will use).
-                val squeeze by animateFloatAsState(
-                    targetValue = if (pressed) 0.88f else 1f,
-                    animationSpec = Motion.press,
-                    label = "swatchSqueeze"
-                )
                 Box(
                     modifier = Modifier
                         .size(34.dp)
                         .clip(CircleShape)
                         .clickable(
                             interactionSource = interactions,
-                            indication = null,
+                            indication = ripple(
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f)
+                            ),
                             onClickLabel = inkLabel(ink),
                             role = Role.RadioButton,
                             onClick = { markup.colorArgb = ink }
@@ -1142,10 +1119,6 @@ private fun AnnotateShelf(
                     Box(
                         modifier = Modifier
                             .size(22.dp)
-                            .graphicsLayer {
-                                scaleX = squeeze
-                                scaleY = squeeze
-                            }
                             .clip(CircleShape)
                             .background(Color(ink))
                             .border(
@@ -1160,33 +1133,25 @@ private fun AnnotateShelf(
                     )
                 }
             }
-        }
-
-        Spacer(Modifier.height(ShelfPadding))
-
-        // Weight: the same M3 single-choice control as the tool row. Three discrete
-        // weights are three decisions, and a slider you cannot hit mid-drag is worse
-        // than three cells you can.
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            MarkupWidths.forEachIndexed { index, fraction ->
-                SegmentedButton(
-                    selected = markup.widthFraction == fraction,
-                    onClick = { markup.widthFraction = fraction },
-                    shape = SegmentedButtonDefaults.itemShape(
-                        index = index,
-                        count = MarkupWidths.size
-                    ),
-                    colors = shelfSegmentedColors(),
-                    label = {
-                        Text(
-                            MarkupWidthLabels[index],
-                            style = MaterialTheme.typography.labelMedium,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
-                )
-            }
+            Spacer(Modifier.width(ShelfPadding))
+            // A second connected group rather than a slider: three discrete weights are
+            // three decisions, and a slider you cannot hit mid-drag is worse than three
+            // cells you can.
+            ConnectedButtonGroup(
+                actions = MarkupWidths.mapIndexed { index, fraction ->
+                    ConnectedAction(
+                        label = MarkupWidthLabels[index],
+                        selected = markup.widthFraction == fraction,
+                        onClick = { markup.widthFraction = fraction }
+                    )
+                },
+                modifier = Modifier.weight(1f),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                accentColor = MaterialTheme.colorScheme.primary,
+                onAccentColor = MaterialTheme.colorScheme.onPrimary,
+                cellHeight = 44.dp
+            )
         }
 
         Spacer(Modifier.height(ShelfPadding))
@@ -1241,32 +1206,6 @@ private fun AnnotateShelf(
         )
     }
 }
-
-/**
- * The palette for the annotate shelf's two segmented switches.
- *
- * The same mapping the reader's action cells use — filled = `primary` with `onPrimary`
- * ink, resting = `surfaceContainerLowest` with `onSurfaceVariant` ink — so the shelf's
- * switch and its action row are one colour system even though they are now two
- * different Material components.
- *
- * The *inactive* border is set explicitly. M3's default is `outline` (a mid grey), which
- * on a white card draws a heavier rectangle than the filled cell next to it; the theme's
- * `outlineVariant` keeps an unselected cell visible as a control without competing with
- * the selected one.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun shelfSegmentedColors() = SegmentedButtonDefaults.colors(
-    // Only the four container/ink slots are overridden. Borders stay at Material's
-    // defaults, which is also the one part of this control that tells an *unselected*
-    // cell apart from the card it sits on — the 1 dp outline is what makes a guessable
-    // target guessable.
-    activeContainerColor = MaterialTheme.colorScheme.primary,
-    activeContentColor = MaterialTheme.colorScheme.onPrimary,
-    inactiveContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
-    inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant
-)
 
 /**
  * What the page area paints: the pixels, and which page they belong to.

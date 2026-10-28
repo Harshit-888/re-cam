@@ -17,6 +17,27 @@ Resolved compilation errors from Arena Round 54 integration and verified clean b
 - **`ui/detail/DocumentDetailScreen.kt`**: Qualified `androidx.compose.animation.AnimatedVisibility` for tile selection check overlay, and added missing `import androidx.compose.foundation.layout.imePadding` for `MovePagesSheet`.
 - **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.9 MB), and `testDebugUnitTest` passed 100% (25 tasks, 0 failures).
 
+## 2026-10-28 — Arena.ai — Round 56: same fix, original control (style revert)
+
+Round 55 also changed the annotate shelf's **button style** — the tool and weight rows
+became `SingleChoiceSegmentedButtonRow`/`SegmentedButton`. That was not asked for; the
+report was a behaviour bug. Reverted.
+
+- **`ui/viewer/PageViewerScreen.kt`** — `AnnotateShelf`'s rows are `ConnectedButtonGroup`s
+  again: Pen/Marker/Erase as label-only 44 dp cells, and the original single row of four
+  34 dp swatches + 8 dp + the weight group at `weight(1f)`, with the original colours
+  (`surfaceContainerLowest` / `onSurfaceVariant` / `primary` / `onPrimary`) and the
+  swatch ripple restored. The private `shelfSegmentedColors()` helper and the
+  `SegmentedButton` imports are deleted.
+- **Kept from Round 55** because none of it changes the resting appearance: no
+  ink-coloured ripple on a group cell, no `pressScale` on a cell, disabled dims the ink
+  instead of the whole cell, the eraser no longer disables the weight row, the action
+  bar's entrance is translate-only, `SizeTransform(clip = false)` on the shelf swap, and
+  the 20 dp handle band as the drag target.
+- **Rule:** every segmented control in this app is a `ConnectedButtonGroup` (see
+  `AGENT_COORDINATION.md` §6an and §6as). Bug reports about behaviour get behaviour
+  fixes; the control does not get redesigned.
+
 ## 2026-10-28 — Arena.ai — Round 55: the annotate shelf's disappearing controls
 
 Reported against the Round-54 build: in the reader's annotate shelf, **Pen, Erase, Thin
@@ -36,15 +57,14 @@ output change).
   `LaunchedEffect(Unit)` inside the bar itself, so any recreation of the bar replayed a
   fade-in from invisible: every control in it blinked out. Do not give a persistent bar
   an entrance that can hide it.
-- **`ui/viewer/PageViewerScreen.kt`** — the annotate shelf's tool row and weight row are
-  now `SingleChoiceSegmentedButtonRow`/`SegmentedButton` (new private
-  `shelfSegmentedColors()`); only the action row stays a connected group. `inkEnabled`
-  (the eraser disabling the weight row and the swatches) is **deleted — no control on
-  the shelf is ever disabled**. The shelf-wide drag detector is gone; the 20 dp handle
-  band is the drag target again. Swatches use `indication = null` + a 12 % press squeeze.
-  The shelf swap builds its `ContentTransform` explicitly with
-  `SizeTransform(clip = false)`, because `a togetherWith b using x` binds `using` to the
-  else branch only.
+- **`ui/viewer/PageViewerScreen.kt`** — `inkEnabled` (the eraser disabling the weight row
+  and the swatches) is **deleted — no control on the shelf is ever disabled**. The
+  shelf-wide drag detector is gone; the 20 dp handle band is the drag target again. The
+  shelf swap builds its `ContentTransform` explicitly with `SizeTransform(clip = false)`,
+  because `a togetherWith b using x` binds `using` to the else branch only.
+  **Superseded in Round 56 (see below):** this round also swapped the tool and weight
+  rows to `SingleChoiceSegmentedButtonRow`/`SegmentedButton`. That has been reverted —
+  the shelf's three rows are `ConnectedButtonGroup`s again, exactly as before.
 
 Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed by Antigravity.
 

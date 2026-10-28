@@ -77,7 +77,8 @@ Keep this table short. Delete your row when the change lands.
 | Agent       | Status          | Files                                                                                                                                                                                                                                                                           | Intent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 53) | `ui/common/ConnectedButtonGroup.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/editor/MarkupStudio.kt` (new), `ui/editor/MarkupScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/pdf/PdfExportSheet.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/DocumentShare.kt` (new), `util/ImageStore.kt`, `data/ScannerRepository.kt`, `Navigation.kt`, docs | Seven reported defects: connected page-tile verbs + hold-to-collapse, Copy/Move on hold, dashboard multi-select **Share**, in-place annotate shelf in the reader, instant rotate, collapsing dashboard header, export-sheet microinteractions, camera preview lifted 32 dp. Chrome/layout/motion only. See §6ap. |
-| Arena.ai & Antigravity | ✅ merged & verified (Round 55) | `ui/common/ConnectedButtonGroup.kt`, `ui/common/ExpressiveAction.kt`, `ui/viewer/PageViewerScreen.kt`, docs | Annotate shelf control visibility fix (pen/erase/thin/bold): removed label-bounded ripple, dimmed ink only when disabled, M3 SegmentedButtons for tool/weight, translate-only entrance for action bar. Tested and verified. See §6ar. |
+| Arena.ai & Antigravity | ✅ merged & verified (Round 55) | `ui/common/ConnectedButtonGroup.kt`, `ui/common/ExpressiveAction.kt`, `ui/viewer/PageViewerScreen.kt`, docs | Annotate shelf control visibility fix (pen/erase/thin/bold): removed label-bounded ripple, dimmed ink only when disabled, translate-only entrance for action bar. **Its `SegmentedButton` swap was reverted in Round 56 — see the row below.** Tested and verified. See §6ar. |
+| Arena.ai | 🚧 in flight (Round 56) | `ui/viewer/PageViewerScreen.kt`, docs | Style revert only: the annotate shelf's tool and weight rows are `ConnectedButtonGroup`s again (original plate/ink/cell heights/layout/swatch ripple). Every Round-55 behaviour fix is kept — none of them is visible at rest. See §6as. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 54) | `ui/common/ConnectedButtonGroup.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/common/PageThumbnail.kt`, `theme/Shape.kt`, `util/ImageStore.kt`, `Navigation.kt`, docs | Second pass on the seven Round-53 reports: even shelf spacing, no crossfade on a filled cell, measured page inset, id-tracked page in the reader, capture button out of the FAB slot, outward seam under the search field, disabled (not hidden) tile verbs, half-screen move sheet, copied pages keeping their pixels. Chrome/layout/motion only. See §6aq. |
 | Antigravity | ✅ committed | indymobile/*, docs/AGENTS_CHANGELOG.md, docs/AGENT_COORDINATION.md | Complete Indiana Mobile (Target 1) RE artifacts: base APK, native libs, Ghidra C sources, JADX Java sources, pipeline smali/java, and REA inspection report for Arena context. |
 | Antigravity | ✅ committed    | `docs/ORIGINAL_APP_FILTER_SPEC.md`, `docs/AGENTS_CHANGELOG.md`                                                                                                                                                                                                                  | Reverse-engineered native filter spec & decompiled algorithms                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -2085,16 +2086,17 @@ reintroduce any of them; each one is a control that can hide itself.
    as the constructor because `a togetherWith b using x` binds `using` to the **else
    branch only** — a trap that would have silently left the annotate direction clipped.
 
-### The switches are no longer connected-group cells
+### The switches stayed connected-group cells (corrected in Round 56)
 
-`SingleChoiceSegmentedButtonRow` + `SegmentedButton` (the same control `MarkupScreen`
-uses) for the tool row and the weight row; the action row (undo/redo/clear/cancel/save)
-stays a `ConnectedButtonGroup`. A single-choice switch and an action bar are different
-controls: the group's cell is a plate + state layer + ripple + press scale + a shape that
-animates through three radii, which is a lot of machinery for two words and five ways to
-lose them. `pressScale` is gone from the cell for the same reason (it was the third
-animating layer on one affordance, and it scaled content inside a clipped pill 2 dp from
-its neighbour).
+This round first replaced the tool and weight rows with
+`SingleChoiceSegmentedButtonRow`/`SegmentedButton` **and that was wrong** — it changed the
+look, which was never asked for. **Reverted in §6as**: all three rows are
+`ConnectedButtonGroup`s again, with the original plate, ink, accent, 44 dp cells, the
+original one-line swatch + weight layout, and the swatch ripple. See §6as for the rule.
+
+What remained from this round in `ConnectedButtonGroup` itself — and all of it is
+invisible at rest — is: no ripple on a cell (the 14 % ink state layer is the press), no
+`pressScale`, and a disabled state that dims the **ink** rather than the whole cell.
 
 ### Also in this round
 
@@ -2103,11 +2105,47 @@ its neighbour).
   `pointerInput` drag detector wrapped around a row of buttons competes with their click
   handlers in the same pass, so a tap that drifts is claimed by the drag and the click is
   cancelled.
-- Swatches: `indication = null`, a 12 % squeeze of the dot on press, ring always drawn.
-  A colour is never disabled.
+- Swatches: ring always drawn, and never disabled (a colour is never disabled). The
+  original ripple is back as of §6as.
 - `MarkupScreen` still hides its swatch row while erasing (`if (tool != WHITEOUT)`). That
   is a *layout* change in a full-screen editor, and it was not reported; the reader keeps
   a fixed three-row card instead, because a row appearing and disappearing changes the
   bar's height under the finger.
 
 Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed by Antigravity.
+
+## 6as. Round 56: keep the fix, put the button style back (Arena, 2026-10-28)
+
+Round 55 fixed the annotate shelf's disappearing controls but also **swapped the tool and
+weight rows to `SingleChoiceSegmentedButtonRow`/`SegmentedButton`**. That was a style
+change nobody asked for. It is reverted.
+
+> **Rule, and it is the same rule §6an already stated:** every segmented control in this
+> app is a `ConnectedButtonGroup`. If a bug is reported against the *behaviour* of a
+> control, fix the behaviour. Do not change what the control looks like — the user asked
+> for a bug fix, not a redesign, and a redesigned control that also fixes the bug is a
+> worse answer than the bug fix alone.
+
+`AnnotateShelf` is back to exactly what it was:
+
+- tool row: three label-only cells (Pen / Marker / Erase) at 44 dp;
+- one row: four 34 dp swatches + 8 dp + the weight group (`weight(1f)`), same cells;
+- colours: `surfaceContainerLowest` plate, `onSurfaceVariant` ink, `primary` /
+  `onPrimary` when filled;
+- `shelfSegmentedColors()` (private) is deleted, along with the three
+  `material3.SegmentedButton*` imports.
+
+**What still fixes the reported bug** — all of it effectively invisible at rest:
+
+| Fix | Where | Visible when |
+|:---|:---|:---|
+| No ink-coloured ripple bounded to the label | `ConnectedButtonGroup` cell | press only |
+| No `pressScale` on a cell | `ConnectedButtonGroup` cell | press only |
+| Disabled dims the ink, not the plate | `ConnectedButtonGroup` cell | disabled only |
+| The eraser no longer disables the weight row / swatches | `AnnotateShelf` | when Erase is chosen |
+| Bar entrance is translate-only (cannot fade itself out) | `ExpressiveActionBar` | bar arrival |
+| `SizeTransform(clip = false)` on the shelf swap | `PageViewerScreen` | shelf swap |
+| Drag target is the 20 dp handle band, not the shelf | `AnnotateShelf` | drag only |
+
+Build/tests: Antigravity verified Round 55 clean; this round is a same-file revert plus
+docs, and `./gradlew testDebugUnitTest assembleDebug` is still owed for it.
