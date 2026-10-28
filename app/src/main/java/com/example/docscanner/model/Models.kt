@@ -168,7 +168,16 @@ data class ScannedPage(
      * data rather than painted into the file so a later filter change does not erase
      * them — see [MarkupStroke].
      */
-    val markup: List<MarkupStroke> = emptyList()
+    val markup: List<MarkupStroke> = emptyList(),
+    /**
+     * Bumped every time the page's pixels are rewritten to [imageUri].
+     *
+     * The file name does not change between re-bakes (`<id>_edited.jpg` is reused
+     * on purpose, so the page never accumulates files), which means `imageUri`
+     * alone cannot tell a viewer that the page it is showing is stale. Anything
+     * that caches or keys on a page's image must include this.
+     */
+    val revision: Int = 0
 )
 
 @Immutable

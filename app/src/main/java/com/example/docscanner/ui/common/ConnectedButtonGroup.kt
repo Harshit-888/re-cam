@@ -85,7 +85,8 @@ import com.example.docscanner.theme.pressScale
 @Immutable
 data class ConnectedAction(
     val label: String,
-    val icon: ImageVector,
+    /** Omit for a label-only cell — a segmented switch, not an action bar. */
+    val icon: ImageVector? = null,
     /** The cell's own action. `null` means the cell is only a menu opener. */
     val onClick: (() -> Unit)? = null,
     /** Spoken label when the drawn one is not the whole story (e.g. "More"). */
@@ -200,7 +201,10 @@ private fun ConnectedCell(
         )
     }
 
-    val filled = action.emphasized
+    // A *selected* cell is filled with the accent, exactly as Google's connected
+    // button group fills its checked item. `emphasized` is the same fill for an action
+    // that is the primary one without being a selection.
+    val filled = action.emphasized || action.selected
     val plate by animateColorAsState(
         targetValue = when {
             filled -> accentColor
@@ -234,6 +238,7 @@ private fun ConnectedCell(
                 .clip(shape)
                 .background(plate)
         ) {
+            val cellIcon = action.icon
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
@@ -252,13 +257,15 @@ private fun ConnectedCell(
                     )
                     .padding(horizontal = 4.dp, vertical = 8.dp)
             ) {
-                Icon(
-                    imageVector = action.icon,
-                    contentDescription = action.contentDescription ?: action.label,
-                    tint = tint,
-                    modifier = Modifier.size(21.dp)
-                )
-                Spacer(Modifier.height(5.dp))
+                if (cellIcon != null) {
+                    Icon(
+                        imageVector = cellIcon,
+                        contentDescription = action.contentDescription ?: action.label,
+                        tint = tint,
+                        modifier = Modifier.size(21.dp)
+                    )
+                    Spacer(Modifier.height(5.dp))
+                }
                 Text(
                     text = action.label,
                     style = MaterialTheme.typography.labelMedium,

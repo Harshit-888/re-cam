@@ -38,7 +38,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -52,16 +51,20 @@ import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.FitScreen
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.RotateLeft
 import androidx.compose.material.icons.filled.RotateRight
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -110,13 +113,12 @@ import com.example.docscanner.theme.DocShapes
 import com.example.docscanner.theme.LocalDocAccents
 import com.example.docscanner.theme.Motion
 import com.example.docscanner.theme.pressScale
+import com.example.docscanner.ui.common.ConnectedAction
+import com.example.docscanner.ui.common.ConnectedButtonGroup
 import com.example.docscanner.ui.common.InfoPill
 import com.example.docscanner.ui.common.LoadingDots
 import com.example.docscanner.ui.common.PageProgressBar
 import com.example.docscanner.ui.common.PageThumbnail
-import com.example.docscanner.ui.common.PillButton
-import com.example.docscanner.ui.common.SegmentedPill
-import com.example.docscanner.ui.common.TonalIconButton
 import com.example.docscanner.ui.common.ZoomablePageView
 import com.example.docscanner.util.CropHandles
 import com.example.docscanner.util.DocumentDetector
@@ -215,7 +217,15 @@ fun CropAndFilterScreen(
     pageId: String,
     repository: ScannerRepository,
     onDone: () -> Unit,
-    reviewMode: Boolean = false
+    reviewMode: Boolean = false,
+    /**
+     * Open straight onto the border stage.
+     *
+     * The bottom bar's **Crop** button means crop; landing on a list of filters
+     * after tapping it was the app answering a different question. Post-capture
+     * review also starts here (see [reviewMode]).
+     */
+    startInBorders: Boolean = false
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -237,8 +247,10 @@ fun CropAndFilterScreen(
 
     // Review leads with borders; a single-page edit leads with the filter, because
     // re-editing a page is almost always about the look, not the crop.
-    var stage by remember(reviewMode) {
-        mutableStateOf(if (reviewMode) Stage.BORDERS else Stage.FILTERS)
+    var stage by remember(reviewMode, startInBorders) {
+        mutableStateOf(
+            if (reviewMode || startInBorders) Stage.BORDERS else Stage.FILTERS
+        )
     }
 
     var selectedFilter by remember { mutableStateOf(FilterType.MAGIC_COLOR) }
@@ -818,7 +830,7 @@ fun CropAndFilterScreen(
                         primaryLabel = when {
                             isSaving -> "Applying…"
                             !reviewMode -> "Save page"
-                            pages.size > 1 -> "Apply to all ${pages.size} pages"
+                            pages.size > 1 -> "Save ${pages.size} pages"
                             else -> "Apply filter"
                         },
                         primaryIcon = Icons.Default.Check,
@@ -831,6 +843,13 @@ fun CropAndFilterScreen(
                                     ?.pages?.find { it.id == activePageId }
                                 if (current == null) onDone() else applyFilterToPages(listOf(current))
                             }
+                        },
+                        // One page: nothing to apply to. Several: the look becomes a
+                        // document decision, which is what it always was.
+                        onApplyAll = if (pages.size > 1 && !isSaving) {
+                            { applyFilterToPages(pages) }
+                        } else {
+                            null
                         }
                     )
                 }
@@ -941,7 +960,14 @@ fun CropAndFilterScreen(
     }
 }
 
-/** Header: close/back, a two-line title, and an optional trailing action. */
+/**
+ * Header: close/back, a two-line title, and an optional trailing action.
+ *
+ * Material 3's [TopAppBar] rather than a hand-built row: it brings the platform's
+ * app-bar insets, height, title alignment and scroll behaviour with it, so this
+ * screen's header is the same object as the rest of Android's.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun EditorHeader(
     title: String,
@@ -950,23 +976,9 @@ private fun EditorHeader(
     onClose: () -> Unit,
     trailing: @Composable () -> Unit = {}
 ) {
-    Surface(color = MaterialTheme.colorScheme.surface) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TonalIconButton(
-                icon = leadingIcon,
-                contentDescription = "Close",
-                onClick = onClose,
-                container = MaterialTheme.colorScheme.surfaceContainerHigh,
-                size = 42.dp
-            )
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
+    TopAppBar(
+        title = {
+            Column {
                 Text(
                     title,
                     style = MaterialTheme.typography.titleMedium,
@@ -981,9 +993,17 @@ private fun EditorHeader(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            trailing()
-        }
-    }
+        },
+        navigationIcon = {
+            IconButton(onClick = onClose) {
+                Icon(leadingIcon, contentDescription = "Close")
+            }
+        },
+        actions = { trailing() },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    )
 }
 
 /** The page as captured, with the four handles over it. */
@@ -1039,8 +1059,29 @@ private fun BorderCanvas(
         // inside the draw lambda, and handed up **once**, when the finger lifts.
         // A state read in the draw phase invalidates draw alone, so a drag now
         // costs one canvas redraw per frame instead of a screen recomposition.
-        val liveQuad = remember(corners) { mutableStateOf(corners) }
+        // ONE state object for the whole time this canvas exists — deliberately not
+        // `remember(corners) { … }`.
+        //
+        // That key is what broke the second drag. Keying on `corners` replaced the
+        // `MutableState` every time a drag was committed, but `pointerInput`'s block
+        // is *not* restarted when its keys (rotation, frame size) do not change: the
+        // running gesture kept the old object in hand. So the first drag worked (it
+        // wrote the object the canvas was drawing), and every drag after it wrote an
+        // orphan: the finger moved, nothing on screen followed, and the corner jumped
+        // to the final position when the finger lifted and the value was committed.
+        //
+        // A single stable object plus the sync below fixes it: the gesture always
+        // writes what the canvas reads, and a quad that arrives from outside (page
+        // switch, auto-detect, "Full page", rotation) is adopted when it differs.
+        val liveQuad = remember { mutableStateOf(corners) }
         var activeCornerBeingDragged by remember { mutableStateOf<Int?>(null) }
+        LaunchedEffect(corners) {
+            // Never while a finger is down: the drag owns the value and reports it
+            // back when it lifts, so echoing it here would fight the gesture.
+            if (activeCornerBeingDragged == null && liveQuad.value != corners) {
+                liveQuad.value = corners
+            }
+        }
         var touchIsOnLeftSide by remember { mutableStateOf(false) }
 
         // Everything the gesture reads, read *through a state holder* rather than
@@ -1539,7 +1580,18 @@ private fun LoadingPage(pageReady: Boolean) {
     }
 }
 
-/** Both stages share one segmented control, so the flow is always visible. */
+/**
+ * Both stages share one connected control, so the flow is always visible.
+ *
+ * This is the app's [ConnectedButtonGroup] — the same component, and the same shape
+ * tokens, as the action bars — used as a segmented switch: outer ends pill-round,
+ * inner corners tight (8 dp at rest, 4 dp under the finger), and the *selected* cell
+ * relaxed all the way to a pill. That transition is the whole point: the chosen
+ * stage stops being one of two equal halves and becomes the shape that means "here".
+ *
+ * Labels only: a switch has two words to say, and an icon above each would make it a
+ * toolbar.
+ */
 @Composable
 private fun StageSwitch(
     stage: Stage,
@@ -1550,27 +1602,18 @@ private fun StageSwitch(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Material 3's own segmented button, not the app's hand-rolled pill.
-        //
-        // This is the one place a two-option switch has equal-length labels and no
-        // custom palette, which is exactly the deal `SegmentedButton` makes: it brings
-        // the system's check icon, its border-weight/inner-corner treatment and its own
-        // selection animation, and it stays correct when the theme changes. The
-        // camera's Single/Batch switch keeps `SegmentedPill` because it needs the glass
-        // palette passed in, which a themed component cannot express.
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.weight(1f)) {
-            Stage.entries.forEachIndexed { index, option ->
-                SegmentedButton(
+        ConnectedButtonGroup(
+            actions = Stage.entries.map { option ->
+                ConnectedAction(
+                    label = option.label,
                     selected = stage == option,
-                    onClick = { onSelect(option) },
-                    shape = SegmentedButtonDefaults.itemShape(
-                        index = index,
-                        count = Stage.entries.size
-                    ),
-                    label = { Text(option.label, maxLines = 1) }
+                    onClick = { onSelect(option) }
                 )
-            }
-        }
+            },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+            cellHeight = 44.dp,
+            modifier = Modifier.weight(1f)
+        )
         if (pageCount > 1) {
             Spacer(Modifier.width(10.dp))
             InfoPill(text = "$pageCount pages")
@@ -1624,33 +1667,51 @@ private fun BordersControls(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Short labels on purpose: two labelled buttons, two 48 dp rotate
+            // buttons and three gaps have to fit a 360 dp phone, and "Full page"
+            // ellipsised to "Full…" is worse than the word everyone already uses.
             TonalGeoButton(
-                label = "Full page",
+                label = "Fit",
                 icon = Icons.Default.Fullscreen,
                 onClick = onFullPage,
                 modifier = Modifier.weight(1f)
             )
             TonalGeoButton(
-                label = if (isAutoDetecting) "Finding…" else "Auto detect",
+                label = if (isAutoDetecting) "Finding…" else "Auto",
                 icon = Icons.Default.AutoFixHigh,
                 onClick = onAutoDetect,
                 enabled = canDetect && !isAutoDetecting,
                 modifier = Modifier.weight(1f)
             )
-            TonalIconButton(
-                icon = Icons.Default.RotateLeft,
-                contentDescription = "Rotate left",
+            // M3's own filled tonal icon button: it owns its 48 dp target, its tonal
+            // container and its pressed shape, so rotation is the same control class
+            // as every other icon action on the platform.
+            FilledTonalIconButton(
                 onClick = onRotateLeft,
-                container = MaterialTheme.colorScheme.surfaceContainerHigh,
-                size = 46.dp
-            )
-            TonalIconButton(
-                icon = Icons.Default.RotateRight,
-                contentDescription = "Rotate right",
+                shape = CircleShape,
+                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                )
+            ) {
+                Icon(
+                    Icons.Default.RotateLeft,
+                    contentDescription = "Rotate left",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            FilledTonalIconButton(
                 onClick = onRotateRight,
-                container = MaterialTheme.colorScheme.surfaceContainerHigh,
-                size = 46.dp
-            )
+                shape = CircleShape,
+                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                )
+            ) {
+                Icon(
+                    Icons.Default.RotateRight,
+                    contentDescription = "Rotate right",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
 
         Spacer(Modifier.height(12.dp))
@@ -1667,12 +1728,26 @@ private fun BordersControls(
                 onReset = onResetZoom,
                 modifier = Modifier.weight(1f)
             )
-            PillButton(
-                text = primaryLabel,
+            // Material 3's filled button, at the app's pill shape: the one action that
+            // moves the flow forward is the platform's primary button, not a bespoke
+            // one that only looks like it.
+            Button(
                 onClick = onPrimary,
-                icon = primaryIcon,
-                modifier = Modifier.weight(1.4f)
-            )
+                shape = DocShapes.pill,
+                contentPadding = PaddingValues(horizontal = 18.dp),
+                modifier = Modifier
+                    .weight(1.4f)
+                    .height(46.dp)
+            ) {
+                Icon(primaryIcon, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    primaryLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }
@@ -1705,7 +1780,16 @@ private fun FilterControls(
     primaryLabel: String,
     primaryIcon: androidx.compose.ui.graphics.vector.ImageVector,
     isSaving: Boolean,
-    onPrimary: () -> Unit
+    onPrimary: () -> Unit,
+    /**
+     * Apply the chosen look to the whole document.
+     *
+     * This was missing outright in single-page editing: the bar offered "Save page",
+     * and the only way to give twelve scans the same look was to open twelve pages
+     * and pick the same swatch twelve times. Null when there is one page — a button
+     * that does the same thing as the one beside it is noise.
+     */
+    onApplyAll: (() -> Unit)? = null
 ) {
     EditorSheet {
         StageSwitch(stage = stage, pageCount = pages.size, onSelect = onStageChange)
@@ -1757,13 +1841,51 @@ private fun FilterControls(
                 onReset = onResetZoom,
                 modifier = Modifier.weight(1f)
             )
-            PillButton(
-                text = primaryLabel,
+            Button(
                 onClick = onPrimary,
-                icon = primaryIcon,
                 enabled = !isSaving,
-                modifier = Modifier.weight(1.4f)
-            )
+                shape = DocShapes.pill,
+                contentPadding = PaddingValues(horizontal = 18.dp),
+                modifier = Modifier
+                    .weight(1.4f)
+                    .height(46.dp)
+            ) {
+                Icon(primaryIcon, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    primaryLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        if (onApplyAll != null) {
+            Spacer(Modifier.height(8.dp))
+            // Secondary, tonal, full width: it is the same decision applied to more
+            // pages, so it belongs next to the primary and beneath it — not hidden in
+            // a menu, and not competing with it for the same weight.
+            FilledTonalButton(
+                onClick = onApplyAll,
+                enabled = !isSaving,
+                shape = DocShapes.pill,
+                contentPadding = PaddingValues(horizontal = 18.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp)
+            ) {
+                Icon(
+                    Icons.Default.DoneAll,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "Apply to all ${pages.size} pages",
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
         }
     }
 }
@@ -1965,7 +2087,7 @@ private fun PageChip(
     }
 }
 
-/** Small labelled tool button used for Full page / Auto. */
+/** Small labelled tool button used for Full page / Auto detect. */
 @Composable
 private fun TonalGeoButton(
     label: String,
@@ -1974,38 +2096,24 @@ private fun TonalGeoButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true
 ) {
-    val interactions = remember { MutableInteractionSource() }
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        shape = DocShapes.iconButton,
-        modifier = modifier
-            .height(46.dp)
-            .pressScale(interactions, pressedScale = 0.95f)
-            .clip(DocShapes.iconButton)
-            .clickable(
-                interactionSource = interactions,
-                indication = ripple(),
-                enabled = enabled,
-                onClick = onClick
-            )
+    // M3 `FilledTonalButton`: tonal container, the platform's disabled treatment,
+    // its ripple, and its pressed state — the app's own copy of this button had to
+    // re-implement all four and got the disabled colour wrong.
+    FilledTonalButton(
+        onClick = onClick,
+        enabled = enabled,
+        shape = DocShapes.pill,
+        contentPadding = PaddingValues(horizontal = 12.dp),
+        modifier = modifier.height(46.dp)
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 6.dp)
-        ) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(17.dp))
-            Spacer(Modifier.width(6.dp))
-            Text(
-                label,
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
+        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(7.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 

@@ -86,7 +86,15 @@ object PageRenderer {
                 quality = jpegQuality,
                 lossless = savesLosslessly(page.filterType)
             ) ?: return null
-            return page.copy(imageUri = savedPath, originalImageUri = pristinePath)
+            // `revision` is what tells every viewer, tile and cache that the file
+            // behind this same path has changed. Without it a re-bake rewrites
+            // `_edited.jpg` in place and the screen keeps showing the old bitmap —
+            // rotate did nothing visible, and the fix was invisible too.
+            return page.copy(
+                imageUri = savedPath,
+                originalImageUri = pristinePath,
+                revision = page.revision + 1
+            )
         } finally {
             if (result !== source) result.recycle()
             if (!source.isRecycled) source.recycle()

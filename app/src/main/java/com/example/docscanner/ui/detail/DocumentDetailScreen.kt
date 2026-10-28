@@ -45,6 +45,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -55,8 +56,6 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowLeft
-import androidx.compose.material.icons.filled.ArrowRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInFull
@@ -73,6 +72,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -93,6 +93,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -102,7 +106,6 @@ import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.ui.common.PageThumbnail
 import com.example.docscanner.ui.pdf.PdfExportSheet
 import com.example.docscanner.ui.signature.SignaturePadDialog
-import com.example.docscanner.ui.editor.MarkupDialog
 import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.PageRenderer
 import kotlinx.coroutines.Dispatchers
@@ -112,6 +115,11 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.zIndex
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -121,6 +129,7 @@ fun DocumentDetailScreen(
     onNavigateBack: () -> Unit,
     onNavigateToCrop: (pageId: String) -> Unit,
     onNavigateToViewer: (pageId: String) -> Unit,
+    onNavigateToMarkup: (pageId: String) -> Unit,
     onAddPageCamera: (docId: String) -> Unit
 ) {
     val context = LocalContext.current
@@ -134,7 +143,6 @@ fun DocumentDetailScreen(
     var showRenameDialog by remember { mutableStateOf(false) }
     var showWatermarkDialog by remember { mutableStateOf(false) }
     var showIdCardDialog by remember { mutableStateOf(false) }
-    var markupTarget by remember { mutableStateOf<ScannedPage?>(null) }
     var idCardBusy by remember { mutableStateOf(false) }
 
     // Which page the bottom bar is currently about.
@@ -234,6 +242,97 @@ fun DocumentDetailScreen(
             // is no different from a captured one.
             repository.indexTextInBackground(docId)
         }
+    }
+
+    // ---- drag to reorder ----------------------------------------------------
+    //
+    // Ordering used to be two icon buttons and a pair of menu items — "move earlier"
+    // and "move later", one step at a time. Putting page 9 first meant eight taps, and
+    // on a multi-page selection it could not be done at all. Dragging is the gesture
+    // the grid already suggests, and it moves a whole selection in one go.
+    val gridState = rememberLazyGridState()
+    var dragPageId by remember { mutableStateOf<String?>(null) }
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+    // The slot under the finger (highlight only) and where the block would land in
+    // the list *without* the moving pages (what is actually committed). Two numbers
+    // because they are two coordinate systems, and mixing them up silently reorders
+    // the wrong pages.
+    var dropIndex by remember { mutableIntStateOf(-1) }
+    var dropDestination by remember { mutableIntStateOf(-1) }
+    // Where the dragged tile started, in the grid viewport's coordinates — the anchor
+    // the finger's displacement is added to.
+    var dragAnchor by remember { mutableStateOf(Rect.Zero) }
+
+    fun startPageDrag(pageId: String) {
+        // The index comes from the layout, not from the tile's captured position: this
+        // callback is invoked from a `pointerInput` block that outlives any single
+        // composition, and a stale index after a reorder would highlight the wrong slot.
+        val info = gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == pageId }
+            ?: return
+        dragAnchor = Rect(
+            offset = Offset(info.offset.x.toFloat(), info.offset.y.toFloat()),
+            size = Size(info.size.width.toFloat(), info.size.height.toFloat())
+        )
+        dragOffset = Offset.Zero
+        dropIndex = info.index
+        // Nothing to commit until the finger actually reaches another slot: picking a
+        // tile up and putting it back must not reorder anything.
+        dropDestination = -1
+        dragPageId = pageId
+    }
+
+    /**
+     * Which slot the finger is over, and on which side of its midpoint.
+     *
+     * Midpoint, not "the item it is over": dropping on the top half of a tile means
+     * "before this one" and the bottom half means "after it", which is what makes a
+     * single-row nudge possible without aiming at the gap between two tiles.
+     */
+    fun updatePageDrag(delta: Offset) {
+        val dragging = dragPageId ?: return
+        val pages = document?.pages ?: return
+        dragOffset += delta
+        val centre = Offset(
+            dragAnchor.left + dragAnchor.width / 2f + dragOffset.x,
+            dragAnchor.top + dragAnchor.height / 2f + dragOffset.y
+        )
+        val hit = gridState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
+            val left = item.offset.x.toFloat()
+            val top = item.offset.y.toFloat()
+            centre.x >= left && centre.x < left + item.size.width &&
+                centre.y >= top && centre.y < top + item.size.height
+        } ?: return
+        if (hit.key == dragging) return
+        val movingIds = selectedPageIds.ifEmpty { setOf(dragging) }
+        // Destination in the coordinates of the list *without* the moving pages: how
+        // many pages that are staying sit before the hovered slot, plus one if the
+        // finger is past its midpoint.
+        val past = centre.y >= hit.offset.y + hit.size.height / 2f
+        val stayingBefore = pages.take(hit.index).count { it.id !in movingIds }
+        dropIndex = hit.index
+        dropDestination = (stayingBefore + if (past) 1 else 0).coerceIn(0, pages.size)
+    }
+
+    fun commitPageDrag() {
+        val dragging = dragPageId ?: return
+        val destination = dropDestination
+        val movingIds = selectedPageIds.ifEmpty { setOf(dragging) }
+        dragPageId = null
+        dragOffset = Offset.Zero
+        dropIndex = -1
+        dropDestination = -1
+        if (destination < 0) return
+        val pages = document?.pages ?: return
+        // The block keeps the order the pages already had: they travelled together.
+        val ordered = pages.map { it.id }.filter { it in movingIds }
+        repository.movePages(docId, ordered, destination)
+    }
+
+    fun cancelPageDrag() {
+        dragPageId = null
+        dragOffset = Offset.Zero
+        dropIndex = -1
+        dropDestination = -1
     }
 
     /** Adds or removes one page. Tapping a ticked page un-ticks it. */
@@ -502,7 +601,10 @@ fun DocumentDetailScreen(
                                         ConnectedAction(
                                             label = "Annotate",
                                             icon = Icons.Outlined.Draw,
-                                            onClick = { markupTarget = page }
+                                            onClick = {
+                                                selectedPageIds = emptySet()
+                                                onNavigateToMarkup(page.id)
+                                            }
                                         ),
                                         ConnectedAction(
                                             label = "Sign",
@@ -541,43 +643,6 @@ fun DocumentDetailScreen(
                                                     onClick = {
                                                         dismiss()
                                                         rotatePages(listOf(page))
-                                                    }
-                                                )
-                                                DropdownMenuItem(
-                                                    text = { Text("Move earlier") },
-                                                    leadingIcon = {
-                                                        Icon(
-                                                            Icons.Default.ArrowLeft,
-                                                            contentDescription = null
-                                                        )
-                                                    },
-                                                    enabled = page.pageIndex > 0,
-                                                    onClick = {
-                                                        dismiss()
-                                                        repository.movePage(
-                                                            docId,
-                                                            page.pageIndex,
-                                                            page.pageIndex - 1
-                                                        )
-                                                    }
-                                                )
-                                                DropdownMenuItem(
-                                                    text = { Text("Move later") },
-                                                    leadingIcon = {
-                                                        Icon(
-                                                            Icons.Default.ArrowRight,
-                                                            contentDescription = null
-                                                        )
-                                                    },
-                                                    enabled = page.pageIndex <
-                                                        document.pages.lastIndex,
-                                                    onClick = {
-                                                        dismiss()
-                                                        repository.movePage(
-                                                            docId,
-                                                            page.pageIndex,
-                                                            page.pageIndex + 1
-                                                        )
                                                     }
                                                 )
                                                 DropdownMenuItem(
@@ -745,6 +810,7 @@ fun DocumentDetailScreen(
             }
 
             LazyVerticalGrid(
+                state = gridState,
                 columns = GridCells.Fixed(2),
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -764,9 +830,15 @@ fun DocumentDetailScreen(
                         // never re-runs the tile's layout.
                         modifier = Modifier.animateItem(),
                         page = page,
-                        canMoveBackward = index > 0,
-                        canMoveForward = index >= 0 && index < document.pages.lastIndex,
                         selected = page.id in selectedPageIds,
+                        dragging = dragPageId == page.id,
+                        dragOffset = if (dragPageId == page.id) dragOffset else Offset.Zero,
+                        dropTarget = dragPageId != null && dropIndex == index &&
+                            dragPageId != page.id,
+                        onDragStart = { startPageDrag(page.id) },
+                        onDrag = { delta -> updatePageDrag(delta) },
+                        onDragEnd = { commitPageDrag() },
+                        onDragCancel = { cancelPageDrag() },
                         // Tap opens the page — unless something is already picked, in
                         // which case tap *toggles* (the library grid's rule, so the two
                         // grids in the app behave the same way). Long-press toggles
@@ -778,13 +850,23 @@ fun DocumentDetailScreen(
                                 toggleSelection(page.id)
                             }
                         },
-                        onSelectClick = { toggleSelection(page.id) },
+                        // Long press starts a selection and never removes a page from
+                        // one — it is also how a drag begins, and a long press that
+                        // un-picked the page would leave the drag with nothing to move.
+                        //
+                        // Holding an *unselected* page makes it the selection, so a
+                        // drag moves exactly what was held. Holding a page that is
+                        // already picked keeps the whole set, so a drag moves all of
+                        // it. Tapping a picked page still un-picks it.
+                        onSelectClick = {
+                            if (page.id !in selectedPageIds) {
+                                selectedPageIds = setOf(page.id)
+                            }
+                        },
                         onCropClick = { onNavigateToCrop(page.id) },
                         onDeleteClick = { pagesPendingDelete = listOf(page) },
                         onRotateClick = { rotatePages(listOf(page)) },
-                        onMoveBackward = { repository.movePage(docId, index, index - 1) },
-                        onMoveForward = { repository.movePage(docId, index, index + 1) },
-                        onAnnotateClick = { markupTarget = page }
+                        onAnnotateClick = { onNavigateToMarkup(page.id) }
                     )
                 }
             }
@@ -888,30 +970,6 @@ fun DocumentDetailScreen(
                         context,
                         target.copy(signatureOverlayUri = signaturePath)
                     )
-                    if (baked != null) {
-                        repository.updatePage(docId, target.id) { baked }
-                    }
-                }
-            }
-        )
-    }
-
-    // Annotation is stored on the page as strokes and replayed by the renderer on
-    // every bake, so it survives a filter change made later. The re-bake here is only
-    // so the thumbnail and the viewer show the ink immediately.
-    markupTarget?.let { target ->
-        MarkupDialog(
-            page = target,
-            onDismiss = { markupTarget = null },
-            onSave = { strokes ->
-                markupTarget = null
-                scope.launch {
-                    val current = repository.getDocumentById(docId)
-                        ?.pages?.find { it.id == target.id } ?: return@launch
-                    repository.updatePage(docId, target.id) { it.copy(markup = strokes) }
-                    val baked = runCatching {
-                        PageRenderer.bake(context, current.copy(markup = strokes))
-                    }.getOrNull()
                     if (baked != null) {
                         repository.updatePage(docId, target.id) { baked }
                     }
@@ -1113,17 +1171,23 @@ private fun detailBarMode(selected: Set<String>): DetailBarMode = when {
 @OptIn(ExperimentalFoundationApi::class)
 fun PageGridItem(
     page: ScannedPage,
-    canMoveBackward: Boolean,
-    canMoveForward: Boolean,
     selected: Boolean = false,
+    /** This tile is the one under the finger right now. */
+    dragging: Boolean = false,
+    /** Draw-only translation of the dragging tile, in pixels. */
+    dragOffset: Offset = Offset.Zero,
+    /** The tile the dragged page(s) would land on. */
+    dropTarget: Boolean = false,
     onSelectClick: () -> Unit = {},
     onViewClick: () -> Unit,
     onCropClick: () -> Unit,
     onDeleteClick: () -> Unit,
     onRotateClick: () -> Unit,
-    onMoveBackward: () -> Unit,
-    onMoveForward: () -> Unit,
     onAnnotateClick: () -> Unit,
+    onDragStart: () -> Unit = {},
+    onDrag: (Offset) -> Unit = {},
+    onDragEnd: () -> Unit = {},
+    onDragCancel: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -1146,9 +1210,25 @@ fun PageGridItem(
     val interactions = remember { MutableInteractionSource() }
     Surface(
         shape = DocShapes.cardSmall,
+        // `surfaceContainerLow` sits one step above the page behind it, so the card
+        // reads as a card in both themes. The tile used to be the *same* colour as
+        // the screen in dark mode, which made a grid of photos look like one flat
+        // sheet with buttons floating on it.
         color = MaterialTheme.colorScheme.surfaceContainerLow,
+        tonalElevation = if (dragging) 6.dp else 0.dp,
+        shadowElevation = if (dragging) 12.dp else 0.dp,
         modifier = modifier
             .fillMaxWidth()
+            // The drag is a layer translation: the tile follows the finger without
+            // re-laying out the grid, and while it moves it is the top-most thing on
+            // screen — a card sliding *under* its neighbours would read as broken.
+            .graphicsLayer {
+                translationX = dragOffset.x
+                translationY = dragOffset.y
+                scaleX = if (dragging) 1.04f else 1f
+                scaleY = if (dragging) 1.04f else 1f
+            }
+            .zIndex(if (dragging) 1f else 0f)
             .pressScale(interactions, pressedScale = 0.97f)
             .clip(DocShapes.cardSmall)
             // Drawn inside the clip, so selecting a card never changes where any
@@ -1158,8 +1238,12 @@ fun PageGridItem(
             // look like it was jumping between cards instead of accumulating.
             .then(
                 Modifier.border(
-                    width = 2.dp,
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = ringAlpha),
+                    width = if (dropTarget) 3.dp else 2.dp,
+                    color = if (dropTarget) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.primary.copy(alpha = ringAlpha)
+                    },
                     shape = DocShapes.cardSmall
                 )
             )
@@ -1172,6 +1256,21 @@ fun PageGridItem(
                 onClick = onViewClick,
                 onLongClick = onSelectClick
             )
+            // Hold, then move. The long-press above picks the page (or keeps an
+            // existing selection); this picks it up. Both fire on the same press —
+            // `combinedClickable` cancels its click once the finger travels, so a drag
+            // is never also an open.
+            .pointerInput(page.id) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { onDragStart() },
+                    onDrag = { change, amount ->
+                        change.consume()
+                        onDrag(amount)
+                    },
+                    onDragEnd = { onDragEnd() },
+                    onDragCancel = { onDragCancel() }
+                )
+            }
     ) {
         Column {
             Box(
@@ -1252,70 +1351,75 @@ fun PageGridItem(
                 }
             }
 
-            // These four are the most-hit controls on the screen — rotate and crop get
-            // used on nearly every page — and they used to be constrained to 32 dp,
-            // which is the size of the *hit area*, not just the icon. `IconButton`
-            // already reserves 48 dp around its 40 dp state layer; the explicit
-            // `.size(32.dp)` was undoing that. Left unconstrained, the row is 16 dp
-            // taller and every target is a finger wide.
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onMoveBackward, enabled = canMoveBackward) {
-                    Icon(Icons.Default.ArrowLeft, contentDescription = "Move page earlier", modifier = Modifier.size(18.dp))
-                }
-                IconButton(onClick = onRotateClick) {
-                    Icon(Icons.Default.RotateRight, contentDescription = "Rotate", modifier = Modifier.size(18.dp))
-                }
-                IconButton(onClick = onCropClick) {
-                    Icon(Icons.Outlined.Crop, contentDescription = "Crop and filter", modifier = Modifier.size(18.dp))
-                }
-                Box {
-                    IconButton(onClick = { showMenu = true }) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "More", modifier = Modifier.size(20.dp))
-                    }
-                    DropdownMenu(
-                        expanded = showMenu,
-                        onDismissRequest = { showMenu = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Move forward") },
-                            leadingIcon = { Icon(Icons.Default.ArrowRight, contentDescription = null) },
-                            enabled = canMoveForward,
-                            onClick = {
-                                showMenu = false
-                                onMoveForward()
-                            }
+            // The page's own verbs, as Material 3 filled tonal icon buttons: they
+            // carry a tonal container a step off the card in both light and dark, so
+            // the row reads as controls rather than as part of the photo.
+            //
+            // Reordering is gone from this row on purpose — the tile itself drags now,
+            // and an arrow that moved a page one slot at a time was the slowest
+            // possible way to do what a drag does in one gesture.
+            //
+            // `minimumInteractiveComponentSize` is relaxed to 36 dp: four 48 dp targets
+            // do not fit across a half-width card on a 360 dp phone, and the old row
+            // overflowed and clipped its last button.
+            CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 36.dp) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    GridAction(
+                        icon = Icons.Outlined.Draw,
+                        description = "Annotate",
+                        onClick = onAnnotateClick
+                    )
+                    GridAction(
+                        icon = Icons.Default.RotateRight,
+                        description = "Rotate",
+                        onClick = onRotateClick
+                    )
+                    GridAction(
+                        icon = Icons.Outlined.Crop,
+                        description = "Crop and filter",
+                        onClick = onCropClick
+                    )
+                    Box {
+                        GridAction(
+                            icon = Icons.Default.MoreVert,
+                            description = "More",
+                            onClick = { showMenu = true }
                         )
-                        DropdownMenuItem(
-                            text = { Text("Move backward") },
-                            leadingIcon = { Icon(Icons.Default.ArrowLeft, contentDescription = null) },
-                            enabled = canMoveBackward,
-                            onClick = {
-                                showMenu = false
-                                onMoveBackward()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Annotate") },
-                            leadingIcon = { Icon(Icons.Outlined.Draw, contentDescription = null) },
-                            onClick = {
-                                showMenu = false
-                                onAnnotateClick()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Delete page") },
-                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
-                            onClick = {
-                                showMenu = false
-                                onDeleteClick()
-                            }
-                        )
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Annotate") },
+                                leadingIcon = {
+                                    Icon(Icons.Outlined.Draw, contentDescription = null)
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    onAnnotateClick()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete page") },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    onDeleteClick()
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -1323,3 +1427,23 @@ fun PageGridItem(
     }
 }
 
+/**
+ * One compact tonal icon button in a grid tile.
+ *
+ * A thin wrapper so all four share size, shape and colour, and so the tonal container
+ * and pressed shape come from Material rather than from a copy of it.
+ */
+@Composable
+private fun GridAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    description: String,
+    onClick: () -> Unit
+) {
+    FilledTonalIconButton(
+        onClick = onClick,
+        shape = CircleShape,
+        modifier = Modifier.size(36.dp)
+    ) {
+        Icon(icon, contentDescription = description, modifier = Modifier.size(18.dp))
+    }
+}

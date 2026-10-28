@@ -47,7 +47,8 @@ import com.example.docscanner.theme.Motion
 import com.example.docscanner.theme.pressScale
 import com.example.docscanner.ui.common.PageThumbnail
 import com.example.docscanner.ui.common.PillButton
-import com.example.docscanner.ui.common.SegmentedPill
+import com.example.docscanner.ui.common.ConnectedAction
+import com.example.docscanner.ui.common.ConnectedButtonGroup
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -65,6 +66,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -561,7 +563,13 @@ fun ScannerCameraScreen(
             ) {
                 AndroidView(
                     factory = { previewView },
-                    modifier = Modifier.fillMaxSize()
+                    // Rounded like a sheet of paper, not a rectangle of video: the
+                    // preview is the document, and Files' scanner frames it the same
+                    // way. The crop happens on the *view*, never on the capture — the
+                    // JPEG is the full 4:3 frame either way.
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(20.dp))
                 )
             }
 
@@ -632,15 +640,10 @@ fun ScannerCameraScreen(
                 onClick = { requestClose() }
             )
 
-            // Equal weights either side of the toggle put it on the true centre
-            // line, where a mode control belongs.
-            Spacer(Modifier.weight(1f))
-
-            ModeToggle(
-                isBatch = isBatchMode,
-                onChange = { isBatchMode = it }
-            )
-
+            // Two controls top-left, two top-right, nothing in the middle. This is
+            // the chrome Files by Google's scanner puts over its viewfinder: the
+            // frame is the product, and everything that is not "shoot" or "leave"
+            // belongs under it. The mode switch moved down into the control sheet.
             Spacer(Modifier.weight(1f))
 
             // The icon cross-fades as the mode cycles instead of swapping between
@@ -678,114 +681,30 @@ fun ScannerCameraScreen(
             }
         }
 
-        // ---- page counter / first-run hint ------------------------------------
-        // One slot, one message: the counter appears only once a page exists, by
-        // which time the hint has already retired, so the two never collide.
-        Box(
+        // ---- first-run hint ---------------------------------------------------
+        //
+        // The counter moved into the control sheet, where the buttons are. One line
+        // of guidance stays over the preview — and only until the first capture, so
+        // it never competes with the frame.
+        AnimatedVisibility(
+            visible = showHint && capturedPages.isEmpty() && hasCameraPermission,
+            enter = fadeIn(),
+            exit = fadeOut(),
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(top = 62.dp),
-            contentAlignment = Alignment.Center
+                .padding(top = 58.dp)
         ) {
-            AnimatedVisibility(
-                visible = capturedPages.isNotEmpty(),
-                enter = fadeIn() + scaleIn(initialScale = 0.85f),
-                exit = fadeOut() + scaleOut(targetScale = 0.85f)
+            Surface(
+                shape = DocShapes.pill,
+                color = Color.Black.copy(alpha = 0.42f),
+                contentColor = Color.White
             ) {
-                Surface(
-                    shape = DocShapes.pill,
-                    color = accents.scan,
-                    contentColor = accents.onScan,
-                    shadowElevation = 8.dp
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        // The count rolls rather than swaps: one digit changing is a
-                        // 30 ms animation, and it is the only progress feedback on a
-                        // screen with no progress bar.
-                        AnimatedContent(
-                            targetState = capturedPages.size,
-                            transitionSpec = {
-                                // The default `sizeTransform` clips and animates the
-                                // box as the label changes width ("9 pages" → "10
-                                // pages"), which is exactly what is wanted here.
-                                (slideInVertically { height -> height } + fadeIn())
-                                    .togetherWith(slideOutVertically { height -> -height } + fadeOut())
-                            },
-                            label = "pageCount"
-                        ) { count ->
-                            Text(
-                                text = "$count ${if (count == 1) "page" else "pages"} scanned",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp)
-                            )
-                        }
-                        // Undo, right where the count is.
-                        //
-                        // A capture is committed to the session the moment the file
-                        // exists, and the only way back used to be: finish the scan,
-                        // open the document, delete the page. A bad shot is noticed
-                        // *now*, while the camera is still pointed at the desk — so
-                        // the escape hatch belongs here. It removes the file as well;
-                        // `discardPages` is the same call the close dialog uses.
-                        // Hairline between the count and the action, so the pill
-                        // reads as one object with two parts rather than two pills
-                        // that happen to touch.
-                        Box(
-                            modifier = Modifier
-                                .width(1.dp)
-                                .height(18.dp)
-                                .background(accents.onScan.copy(alpha = 0.28f))
-                        )
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .clip(DocShapes.pill)
-                                .clickable(
-                                    onClickLabel = "Remove the last page",
-                                    role = Role.Button,
-                                    onClick = {
-                                        val last = capturedPages.removeLastOrNull() ?: return@clickable
-                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        repository.discardPages(listOf(last))
-                                        statusMessage = "Last page removed"
-                                    }
-                                )
-                                .padding(start = 12.dp, end = 14.dp, top = 8.dp, bottom = 8.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Undo,
-                                contentDescription = null,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(Modifier.width(5.dp))
-                            Text(
-                                "Undo",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                    }
-                }
-            }
-
-            AnimatedVisibility(
-                visible = showHint && capturedPages.isEmpty() && hasCameraPermission,
-                enter = fadeIn(),
-                exit = fadeOut()
-            ) {
-                Surface(
-                    shape = DocShapes.pill,
-                    color = Color.Black.copy(alpha = 0.45f),
-                    contentColor = Color.White
-                ) {
-                    Text(
-                        text = "Fill the frame with the page",
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
-                    )
-                }
+                Text(
+                    text = "Fill the frame with the page",
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                )
             }
         }
 
@@ -799,7 +718,9 @@ fun ScannerCameraScreen(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(start = 28.dp, end = 28.dp, bottom = 214.dp)
+                // Clears the control sheet: a toast that lands *on* the shutter is a
+                // toast that hides the one thing the user is about to press.
+                .padding(start = 28.dp, end = 28.dp, bottom = 306.dp)
         ) {
             Surface(
                 shape = DocShapes.pill,
@@ -845,98 +766,197 @@ fun ScannerCameraScreen(
         }
 
         // ---- bottom controls --------------------------------------------------
+        //
+        // One sheet, rounded on its top corners, instead of five floating pills.
+        //
+        // This is the shape Files by Google's scanner uses: a single control surface
+        // pinned to the bottom of the display, with the preview running to its edge
+        // above it. It reads as "the camera, with controls attached" rather than "a
+        // camera with a dashboard over it", and it gives every control a guaranteed
+        // background — the old pills each had to invent their own scrim.
         if (hasCameraPermission && cameraError == null) {
-            Column(
+            Surface(
+                color = Color.Black.copy(alpha = 0.78f),
+                contentColor = Color.White,
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
                     .graphicsLayer {
                         alpha = chromeIn.value
-                        translationY = (1f - chromeIn.value) * 14.dp.toPx()
+                        translationY = (1f - chromeIn.value) * 24.dp.toPx()
                     }
-                    .navigationBarsPadding()
-                    .padding(bottom = 18.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Zoom stops, Google-Camera style: discrete, tappable, and honest
-                // about what the sensor can do. Pinch still works on the preview.
-                val stops = remember(maxZoomRatio) { zoomStops(maxZoomRatio) }
-                AnimatedVisibility(visible = stops.size > 1) {
-                    Surface(
-                        shape = DocShapes.pill,
-                        color = Color.Black.copy(alpha = 0.48f),
-                        modifier = Modifier.padding(bottom = 20.dp)
-                    ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(start = 22.dp, end = 22.dp, top = 14.dp, bottom = 14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Where you are in the scan, and the escape hatch for the shot you
+                    // just took — above the buttons, out of thumb range, because both
+                    // are things you look at rather than press in a hurry.
+                    AnimatedVisibility(visible = capturedPages.isNotEmpty()) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(3.dp)
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        ) {
+                            AnimatedContent(
+                                targetState = capturedPages.size,
+                                transitionSpec = {
+                                    (slideInVertically { height -> height } + fadeIn())
+                                        .togetherWith(
+                                            slideOutVertically { height -> -height } + fadeOut()
+                                        )
+                                },
+                                label = "pageCount"
+                            ) { count ->
+                                Text(
+                                    text = "$count ${if (count == 1) "page" else "pages"} scanned",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color.White.copy(alpha = 0.92f)
+                                )
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Box(
+                                modifier = Modifier
+                                    .width(1.dp)
+                                    .height(14.dp)
+                                    .background(Color.White.copy(alpha = 0.24f))
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .clip(DocShapes.pill)
+                                    .clickable(
+                                        onClickLabel = "Remove the last page",
+                                        role = Role.Button,
+                                        onClick = {
+                                            val last = capturedPages.removeLastOrNull()
+                                                ?: return@clickable
+                                            haptics.performHapticFeedback(
+                                                HapticFeedbackType.LongPress
+                                            )
+                                            repository.discardPages(listOf(last))
+                                            statusMessage = "Last page removed"
+                                        }
+                                    )
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Undo,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(Modifier.width(5.dp))
+                                Text(
+                                    "Undo",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+
+                    // Single / Batch, as a segment of the sheet: it changes what the
+                    // shutter does, so it sits directly above the shutter.
+                    ModeToggle(
+                        isBatch = isBatchMode,
+                        onChange = { isBatchMode = it }
+                    )
+
+                    Spacer(Modifier.height(14.dp))
+
+                    // Gallery · shutter · finish. One row, three targets, the shutter
+                    // in the middle where the thumb already is — and the two side
+                    // slots the same width so the shutter cannot drift off centre
+                    // when the finish button appears.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        GalleryTarget(
+                            lastPage = capturedPages.lastOrNull(),
+                            count = capturedPages.size,
+                            scale = galleryBump.value,
+                            onClick = {
+                                photoPickerLauncher.launch(
+                                    PickVisualMediaRequest(
+                                        ActivityResultContracts.PickVisualMedia.ImageOnly
+                                    )
+                                )
+                            }
+                        )
+
+                        ShutterButton(
+                            isCapturing = isCapturing,
+                            enabled = hasCameraPermission,
+                            onClick = { capturePage() }
+                        )
+
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.width(56.dp)
+                        ) {
+                            this@Row.AnimatedVisibility(
+                                visible = capturedPages.isNotEmpty(),
+                                // 0.92, not 0.6. This appears after *every* capture, so
+                                // a big pop would read as lag; a barely-there scale still
+                                // stops it appearing out of nothing.
+                                enter = fadeIn(tween(120)) +
+                                    scaleIn(tween(180), initialScale = 0.92f),
+                                exit = fadeOut(tween(100)) +
+                                    scaleOut(tween(140), targetScale = 0.92f)
+                            ) {
+                                FinishButton(onClick = { commitScan() })
+                            }
+                        }
+                    }
+
+                    // Zoom stops keep their place *above* the row in spirit — they are
+                    // the one control here that Files does not have, because Files does
+                    // not zoom. They stay, compact, under the buttons: a document
+                    // scanner that cannot magnify a distant page is not simpler.
+                    val stops = remember(maxZoomRatio) { zoomStops(maxZoomRatio) }
+                    AnimatedVisibility(visible = stops.size > 1) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .padding(top = 10.dp)
+                                .clip(DocShapes.pill)
+                                .background(Color.White.copy(alpha = 0.08f))
+                                .padding(horizontal = 4.dp)
                         ) {
                             stops.forEach { stop ->
                                 ZoomStopChip(
                                     label = zoomLabel(stop),
-                                    selected = kotlin.math.abs(zoomRatio - stop) < ZOOM_SELECTED_EPSILON,
+                                    selected = kotlin.math.abs(zoomRatio - stop) <
+                                        ZOOM_SELECTED_EPSILON,
                                     onClick = {
                                         zoomRatio = stop.coerceIn(minZoomRatio, maxZoomRatio)
-                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        haptics.performHapticFeedback(
+                                            HapticFeedbackType.LongPress
+                                        )
                                     }
                                 )
                             }
                         }
                     }
-                }
 
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 26.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Gallery: the last page captured once there is one, otherwise
-                    // the import affordance. Tapping either opens the picker, so a
-                    // mis-tap costs the user a picker, never their scan.
-                    GalleryTarget(
-                        lastPage = capturedPages.lastOrNull(),
-                        count = capturedPages.size,
-                        scale = galleryBump.value,
-                        onClick = {
-                            photoPickerLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
-                        }
-                    )
-
-                    ShutterButton(
-                        isCapturing = isCapturing,
-                        enabled = hasCameraPermission,
-                        onClick = { capturePage() }
-                    )
-
-                    // The right slot mirrors the gallery tile's footprint, which is
-                    // what keeps the shutter on the exact centre line. A wide
-                    // labelled button here would visibly shove it left.
-                    // The finish affordance appears the moment there is something to
-                    // finish, and it pops in with the same scale the shutter uses. The
-                    // slot itself never changes size, so the shutter cannot drift off
-                    // centre while it animates.
-                    Box(contentAlignment = Alignment.Center) {
-                        this@Row.AnimatedVisibility(
-                            visible = capturedPages.isNotEmpty(),
-                            // `spring()` as a *scale* enter spec wants
-                            // `Animatable`-style visibility thresholds, which the
-                            // default `SpringSpec` does not provide for
-                            // `EnterTransition`; a fast tween is the honest choice
-                            // here and settles in the same 140 ms.
-                            // 0.92, not 0.6. This button appears after *every*
-                            // capture — tens of times in a session, not a rare
-                            // celebration — and a big pop on something you see that
-                            // often stops reading as delight and starts reading as
-                            // lag. A barely-there scale still stops it appearing
-                            // from nothing, which is the only job it has.
-                            enter = fadeIn(tween(120)) + scaleIn(tween(180), initialScale = 0.92f),
-                            exit = fadeOut(tween(100)) + scaleOut(tween(140), targetScale = 0.92f)
-                        ) {
-                            FinishButton(onClick = { commitScan() })
-                        }
+                    // Files puts its privacy line at the bottom of the sheet; ours says
+                    // the thing this app actually guarantees, and only until the first
+                    // capture, because after that the count is the useful fact.
+                    if (capturedPages.isEmpty() && hasCameraPermission) {
+                        Text(
+                            "Pages stay on this device",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.55f),
+                            modifier = Modifier.padding(top = 10.dp)
+                        )
                     }
                 }
             }
@@ -981,31 +1001,45 @@ fun ScannerCameraScreen(
 }
 
 /**
- * Batch / single segmented control.
+ * Batch / single switch.
  *
- * Two states that change what the shutter does, so they are shown as one control
- * with a moving selection rather than as a button that cycles: a cycle makes the
- * user read the label every time to know what the next tap will do.
+ * Two states that change what the shutter does, so they are one control with a
+ * selected cell rather than a button that cycles: a cycle makes the user read the
+ * label every time to know what the next tap will do.
  *
- * It is the app's [SegmentedPill], not a camera-shaped copy of it. The copy that
- * used to live here faded a white background in and out under each label — the same
- * job, done without the thumb travelling, so switching modes read as two separate
- * colour changes rather than one object moving. One control, one behaviour, and the
- * glass palette comes in as parameters.
+ * It is the app's [ConnectedButtonGroup] with the glass palette passed in — the same
+ * component the editor and the action bars use, so the app has one segmented control
+ * and not three that look alike.
  */
 @Composable
 private fun ModeToggle(isBatch: Boolean, onChange: (Boolean) -> Unit) {
-    SegmentedPill(
-        options = listOf("Single", "Batch"),
-        selectedIndex = if (isBatch) 1 else 0,
-        onSelect = { index -> onChange(index == 1) },
-        segmentHeight = 34.dp,
-        container = Color.Black.copy(alpha = 0.44f),
-        thumbColor = Color.White.copy(alpha = 0.94f),
-        selectedContent = Color.Black,
-        content = Color.White.copy(alpha = 0.82f),
-        thumbElevation = 0.dp
-    )
+    // The app's connected group, used as a switch: it brings the pill ends, the
+    // 8 dp / 4 dp inner corners and the selected-cell relaxation, which is the same
+    // object language as the editor's Borders/Filters control below the preview.
+    //
+    // Fixed width rather than fill-max: a mode switch that spans the whole sheet
+    // competes with the shutter for weight, and the shutter has to win.
+    Box(modifier = Modifier.width(184.dp)) {
+        ConnectedButtonGroup(
+            actions = listOf(
+                ConnectedAction(
+                    label = "Single",
+                    selected = !isBatch,
+                    onClick = { onChange(false) }
+                ),
+                ConnectedAction(
+                    label = "Batch",
+                    selected = isBatch,
+                    onClick = { onChange(true) }
+                )
+            ),
+            containerColor = Color.White.copy(alpha = 0.12f),
+            contentColor = Color.White,
+            accentColor = Color.White,
+            onAccentColor = Color.Black,
+            cellHeight = 36.dp
+        )
+    }
 }
 
 /** One tap target per zoom stop. Selected state is a filled accent, not a tint. */

@@ -84,7 +84,6 @@ import com.example.docscanner.ui.common.ExpressivePager
 import com.example.docscanner.ui.common.PillButton
 import com.example.docscanner.ui.common.ZoomablePageView
 import com.example.docscanner.ui.common.rememberPageImage
-import com.example.docscanner.ui.editor.MarkupDialog
 import com.example.docscanner.ui.pdf.PdfExportSheet
 import com.example.docscanner.ui.signature.SignaturePadDialog
 import com.example.docscanner.util.PageRenderer
@@ -114,7 +113,8 @@ fun PageViewerScreen(
     pageId: String,
     repository: ScannerRepository,
     onNavigateBack: () -> Unit,
-    onNavigateToCrop: (pageId: String) -> Unit
+    onNavigateToCrop: (pageId: String) -> Unit,
+    onNavigateToMarkup: (pageId: String) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -139,12 +139,18 @@ fun PageViewerScreen(
     var scale by scaleState
     var offset by remember { mutableStateOf(Offset.Zero) }
     var showOcrSheet by remember { mutableStateOf(false) }
-    var showMarkup by remember { mutableStateOf(false) }
     var showSignPad by remember { mutableStateOf(false) }
     var showExportSheet by remember { mutableStateOf(false) }
 
     // Reference the decoded bitmap so the composable recomposes after a re-bake.
-    val pageImage = rememberPageImage(currentPage?.imageUri, reqWidth = 1600, reqHeight = 2200)
+    val pageImage = rememberPageImage(
+        imageUri = currentPage?.imageUri,
+        reqWidth = 1600,
+        reqHeight = 2200,
+        // A rotate re-bakes to the same path, so the revision is the only thing
+        // that tells this screen the pixels changed.
+        revision = currentPage?.revision ?: 0
+    )
 
     LaunchedEffect(safeIndex) {
         scale = 1f
@@ -155,20 +161,30 @@ fun PageViewerScreen(
     // and so the crossfade has a new bitmap to land on. Reset the transform afterwards:
     // the page just turned, and keeping a 2x pan from the old orientation points it at
     // a part of the page that no longer exists there.
+    // True while a rotate is being baked. The button turns into a spinner for that
+    // window, because a page that stays still for half a second after a tap reads as
+    // "the button did nothing" — the exact complaint this fixes.
+    var isRotating by remember(currentPage?.id) { mutableStateOf(false) }
+
     fun rotateCurrentPage() {
         val page = currentPage ?: return
+        if (isRotating) return
+        isRotating = true
+        scale = 1f
+        offset = Offset.Zero
         scope.launch {
             val latest = repository.getDocumentById(docId)
-                ?.pages?.find { it.id == page.id } ?: return@launch
-            val baked = PageRenderer.bake(
-                context,
-                latest.copy(rotationDegrees = (latest.rotationDegrees + 90f) % 360f)
-            )
-            if (baked != null) {
-                repository.updatePage(docId, page.id) { baked }
-                scale = 1f
-                offset = Offset.Zero
+                ?.pages?.find { it.id == page.id }
+            val baked = latest?.let {
+                runCatching {
+                    PageRenderer.bake(
+                        context,
+                        it.copy(rotationDegrees = (it.rotationDegrees + 90f) % 360f)
+                    )
+                }.getOrNull()
             }
+            if (baked != null) repository.updatePage(docId, page.id) { baked }
+            isRotating = false
         }
     }
 
@@ -355,12 +371,13 @@ fun PageViewerScreen(
                     ConnectedAction(
                         label = "Annotate",
                         icon = Icons.Outlined.Draw,
-                        onClick = { showMarkup = true }
+                        onClick = { currentPage?.let { onNavigateToMarkup(it.id) } }
                     ),
                     ConnectedAction(
-                        label = "Rotate",
+                        label = if (isRotating) "Rotating" else "Rotate",
                         icon = Icons.Default.RotateRight,
-                        onClick = { rotateCurrentPage() }
+                        onClick = { rotateCurrentPage() },
+                        enabled = !isRotating
                     ),
                     // The rare actions live behind this cell's menu instead of a fifth
                     // button: sign and export apply here, delete does not.
@@ -402,31 +419,9 @@ fun PageViewerScreen(
         }
     }
 
-    // Annotation and signature are both "mark this page" actions, so they live here
-    // and both re-bake on save: the viewer, the grid thumbnail and the next PDF all
-    // read the baked file.
-    currentPage?.let { page ->
-        if (showMarkup) {
-            MarkupDialog(
-                page = page,
-                onDismiss = { showMarkup = false },
-                onSave = { strokes ->
-                    showMarkup = false
-                    scope.launch {
-                        val latest = repository.getDocumentById(docId)
-                            ?.pages?.find { it.id == page.id } ?: return@launch
-                        repository.updatePage(docId, page.id) { it.copy(markup = strokes) }
-                        val baked = runCatching {
-                            PageRenderer.bake(context, latest.copy(markup = strokes))
-                        }.getOrNull()
-                        if (baked != null) {
-                            repository.updatePage(docId, page.id) { baked }
-                        }
-                    }
-                }
-            )
-        }
-    }
+    // Signing stays a dialog — it is one decision with a small pad — while annotating
+    // is a full screen of its own now (`MarkupScreen`); both re-bake on save, so the
+    // viewer, the grid thumbnail and the next PDF all read the same file.
 
     if (showSignPad) {
         // Signed onto the page you are reading — the same rule as the document

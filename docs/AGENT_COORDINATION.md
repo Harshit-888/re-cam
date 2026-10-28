@@ -1901,3 +1901,40 @@ Before any optimization lands:
 - **MCA is the Views library** (`AGENTS.md` §2 forbids View code here). Mine it for
   anatomy, thresholds and tokens only — never paste its Java.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
+
+## 6ao. Round 52: annotate screen, drag reorder, Files-style camera (Arena, 2026-10-28)
+
+**New:** `ui/editor/MarkupScreen.kt` (route), `ScannedPage.revision`,
+`ScannerRepository.movePages`, `MarkupNav`.
+**Deleted:** `ui/editor/MarkupDialog.kt`, `ui/common/Expressive.kt::SegmentedPill`.
+
+- **`SegmentedPill` is gone. Use `ConnectedButtonGroup` for every segmented control.**
+  Label-only cells are supported (`ConnectedAction.icon = null`); a `selected` cell fills
+  with the accent and relaxes to a pill. Do not reintroduce a second segmented control.
+- **A page's pixels change without its URI changing.** `PageRenderer.bake` rewrites
+  `_edited.jpg` in place and bumps `ScannedPage.revision`. Anything that caches, decodes
+  or keys on a page image **must pass the revision** (`rememberPageImage(..., revision)`,
+  `PageThumbnail` does it for you). Forgetting it is how rotate, filter and annotation
+  changes went invisible.
+- **Reorder is a drag now.** `Repository.movePages(docId, ids, targetIndex)` moves a
+  block; `targetIndex` counts the list *without* the moved pages. `PageGridItem` owns the
+  gesture (`detectDragGesturesAfterLongPress`) and the destination maths lives in
+  `DocumentDetailScreen` (`updatePageDrag`): the hovered slot and the commit index are
+  two different coordinate systems — do not collapse them back into one.
+- **Long press in the page grid adds to the selection and never removes.** It is also the
+  start of a drag; a long press that un-picked the page would leave the drag nothing to
+  move. Tap still toggles.
+- **Annotating is a route, not a dialog.** `MarkupNav(docId, pageId)`; the screen owns the
+  stroke history and re-bakes on save. Signature and PDF export are still dialogs.
+- **`CropAndFilterNav(..., borders = true)`** is what the Crop button passes. Do not
+  "simplify" it back to the default stage: landing on filters after tapping Crop was the
+  bug.
+- **Camera chrome is Files by Google's scanner shape:** two top controls, one rounded
+  control sheet at the bottom. Capture semantics are load-bearing and unchanged — 4:3
+  selector, `FIT_CENTER`, `MAXIMIZE_QUALITY`, flash/torch, shutter sound, auto-save,
+  batch vs single commit, discard cleanup.
+- **Border-handle state must stay stable.** `BorderCanvas`'s `liveQuad` is
+  `remember { }` with no keys *on purpose*; `pointerInput` does not restart when its keys
+  do not change, so keying the state on `corners` silently breaks every drag after the
+  first. Outside updates are adopted by the `LaunchedEffect(corners)`.
+- Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.

@@ -1,7 +1,6 @@
 package com.example.docscanner.ui.common
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -18,7 +17,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,7 +25,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -45,8 +42,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -268,109 +263,6 @@ fun SectionCard(
                 }
             }
             content()
-        }
-    }
-}
-
-/**
- * A segmented control with a sliding thumb.
- *
- * Two states only in this app (Borders / Filters), which is the case where a
- * segmented control beats tabs: both options stay visible and the thumb makes the
- * current one unmistakable, even at a glance.
- *
- * **It divides the width evenly between its options, so every option must have a
- * short label of roughly the same length.** That is the deal a segmented control
- * makes, and breaking it is silent: the PDF export sheet once fed it
- * `PaperSize.entries`, whose eight labels carry their dimensions, and every segment
- * rendered ~34 dp wide — "A4…", "US…", "Ex…". Nothing overflowed, nothing crashed,
- * the labels just became meaningless. Two to four options, short labels. Anything
- * driven by an enum with a long or variable label needs its own control (see
- * `ui/pdf/PdfExportSheet.kt` for the grid-and-cards version).
- */
-@Composable
-fun SegmentedPill(
-    options: List<String>,
-    selectedIndex: Int,
-    onSelect: (Int) -> Unit,
-    modifier: Modifier = Modifier,
-    segmentHeight: Dp = 38.dp,
-    container: Color = MaterialTheme.colorScheme.surfaceContainerHighest,
-    thumbColor: Color = MaterialTheme.colorScheme.surface,
-    selectedContent: Color = MaterialTheme.colorScheme.onSurface,
-    content: Color = MaterialTheme.colorScheme.onSurfaceVariant,
-    thumbElevation: Dp = 1.dp
-) {
-    Surface(
-        color = container,
-        shape = DocShapes.pill,
-        modifier = modifier
-    ) {
-        BoxWithConstraints(modifier = Modifier.padding(4.dp)) {
-            val segmentWidth = maxWidth / options.size
-            // Pixels, translated on the layer — not a `Dp` handed to `offset`.
-            //
-            // `Modifier.offset(x = animatedDp)` is a *layout* modifier: every frame
-            // of the slide re-places the thumb and its subtree. `translationX` on a
-            // graphics layer is a draw-time transform, so the slide costs the same
-            // as an idle frame and cannot re-run measure on the pill's contents.
-            // Animating a layout property is the one thing motion must never do.
-            val density = LocalDensity.current
-            val segmentWidthPx = with(density) { segmentWidth.toPx() }
-            // Slightly under-damped on purpose: the thumb arrives with a hint of
-            // overshoot, which is what makes a two-state control feel physical rather
-            // than like a colour being set. 0.78 at this stiffness settles in ~200 ms
-            // — fast enough to follow a thumb through both options.
-            val thumbOffsetPx by animateFloatAsState(
-                targetValue = segmentWidthPx * selectedIndex,
-                animationSpec = spring(dampingRatio = 0.78f, stiffness = 520f),
-                label = "segmentedThumb"
-            )
-            Surface(
-                color = thumbColor,
-                shape = DocShapes.pill,
-                shadowElevation = thumbElevation,
-                modifier = Modifier
-                    .width(segmentWidth)
-                    .height(segmentHeight)
-                    .graphicsLayer { translationX = thumbOffsetPx }
-            ) {}
-            Row(Modifier.fillMaxWidth()) {
-                options.forEachIndexed { index, label ->
-                    val selected = index == selectedIndex
-                    val interactions = remember { MutableInteractionSource() }
-                    // The label fades between its two weights' colours instead of
-                    // snapping: under a thumb that is still travelling, an instant
-                    // colour flip is the one thing that gives the animation away.
-                    val labelColor by animateColorAsState(
-                        targetValue = if (selected) selectedContent else content,
-                        animationSpec = tween(durationMillis = 180),
-                        label = "segmentLabel$index"
-                    )
-                    Box(
-                        modifier = Modifier
-                            .width(segmentWidth)
-                            .height(segmentHeight)
-                            .clip(DocShapes.pill)
-                            .pressScale(interactions, pressedScale = 0.96f)
-                            .selectable(
-                                selected = selected,
-                                interactionSource = interactions,
-                                indication = null,
-                                role = Role.RadioButton,
-                                onClick = { onSelect(index) }
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            label,
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                            color = labelColor
-                        )
-                    }
-                }
-            }
         }
     }
 }

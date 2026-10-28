@@ -17,6 +17,7 @@ import com.example.docscanner.ui.camera.ScannerCameraScreen
 import com.example.docscanner.ui.dashboard.DashboardScreen
 import com.example.docscanner.ui.detail.DocumentDetailScreen
 import com.example.docscanner.ui.editor.CropAndFilterScreen
+import com.example.docscanner.ui.editor.MarkupScreen
 import com.example.docscanner.ui.settings.SettingsScreen
 import com.example.docscanner.ui.trash.TrashScreen
 import com.example.docscanner.ui.viewer.PageViewerScreen
@@ -99,10 +100,14 @@ fun MainNavigation(repository: ScannerRepository) {
                         backStack.removeLastOrNull()
                     },
                     onNavigateToCrop = { pageId ->
-                        backStack.add(CropAndFilterNav(key.docId, pageId))
+                        // Crop means crop: land on the border stage.
+                        backStack.add(CropAndFilterNav(key.docId, pageId, borders = true))
                     },
                     onNavigateToViewer = { pageId ->
                         backStack.add(PageViewerNav(key.docId, pageId))
+                    },
+                    onNavigateToMarkup = { pageId ->
+                        backStack.add(MarkupNav(key.docId, pageId))
                     },
                     onAddPageCamera = { docId ->
                         backStack.add(ScannerCameraNav(docId))
@@ -116,6 +121,7 @@ fun MainNavigation(repository: ScannerRepository) {
                     pageId = key.pageId,
                     repository = repository,
                     reviewMode = key.review,
+                    startInBorders = key.borders,
                     onDone = {
                         backStack.removeLastOrNull()
                         if (key.review) addDetailIfNeeded(backStack, key.docId)
@@ -132,8 +138,20 @@ fun MainNavigation(repository: ScannerRepository) {
                         backStack.removeLastOrNull()
                     },
                     onNavigateToCrop = { pageId ->
-                        backStack.add(CropAndFilterNav(key.docId, pageId))
+                        backStack.add(CropAndFilterNav(key.docId, pageId, borders = true))
+                    },
+                    onNavigateToMarkup = { pageId ->
+                        backStack.add(MarkupNav(key.docId, pageId))
                     }
+                )
+            }
+
+            entry<MarkupNav> { key ->
+                MarkupScreen(
+                    docId = key.docId,
+                    pageId = key.pageId,
+                    repository = repository,
+                    onClose = { backStack.removeLastOrNull() }
                 )
             }
 

@@ -347,6 +347,44 @@ class ScannerRepository(context: Context) {
     }
 
     /**
+     * Moves **several** pages at once so the block lands at [targetIndex].
+     *
+     * This is what dragging a multi-page selection in the grid calls, and the
+     * semantics are the ones a drag implies rather than the ones a list operation
+     * would give:
+     *
+     * - the moved pages keep their **relative order**, because they travelled
+     *   together and re-ordering them on the way would be a second, unasked edit;
+     * - [targetIndex] is where the *block* starts in the final list;
+     * - everything else closes the gap and keeps its own order.
+     *
+     * A no-op when nothing would actually move, so a drag that ends where it started
+     * does not bump `modifiedDate` and re-sort the library.
+     */
+    fun movePages(docId: String, pageIds: List<String>, targetIndex: Int) {
+        if (pageIds.isEmpty()) return
+        _documents.update { docs ->
+            docs.map { doc ->
+                if (doc.id != docId) return@map doc
+                val moving = doc.pages.filter { it.id in pageIds }
+                if (moving.isEmpty()) return@map doc
+                val rest = doc.pages.filterNot { it.id in pageIds }
+                // Clamped against the *post-removal* list: dropping a block at the end
+                // means the end of what is left, not an index that no longer exists.
+                val destination = targetIndex.coerceIn(0, rest.size)
+                val reordered = rest.toMutableList().apply {
+                    addAll(destination, moving)
+                }
+                if (reordered.map { it.id } == doc.pages.map { it.id }) return@map doc
+                doc.copy(
+                    pages = reordered.mapIndexed { index, page -> page.copy(pageIndex = index) },
+                    modifiedDate = System.currentTimeMillis()
+                )
+            }
+        }
+    }
+
+    /**
      * Stores the geometry of several pages of one document in a **single** library
      * update.
      *

@@ -4,6 +4,62 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-28 — Arena.ai — Round 52: annotate is a screen, drag to reorder, Files-style camera
+
+Seven reported problems, plus the editor and camera re-skinned in Material 3. No filter,
+geometry, colour-scheme, typography or `PdfGenerator`/`PdfWriter` change — this is
+chrome, navigation and gestures only.
+
+- **`ui/editor/MarkupScreen.kt` (new) replaces `ui/editor/MarkupDialog.kt` (deleted).**
+  Annotating is a **route** now (`MarkupNav(docId, pageId)`), not a dialog: `Scaffold` +
+  `TopAppBar`, the page filling the screen, `SingleChoiceSegmentedButtonRow` for the
+  three tools, and a pill `Button` that shows progress while the page re-bakes. Same
+  stroke model, same `MarkupRenderer`, same normalised points.
+- **`CropAndFilterNav` gained `borders: Boolean`.** The bottom bar's **Crop** button now
+  opens the **border** stage — it used to land on filters, i.e. the app answered a
+  different question than the one asked. `CropAndFilterScreen` gained
+  `startInBorders` for this; `reviewMode` also starts there.
+- **`ScannedPage.revision: Int` (new, default 0).** A bake rewrites `_edited.jpg` in
+  place, so `imageUri` alone cannot tell a viewer the pixels changed. `PageRenderer`
+  bumps it on every bake; `rememberPageImage(imageUri, w, h, revision)` keys on it. This
+  is the fix for **rotate appearing to do nothing** in the reader. The viewer also
+  shows `Rotating` and disables the cell while the bake runs.
+- **`BorderCanvas` drag fix.** `liveQuad` was `remember(corners)`, so committing a drag
+  replaced the `MutableState` — but `pointerInput` is not restarted when its keys do not
+  change, so the *next* drag wrote an orphan object: nothing followed the finger, and
+  the corner jumped on release. It is now one stable object plus a `LaunchedEffect` that
+  adopts outside changes. (This is a gesture bug, not a UI one.)
+- **`ScannerRepository.movePages(docId, pageIds, targetIndex)` (new)** — moves a *block*,
+  keeping the moved pages' relative order, with `targetIndex` in the coordinates of the
+  list without them. `movePage` stays for single-page moves.
+- **`PageGridItem` drag-to-reorder.** Long-press picks the page, drag reorders
+  single **or multi-page selection**; the dragged tile is a `graphicsLayer` translation
+  with `zIndex` + shadow, and the hovered slot draws a tertiary ring. `canMoveBackward`,
+  `canMoveForward`, `onMoveBackward`, `onMoveForward` are **removed**, and the
+  "Move earlier/later" menu items are gone from both the tile and the single-page bar.
+  Board: the four tile buttons are now `FilledTonalIconButton` (`GridAction`) inside
+  `LocalMinimumInteractiveComponentSize provides 36.dp`.
+- **`ui/editor/CropAndFilterScreen.kt`** — `TopAppBar` header, `FilledTonalButton` tool
+  buttons, `FilledTonalIconButton` rotate buttons, `Button` primary. The stage switch is
+  the app's `ConnectedButtonGroup` used as a segmented control (pill outer ends, 8 dp
+  inner corners, **selected cell relaxes to a pill and fills with the accent**). New
+  **`onApplyAll`**: a tonal "Apply to all N pages" button, so a look can be applied to the
+  whole document from single-page editing.
+- **`ui/camera/ScannerCameraScreen.kt`** — Files-by-Google scanner chrome: close and
+  torch only in the top bar, the viewfinder clipped to a rounded rectangle, and **one
+  control sheet** with rounded top corners holding the count/undo row, the Single/Batch
+  switch (`ConnectedButtonGroup`, label-only), the gallery tile, the shutter and the
+  finish button, with the zoom stops and a one-line footnote under them. Capture
+  semantics are untouched (4:3, `FIT_CENTER`, `MAXIMIZE_QUALITY`, flash/torch, shutter
+  sound, auto-save, batch vs single commit, discard cleanup).
+- **`ui/common/Expressive.kt`** — **`SegmentedPill` deleted.** Its last two callers (the
+  camera mode switch and the editor stage switch) are `ConnectedButtonGroup` now;
+  `ConnectedAction.icon` is therefore nullable (label-only cells).
+- **`ConnectedButtonGroup`** — `selected` cells fill with the accent; `icon` optional.
+- **Viewer:** annotate opens `MarkupNav`; signing and PDF export stay dialogs and were
+  restored after an intermediate edit dropped them (they are `if (showSignPad)` /
+  `if (showExportSheet)` again).
+
 ## 2026-10-28 — Arena.ai — Round 51: Google's connected button group, real `SegmentedButton`
 
 Mined `material-components-android` for the Expressive component set and adopted the

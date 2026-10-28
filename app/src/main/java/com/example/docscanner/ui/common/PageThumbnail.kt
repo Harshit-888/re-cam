@@ -36,20 +36,32 @@ import com.example.docscanner.util.PageImageLoader
 fun rememberPageImage(
     imageUri: String?,
     reqWidth: Int = 600,
-    reqHeight: Int = 800
+    reqHeight: Int = 800,
+    /**
+     * [ScannedPage.revision]. A page is re-baked **to the same path**, so the URI
+     * is not enough to know the bytes changed — without this a rotate or a filter
+     * change left every screen showing the previous bitmap until it was recreated.
+     */
+    revision: Int = 0
 ): ImageBitmap? {
     val context = LocalContext.current.applicationContext
     // Seeded from the memory cache: a page that has already been decoded anywhere
     // in this process paints in the first frame instead of composing a placeholder
     // first. That is the whole difference between a library that flickers grey while
     // you scroll and one that simply moves.
-    val cached = remember(imageUri, reqWidth, reqHeight) {
+    val cached = remember(imageUri, reqWidth, reqHeight, revision) {
         PageImageLoader.peek(imageUri, reqWidth, reqHeight)?.asImageBitmap()
     }
     // Always re-resolve, even when seeded: an already-cached page answers from the
     // memory cache with no decode, and a page whose `imageUri` changed (a re-bake)
     // must not be left showing the old bitmap.
-    val image by produceState(initialValue = cached, imageUri, reqWidth, reqHeight) {
+    val image by produceState(
+        initialValue = cached,
+        imageUri,
+        reqWidth,
+        reqHeight,
+        revision
+    ) {
         value = PageImageLoader.load(context, imageUri, reqWidth, reqHeight)?.asImageBitmap()
     }
     return image
@@ -79,7 +91,7 @@ fun PageThumbnail(
      */
     placeholder: Color = Color.Transparent
 ) {
-    val image = rememberPageImage(page.imageUri, reqWidth, reqHeight)
+    val image = rememberPageImage(page.imageUri, reqWidth, reqHeight, page.revision)
 
     // Deliberately no fade-in.
     //

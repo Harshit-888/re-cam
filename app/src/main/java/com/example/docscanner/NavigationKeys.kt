@@ -20,8 +20,19 @@ data class ScannerCameraNav(val targetDocId: String? = null) : NavKey
 data class CropAndFilterNav(
     val docId: String,
     val pageId: String,
-    val review: Boolean = false
+    val review: Boolean = false,
+    /** Open on the border stage — what the Crop button means. */
+    val borders: Boolean = false
 ) : NavKey
+
+/**
+ * Handwriting on one page.
+ *
+ * Its own route rather than a dialog: annotating is the most precise gesture in the
+ * app and it deserves the whole display (see `MarkupScreen`).
+ */
+@Serializable
+data class MarkupNav(val docId: String, val pageId: String) : NavKey
 
 @Serializable
 data class DocumentDetailNav(val docId: String) : NavKey
