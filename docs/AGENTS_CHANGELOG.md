@@ -4,6 +4,42 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-28 — Arena.ai — Round 60: the annotate buttons that hid themselves
+
+Third report of *"the annotate menu buttons are still getting disappeared when clicked to
+other buttons"*. Rounds 54–58 fixed the **reader's** annotate shelf and the **cell**
+(`ConnectedButtonGroup`: no label-bounded ripple, ink-only disabled state, ink captured at
+press start), so this round was a fresh root-cause pass over *every* annotate surface
+rather than another patch to the same two files. Two mechanisms can remove an annotate
+control, and both are now gone.
+
+- **`ui/editor/MarkupScreen.kt` — the full-screen annotate bar used to delete a row of
+  buttons.** Its colour row was wrapped in `if (tool != MarkupTool.WHITEOUT)`, so choosing
+  **Erase** *removed* the four colour buttons and they only came back when another tool was
+  picked: a whole row of controls deleted by a different control. That is this report in
+  its most literal form, and no previous round touched this file. The row is
+  unconditional now. Nothing needs it hidden — `MarkupRenderer.paintFor` paints a whiteout
+  as the **paper colour and ignores `colorArgb`**, so a colour chosen while erasing is only
+  the colour the next pen/marker stroke uses (exactly how the reader's shelf has behaved
+  since Round 55). Keeping the row also stops the bar from changing height when the eraser
+  is chosen, which used to reflow the page above it through `Scaffold`'s inner padding.
+- **`ui/viewer/PageViewerScreen.kt` — `AnnotateShelf` lost its whole-shelf `alpha`.** The
+  drag-to-close used to fade the entire shelf (`alpha = 1 - dragY / (ReaderShelfInset * 3)`).
+  A *whole-shelf* alpha is a mechanism that can hide every button on the shelf at once from
+  one stale `dragY`, which is the mistake Round 55 removed from `ExpressiveActionBar`. The
+  drag keeps its `translationY`; it no longer owns an alpha.
+
+**No visual change at rest, and no output change:** same components, same rows, same order,
+same spacing, same shapes, same colours. Nothing that decides ink, geometry, filters,
+typography or PDF bytes was touched.
+
+Verified by reading (no Android SDK here): `grep -n "if ("` over `AnnotateShelf` and over
+`MarkupEditor`'s bottom bar now shows **no control whose presence depends on the selected
+tool**, and `python3` balance/import sweeps over all 81 `app/src` Kotlin files report only
+the two known `bal3` false positives (`MarkupTest.kt`, `PaperSizeTest.kt`).
+
+Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed by Antigravity.
+
 ## 2026-10-28 — Antigravity — Rounds 56–59 build verification
 
 Clean-build and test verification for Arena Rounds 56–59 (viewer shelf revert, document cards & view mode persistence, camera toggle press layer, library header label cleanup):

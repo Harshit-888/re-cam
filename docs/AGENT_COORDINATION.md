@@ -76,6 +76,7 @@ Keep this table short. Delete your row when the change lands.
 
 | Agent       | Status          | Files                                                                                                                                                                                                                                                                           | Intent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Arena.ai & Antigravity | 🟡 built here, needs Antigravity build (Round 60) | `ui/editor/MarkupScreen.kt`, `ui/viewer/PageViewerScreen.kt`, docs | Annotate controls must never be removed by another control: the full-screen annotate bar's colour row was gated on `tool != WHITEOUT` (choosing **Erase** deleted it) and is now unconditional, and the reader's `AnnotateShelf` no longer owns a whole-shelf drag `alpha` (translation only). No visual change at rest, no output change. See §6aw. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 53) | `ui/common/ConnectedButtonGroup.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/editor/MarkupStudio.kt` (new), `ui/editor/MarkupScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/pdf/PdfExportSheet.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/DocumentShare.kt` (new), `util/ImageStore.kt`, `data/ScannerRepository.kt`, `Navigation.kt`, docs | Seven reported defects: connected page-tile verbs + hold-to-collapse, Copy/Move on hold, dashboard multi-select **Share**, in-place annotate shelf in the reader, instant rotate, collapsing dashboard header, export-sheet microinteractions, camera preview lifted 32 dp. Chrome/layout/motion only. See §6ap. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 55) | `ui/common/ConnectedButtonGroup.kt`, `ui/common/ExpressiveAction.kt`, `ui/viewer/PageViewerScreen.kt`, docs | Annotate shelf control visibility fix (pen/erase/thin/bold): removed label-bounded ripple, dimmed ink only when disabled, translate-only entrance for action bar. **Its `SegmentedButton` swap was reverted in Round 56 — see the row below.** Tested and verified. See §6ar. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 59) | `ui/dashboard/DashboardScreen.kt`, docs | Library header de-cluttered: the "N documents" / "M pages" pills under Magic Search are deleted (only the sort label remains in that row), and the app bar's condensed line no longer opens with "All documents". See §6av. |
@@ -2245,3 +2246,54 @@ restore a literal "All documents" string.
 
 Note the per-document **"N pages" pill on a grid tile's cover** is a different object (it
 belongs to one document, not to the library) and it stays.
+
+## 6aw. Round 60: no annotate control is removed by another control (Arena, 2026-10-28)
+
+Third report of "the annotate menu buttons disappear when I click another button". The
+first two rounds fixed the **reader's shelf** (`PageViewerScreen.AnnotateShelf`) and the
+**cell** (`ConnectedButtonGroup`). This round searched *every* annotate surface for the
+only two things that can remove a control, and both were still there.
+
+### 1. `ui/editor/MarkupScreen.kt` — the full-screen annotate bar deleted a row
+
+```kotlin
+if (tool != MarkupTool.WHITEOUT) { Spacer(6.dp); Row { /* four colour swatches */ } }
+```
+
+Choosing **Erase** removed the four colour buttons from the bar until another tool was
+picked — a whole row of controls deleted by a different control, which is exactly the
+reported symptom. The row is now **unconditional**:
+
+- `MarkupRenderer.paintFor` paints `WHITEOUT` as the paper colour and **ignores
+  `colorArgb`**, so a colour chosen while erasing only decides the colour of the next
+  pen/marker stroke. **No ink, geometry, filter, typography or PDF output can change.**
+  This is the same decision the reader's shelf made in Round 55 ("nothing on this shelf is
+  disabled by the tool choice").
+- The bar's height is now constant, so choosing the eraser no longer reflows the page
+  above it through `Scaffold`'s `innerPadding`.
+- The control itself (Material `SegmentedButton` row + `TapTarget` dots + `Button`) is
+  **unchanged** — this is a behaviour fix in a file that had not been touched since the
+  route was added.
+
+### 2. `ui/viewer/PageViewerScreen.kt` — the shelf no longer owns a whole-shelf alpha
+
+`AnnotateShelf`'s drag-to-close faded the entire shelf with
+`alpha = 1 - dragY / (ReaderShelfInset * 3)`. A *whole-shelf* alpha can dim or hide every
+button at once from one stale `dragY` (a settle whose coroutine was cancelled mid-way, a
+drag interrupted by another gesture). It is the same ownership mistake Round 55 removed
+from `ExpressiveActionBar`. The drag keeps `translationY`; **no `alpha` remains on the
+shelf**. Swipe past 84 dp still cancels, and the shelf swap still slides it out.
+
+### Invariants for the next agent
+
+- **Never gate a control's presence on another control's selection.** The two allowed
+  mechanisms are: present-and-inert (see the colour row while erasing), or dimmed ink
+  (`ConnectedButtonGroup`'s `inkAlpha`, plate untouched). Not `if (something == X) { … }`
+  around a button.
+- **Persistent chrome does not own an alpha.** Translate, don't fade. Applies to
+  `ExpressiveActionBar`, `AnnotateShelf`, and anything else that is always on screen while
+  the user is interacting with it.
+- Verified by reading only (no Android SDK in the Arena sandbox): `grep -n "if ("` over
+  `AnnotateShelf` and over `MarkupEditor`'s bottom bar shows no tool-dependent control, and
+  the whole-tree sweep (81 Kotlin files) shows only the two known `bal3` false positives.
+  `./gradlew testDebugUnitTest assembleDebug` is still owed by Antigravity for this round.

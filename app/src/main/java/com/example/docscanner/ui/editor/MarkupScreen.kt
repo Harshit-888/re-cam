@@ -288,33 +288,48 @@ private fun MarkupEditor(
                         }
                     }
 
-                    if (tool != MarkupTool.WHITEOUT) {
-                        Spacer(Modifier.height(6.dp))
-                        // The visible dot is 30 dp; the *target* is 48 dp, because a
-                        // colour picker you miss by 6 dp is a colour you did not choose.
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            MarkupInkColors.forEach { ink ->
-                                TapTarget(
-                                    onClick = { colorArgb = ink },
-                                    label = inkLabel(ink),
-                                    selected = ink == colorArgb
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(30.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(ink))
-                                            .border(
-                                                width = if (ink == colorArgb) 3.dp else 1.dp,
-                                                color = if (ink == colorArgb) {
-                                                    MaterialTheme.colorScheme.primary
-                                                } else {
-                                                    MaterialTheme.colorScheme.outlineVariant
-                                                },
-                                                shape = CircleShape
-                                            )
-                                    )
-                                }
+                    Spacer(Modifier.height(6.dp))
+                    // ## The colour row is always there — it is not a child of the tool
+                    //
+                    // This block used to be wrapped in `if (tool != MarkupTool.WHITEOUT)`.
+                    // Choosing **Erase** therefore *deleted* the four colour buttons from
+                    // the bar, and they only came back once another tool was chosen: a
+                    // whole row of controls removed by a different control, which is the
+                    // "the annotate buttons disappear when I tap another button" report in
+                    // its most literal form. It also changed the bar's height, so switching
+                    // to the eraser reflowed the page above it.
+                    //
+                    // Nothing needs it gone. `MarkupRenderer` paints a whiteout as the
+                    // paper colour and ignores `colorArgb` completely (see
+                    // `MarkupRenderer.paintFor`), so a colour picked while erasing is
+                    // simply the colour the next pen or marker stroke uses — which is
+                    // exactly how the reader's annotate shelf already behaves. A control
+                    // that is present and harmless beats a control that vanishes.
+                    //
+                    // The visible dot is 30 dp; the *target* is 48 dp, because a
+                    // colour picker you miss by 6 dp is a colour you did not choose.
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        MarkupInkColors.forEach { ink ->
+                            TapTarget(
+                                onClick = { colorArgb = ink },
+                                label = inkLabel(ink),
+                                selected = ink == colorArgb
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(30.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(ink))
+                                        .border(
+                                            width = if (ink == colorArgb) 3.dp else 1.dp,
+                                            color = if (ink == colorArgb) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.outlineVariant
+                                            },
+                                            shape = CircleShape
+                                        )
+                                )
                             }
                         }
                     }

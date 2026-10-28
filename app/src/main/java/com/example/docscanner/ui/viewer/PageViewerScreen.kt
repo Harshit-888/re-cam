@@ -1001,10 +1001,23 @@ private fun AnnotateShelf(
             .fillMaxWidth()
             .graphicsLayer {
                 translationY = dragY
-                // Fades as it is pulled away, so it cannot look like the bar detached
-                // from the screen while it is being moved. The divisor is generous: a
-                // short drag must stay opaque, or the shelf blinks while being nudged.
-                alpha = (1f - (dragY / (ReaderShelfInset.toPx() * 3f))).coerceIn(0f, 1f)
+                // ## Translation only — this shelf owns no alpha
+                //
+                // The drag used to fade the shelf as it was pulled down (`alpha =
+                // 1 - dragY / inset * 3`). It is a *whole-shelf* alpha: one stale
+                // `dragY` — a settle whose coroutine was cancelled by a recomposition
+                // that left the composable mid-animation, a drag interrupted by the
+                // page's own gesture, a `dragY` written by two scopes at once — and
+                // every control on the shelf is drawn at partial opacity until the
+                // shelf is re-entered. That is the same ownership mistake `Round 55`
+                // removed from `ExpressiveActionBar`: **a persistent piece of chrome
+                // must not own an animation that can hide it.**
+                //
+                // A translation cannot hide anything, at any value, so the drag keeps
+                // its movement and loses the one mechanism on this shelf that could
+                // make *all* of its buttons disappear at once. The mode still leaves
+                // the screen the same way: past 84 dp it cancels, and the shelf swap
+                // below slides it out.
             }
     ) {
         // ## The 20 dp band that is both the handle and the drag target
