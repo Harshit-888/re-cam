@@ -4,6 +4,65 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-28 — Arena.ai — Round 63: live border detection, and borders for imports
+
+*"Also add the auto border detection while clicking pictures and also after capturing."*
+Two halves. The **viewfinder** now outlines the page it has found, continuously, while the
+user frames; **imported** pages now get the same automatic border a capture gets. Full
+design, cost arithmetic and invariants: **`docs/LIVE_BORDER_DETECTION.md`** (new).
+
+**New files**
+
+* `util/LiveBorderTracker.kt` — `LiveBorderTracker`, `SceneRect`, `GreyFrame`,
+  `GreyFrames`. No Android type in any of them, so they are covered by JVM tests.
+  `LiveBorderTracker.onFrame(corners: QuadCorners?, sidesFound: Int): State` is the whole
+  frame-to-frame policy: confidence +1/−2 (`SHOW_AT = 3`, `HIDE_BELOW = 2`,
+  `CONFIDENCE_MAX = 6`), a `SNAP = 0.02` tolerance that holds the drawn quad against jitter,
+  and a `GLIDE = 0.5` interpolation for real movement. `SceneRect.fitCenter(w, h, aspect)`
+  reproduces `PreviewView.ScaleType.FIT_CENTER`; `GreyFrames.rotate(frame, degrees)` makes a
+  sensor frame upright before detection.
+* `ui/camera/LiveBorderAnalyzer.kt` — `ImageAnalysis.Analyzer`. Y plane only, row-stride
+  aware, box-averaged to `ANALYSIS_WIDTH = 360`, rate-limited to `MIN_INTERVAL_MS = 150`.
+  Runs `DocumentQuad.detect` (**not** `MlBorderDetector`: no interpreter on a per-frame
+  budget). `stopped` is `@Volatile` and set at teardown.
+* `ui/camera/LiveBorderOverlay.kt` — `LiveBorderOverlay(state, frameAspect)`: two-stroke
+  quad (dark halo under white) plus accent corner ticks, **alpha-only** 180 ms appearance.
+  Drawn in the view hierarchy; never in the capture.
+* `app/src/test/.../util/LiveBorderTrackerTest.kt` — 18 tests: acquisition, one-missed-frame
+  survival, retirement, wobble hold, glide-then-settle, the three rejection rules, reset,
+  three `fitCenter` cases, degenerate view, and four rotation cases.
+
+**Changed**
+
+* `ui/camera/ScannerCameraScreen.kt` — binds `Preview + ImageCapture + ImageAnalysis`;
+  `LiveBorderOverlay` is rendered on top of the `AndroidView` inside the same clipped,
+  scaled stage. **The third stream is bound in its own `try`**: a LEGACY camera only
+  guarantees two, and on failure the analysis use case is unbound and
+  `Preview + ImageCapture` is re-bound, so the viewfinder can never fail to open because of
+  the outline. The "no guide frame" comment above the stage was rewritten — it now explains
+  why the overlay is the *opposite* of the fixed frame it replaced.
+* `data/ScannerRepository.kt` — new `detectBordersInBackground(docId)`: detects every page
+  of `docId` that is still `FULL_FRAME`, decodes at `AUTO_BORDER_DETECT_DIMENSION = 900`,
+  writes the batch once via `setPageCorners`. **`setPageCorners` gained
+  `onlyWhereUncropped: Boolean = false`**, checked inside the `_documents.update`; the new
+  pass is the only caller that passes `true`, so a detection finishing after the user has
+  cropped that page by hand cannot undo their work. Existing callers are unaffected.
+* `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt` — both import paths
+  (system photo picker → new document, album → existing document) call
+  `detectBordersInBackground` after adding the pages. Before this, an imported page kept
+  `QuadCorners.FULL_FRAME` until somebody opened *Crop & Filter*.
+
+**Not changed:** `DocumentQuad`, `DocumentDetector`, `QuadSanity`, `CropAndFilterScreen`,
+`DocumentFilters`, the Rust crate and `ABI_VERSION`, and every PDF path. No filter output,
+geometry, colour, typography or `PdfGenerator` behaviour differs. The live quad is
+deliberately **not** stored as a page's corners — the crop is re-detected at capture
+resolution (see the doc).
+
+**Owed:** `./gradlew testDebugUnitTest assembleDebug` (no Android SDK in the sandbox — the
+balance/type sweep above is not a compile), and a device trace of the analysis cost
+(`DocScannerPerf` / `dumpsys gfxinfo`) to replace the budget arithmetic in
+`docs/LIVE_BORDER_DETECTION.md` §2 with a measurement.
+
 ## 2026-10-28 — Antigravity — Rounds 60–61 compilation fix & build verification
 
 Resolved compilation error from Arena Round 61 integration and verified clean build:

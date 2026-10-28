@@ -257,6 +257,11 @@ fun DocumentDetailScreen(
                     )
                 }
             }
+            // An imported page is a page: it gets the same automatic borders a
+            // captured one gets, from the same detector and at the same resolution,
+            // so "add from album" no longer leaves a photo sitting in a document
+            // uncropped until somebody opens the editor.
+            repository.detectBordersInBackground(docId)
             // Search only finds pages whose words have been read, and an imported page
             // is no different from a captured one.
             repository.indexTextInBackground(docId)

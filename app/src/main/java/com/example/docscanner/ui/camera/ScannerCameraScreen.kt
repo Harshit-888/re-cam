@@ -9,6 +9,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
@@ -119,6 +120,7 @@ import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.util.DocumentNaming
 import com.example.docscanner.util.GalleryExporter
 import com.example.docscanner.util.ImageStore
+import com.example.docscanner.util.LiveBorderTracker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
@@ -128,6 +130,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.Executors
 
 /** Flash behaviour for capture + torch state for the live preview. */
 private enum class FlashMode { AUTO, ON, OFF }
@@ -193,6 +196,27 @@ fun ScannerCameraScreen(
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var boundCamera by remember { mutableStateOf<Camera?>(null) }
 
+    // ---- live border detection -------------------------------------------
+    //
+    // A third use case runs the border detector over the preview stream, ~6 times a
+    // second, and hands back a smoothed quad that the viewfinder draws as an
+    // outline. It is the answer to "where is my page?" while framing — the crop
+    // itself is still taken from the full-resolution capture, where the border is
+    // re-detected (see LiveBorderAnalyzer for why the cheap pass is enough here).
+    //
+    // One thread, owned by this screen, shut down with it: analysis must never
+    // outlive the composition that draws its results.
+    val borderExecutor = remember {
+        Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "live-border") }
+    }
+    DisposableEffect(Unit) {
+        onDispose { runCatching { borderExecutor.shutdownNow() } }
+    }
+    var liveBorder by remember { mutableStateOf<LiveBorderTracker.State?>(null) }
+    // Shape of the analysed frame, upright. 3:4 is what a 4:3 sensor reports in
+    // portrait; it is only a first guess, replaced by the first frame's real aspect.
+    var liveFrameAspect by remember { mutableFloatStateOf(3f / 4f) }
+
     // ---- zoom ------------------------------------------------------------
     // Pinch drives `cameraControl.setZoomRatio`, not a scaled preview: the sensor
     // crop changes, so the captured JPEG is zoomed too. Scaling only the preview
@@ -213,6 +237,7 @@ fun ScannerCameraScreen(
             val providerFuture = ProcessCameraProvider.getInstance(context)
             val executor = ContextCompat.getMainExecutor(context)
             var provider: ProcessCameraProvider? = null
+            var liveAnalyzer: LiveBorderAnalyzer? = null
 
             providerFuture.addListener(
                 {
@@ -240,15 +265,57 @@ fun ScannerCameraScreen(
                             .setResolutionSelector(resolution)
                             .build()
 
+                        // The border pass. `KEEP_ONLY_LATEST` is the whole reason
+                        // this is affordable: the analyser gets the newest frame and
+                        // older ones are dropped in the camera pipeline, so a slow
+                        // detection can never build a backlog that lags behind the
+                        // hand holding the phone.
+                        val analyzer = LiveBorderAnalyzer { state, aspect ->
+                            // Called on the analysis thread; Compose state is only
+                            // written from main. The analyser is stopped in
+                            // `onDispose` below, so a frame in flight cannot write
+                            // after the screen is gone.
+                            executor.execute {
+                                liveBorder = state
+                                liveFrameAspect = aspect
+                            }
+                        }
+                        val analysis = ImageAnalysis.Builder()
+                            .setResolutionSelector(resolution)
+                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                            .build()
+                            .also { it.setAnalyzer(borderExecutor, analyzer) }
+
                         resolved.unbindAll()
-                        val camera = resolved.bindToLifecycle(
-                            lifecycleOwner,
-                            CameraSelector.DEFAULT_BACK_CAMERA,
-                            preview,
-                            capture
-                        )
+                        // Three streams in one call, but a LEGACY camera only
+                        // guarantees two: on those devices binding the analysis use
+                        // case throws and the whole camera would fail to open. The
+                        // outline is a feature; the viewfinder is the app — so a
+                        // refused third stream is caught here and the two-stream bind
+                        // runs instead. Nothing is reported to the user: there is no
+                        // action for them to take, and the camera still works.
+                        val camera = try {
+                            resolved.bindToLifecycle(
+                                lifecycleOwner,
+                                CameraSelector.DEFAULT_BACK_CAMERA,
+                                preview,
+                                capture,
+                                analysis
+                            )
+                        } catch (_: Throwable) {
+                            runCatching { analysis.clearAnalyzer() }
+                            runCatching { resolved.unbind(analysis) }
+                            liveBorder = null
+                            resolved.bindToLifecycle(
+                                lifecycleOwner,
+                                CameraSelector.DEFAULT_BACK_CAMERA,
+                                preview,
+                                capture
+                            )
+                        }
                         imageCapture = capture
                         boundCamera = camera
+                        liveAnalyzer = analyzer
                     } catch (t: Throwable) {
                         cameraError = t.message ?: "unknown error"
                     }
@@ -257,9 +324,14 @@ fun ScannerCameraScreen(
             )
 
             onDispose {
+                // Stop the analyser *before* unbinding: it holds the only reference
+                // to a frame's pixels, and a detection finishing during teardown
+                // would otherwise post a border onto a screen that no longer exists.
+                liveAnalyzer?.stopped = true
                 runCatching { provider?.unbindAll() }
                 imageCapture = null
                 boundCamera = null
+                liveBorder = null
             }
         }
     }
@@ -591,16 +663,30 @@ fun ScannerCameraScreen(
                         .fillMaxSize()
                         .clip(RoundedCornerShape(20.dp))
                 )
+
+                // The detected page, drawn over the preview — never into it.
+                LiveBorderOverlay(
+                    state = liveBorder,
+                    frameAspect = liveFrameAspect,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(20.dp))
+                )
             }
 
-            // No guide frame over the preview, deliberately.
+            // No *fixed* guide frame over the preview, deliberately.
             //
             // The old overlay drew a dark window with a pulsing dashed border. It
             // was decorative only (never part of the captured JPEG), and it hurt
             // document detection: it taught users to fill the frame right past the
-            // paper edge, leaving no page boundary in the photo to find. The
-            // one-line hint below says the same thing without training the wrong
-            // composition.
+            // paper edge, leaving no page boundary in the photo to find.
+            //
+            // What sits there now is the opposite of a fixed frame: the outline
+            // above is the page the detector has actually found, moving with it. A
+            // frame that follows the paper teaches the right composition instead of
+            // an arbitrary one, and it answers the question the user is standing
+            // there asking — "can it see my page?" — before the shutter, not after.
+            // The one-line hint below still says what to do when nothing is found.
 
             // Scrims. The chrome sits over a white page far more often than over a
             // dark desk, and white-on-white is unreadable. A soft gradient keeps

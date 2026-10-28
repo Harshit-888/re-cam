@@ -59,6 +59,9 @@ adding a changelog entry and updating every caller in the same commit.
 | `DocumentFilters.applyPreview(src, filter)`                              | fun           | Same pipeline at preview resolution (WYSIWYG)                                                    |
 | `DocumentDetector.detect(bitmap, context)`                               | fun           | **Preferred.** `Detection(corners, confident)` — TFLite ML model + geometric fallback; never throws |
 | `DocumentDetector.detectQuad(bitmap, context)`                           | fun           | Compatibility shim for `detect().corners`                                                        |
+| `ScannerRepository.detectBordersInBackground(docId)`                     | fun           | Auto-borders every uncropped page; fire-and-forget. **Never** overwrites a hand crop              |
+| `LiveBorderTracker.onFrame(corners, sidesFound)`                         | fun           | The live outline's whole policy: confidence, `SNAP` hold, `GLIDE`. Pure Kotlin, JVM-tested        |
+| `SceneRect.fitCenter(containerW, containerH, contentAspect)`             | fun           | `PreviewView.FIT_CENTER` arithmetic for placing normalised corners in a view                     |
 | `DocumentFilters.stretchPoints(hist)`                                    | fun           | Clamped black/white points; the blow-out guard                                                   |
 | `PerspectiveWarp.detectQuad(bitmap)`                                     | fun           | Thin delegate to `DocumentDetector` (kept for compatibility)                                     |
 | `PerspectiveWarp.warp(src, corners)`                                     | fun           | `Matrix.setPolyToPoly` projective warp                                                           |
@@ -76,6 +79,7 @@ Keep this table short. Delete your row when the change lands.
 
 | Agent       | Status          | Files                                                                                                                                                                                                                                                                           | Intent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Arena.ai & Antigravity | 🟡 built here, needs Antigravity build (Round 63) | `util/LiveBorderTracker.kt` (new), `ui/camera/LiveBorderAnalyzer.kt` (new), `ui/camera/LiveBorderOverlay.kt` (new), `ui/camera/ScannerCameraScreen.kt`, `data/ScannerRepository.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `app/src/test/.../util/LiveBorderTrackerTest.kt` (new), `docs/LIVE_BORDER_DETECTION.md` (new), docs | Auto border detection while framing (a live page outline from a third CameraX use case, confidence/tolerance/glide smoothed in `LiveBorderTracker`) **and** after the fact: imported pages now get the same automatic border a capture gets, via `ScannerRepository.detectBordersInBackground`. `setPageCorners` gained `onlyWhereUncropped = false`. No detector, filter, PDF or Rust change; the live quad is never stored as a crop. **The two-stream bind fallback is load-bearing** (LEGACY cameras). See §6az. |
 | Arena.ai & Antigravity | 🟡 built here, needs Antigravity build (Round 62) | `util/DocumentFilters.kt`, `util/DocumentFiltersTest.kt`, `docs/filter_combined_spec.md`, `tools/shadow_probe.py` (new), docs | `SMART`/`LIGHT_TEXT` still showed shadows in two measured cases: the absolute-threshold document/scene gate called a shadowed page a *scene* (41 %) so no shadow was removed, and the box-blurred surface smeared hard shadow edges into a 65-level band. Replaced by `surfaceIsPaper` (two ratios against the surface) and `median3Grid`. **No kernel, Rust or ABI change; the five transcribed presets keep their exact output.** See §6ay. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 61) | `model/Models.kt`, `util/DocumentFilters.kt`, `util/NativeFilters.kt`, `app/src/main/rust/src/{kernels,lib}.rs`, `util/DocumentFiltersTest.kt`, `docs/filter_combined_spec.md` (new), `tools/filter_ref.py` (new), docs | Two **new** presets, `SMART` (label "Smart Scan") and `LIGHT_TEXT` ("Light Text"), appended to `FilterType`: this app's paper-map divide with a ratio-domain tone curve, one hue-preserving gain per pixel, a bounded (soft-kneed) white balance, and Adobe's faint-ink idea as a curve window. Rust kernel `adaptive_colour` behind byte-exact parity (ABI 3). **The five original presets are untouched** — same code, same output. See §6ax. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 60) | `ui/editor/MarkupScreen.kt`, `ui/viewer/PageViewerScreen.kt`, docs | Annotate controls must never be removed by another control: the full-screen annotate bar's colour row was gated on `tool != WHITEOUT` (choosing **Erase** deleted it) and is now unconditional, and the reader's `AnnotateShelf` no longer owns a whole-shelf drag `alpha` (translation only). No visual change at rest, no output change. See §6aw. |
@@ -2428,3 +2432,78 @@ because that would change *their* output — it is a one-line change if it is ev
   probe before moving them.
 - Verified by reading and by `tools/shadow_probe.py` only (no Gradle, NDK or cargo here).
   `./gradlew testDebugUnitTest assembleDebug` for R60–R62 is owed by Antigravity.
+
+## 6az. Round 63: live border detection, and borders for imports (Arena, 2026-10-28)
+
+The ask: *"also add the auto border detection while clicking pictures and also after
+capturing."* Two halves that were both missing for different reasons.
+
+### 1. The viewfinder outlined nothing
+
+`ScannerCameraScreen` bound only `Preview + ImageCapture`, and the stage carried a comment
+saying there is deliberately **no** guide frame (the old one was a fixed dark mask that
+taught users to fill the frame past the paper edge). The post-capture path was fine — the
+review screen has detected borders since the review flow landed.
+
+Now a third use case, `ImageAnalysis` with `STRATEGY_KEEP_ONLY_LATEST`, feeds
+`LiveBorderAnalyzer`: Y plane only, row-stride aware, box-averaged to 360 px, made upright by
+`GreyFrames.rotate`, detected by `DocumentQuad` (**not** `MlBorderDetector` — no interpreter
+on a per-frame budget), smoothed by `LiveBorderTracker`, drawn by `LiveBorderOverlay`.
+
+The smoothing **is** the feature, and all of it is in one pure-Kotlin class:
+
+| rule | constant | effect |
+|---|---|---|
+| acquire | `SHOW_AT = 3` | three good frames before the outline appears |
+| survive | `PENALTY = 2`, `HIDE_BELOW = 2` | a locked outline tolerates two missed frames |
+| jitter | `SNAP = 0.02` | under 2 % of the frame, the drawn quad is kept |
+| motion | `GLIDE = 0.5` | real movement arrives over ~3 frames, never teleports |
+| plausibility | `ACCEPT_SIDES = 3`, `MIN_AREA = 0.12`, `MAX_SIDE_RATIO = 8` | slivers, specks and 2-side guesses are never drawn |
+
+### 2. An imported page never got a border at all
+
+Both import paths (`DashboardScreen` picker → new document, `DocumentDetailScreen` album →
+existing document) wrote `ScannedPage(corners = QuadCorners())` and stopped. The per-page
+auto-detect lives in `CropAndFilterScreen` and only runs when somebody opens it, so a photo
+imported from another app sat uncropped, looking nothing like a scanned page.
+
+`ScannerRepository.detectBordersInBackground(docId)` now runs the same detector over every
+`FULL_FRAME` page at `AUTO_BORDER_DETECT_DIMENSION = 900` and writes the batch once.
+`setPageCorners` gained **`onlyWhereUncropped: Boolean = false`**, checked inside the
+`_documents.update`, so a detection that finishes after the user has cropped that page by
+hand cannot undo their work. Fire-and-forget on the repository scope, like
+`indexTextInBackground`.
+
+### What was explicitly *not* taken from the Adobe shim
+
+`adobe-scan/decompiled_src/CameraCleanLiveEdgeDetectionAndroidShim.java` was read, never
+edited. Its **tolerance hold** (`AreCurrentCornersWithinTolerance`) and its **accumulating
+display confidence** are the two ideas this round uses; the numbers are this app's own,
+because that shim is driven by a 250/750 ms timer and an image-space tolerance. Its
+**automatic torch** (`LiveBoundaryTorchHint`, `imageHasDarkShadow`,
+`imageHasGlareAfterTorch`) and **auto-shutter** (`CanSetReadyForCaptureHint`) are refused:
+flash here is an explicit control, and the shutter is the user's finger.
+
+### Invariants for the next agent
+
+- **The live quad is never written to a page.** The crop is re-detected at capture
+  resolution; the live outline works on a 360 px frame and can be stale by the time the
+  shutter fires. The outline is a framing aid, the crop is an output.
+- **Keep the two-stream bind fallback.** `Preview + ImageCapture + ImageAnalysis` throws on
+  LEGACY hardware, which guarantees only two streams. The third stream is bound in its own
+  `try`; on failure the analysis use case is unbound and the two-stream bind runs, so the
+  camera still opens. Removing that `catch` turns "no outline on an old phone" into "no
+  camera on an old phone".
+- **`SceneRect.fitCenter` mirrors `PreviewView.ScaleType.FIT_CENTER`.** The overlay is placed
+  in view space from normalised corners; if the preview scale type or the stage's aspect
+  ratio ever changes, this mapping must change with it (tests: matching / wider / taller
+  stream).
+- **No smoothing in `DocumentQuad`.** It is called once per page by the editor, where exact
+  is the only acceptable answer; all frame-to-frame policy lives in `LiveBorderTracker`.
+- **`detectBordersInBackground` keeps `onlyWhereUncropped = true`.** A background pass that
+  overwrites a hand-edited crop is data loss, not a cosmetic bug.
+- Nothing in this round touches `DocumentFilters`, the Rust crate, `ABI_VERSION`,
+  `PdfGenerator` or any filter output. Verified by reading, a brace/quote balance sweep over
+  the eight touched files and a 18-test JVM suite for the tracker/mapping/rotation;
+  `./gradlew testDebugUnitTest assembleDebug` and a device trace of the analysis cost are
+  owed by Antigravity.

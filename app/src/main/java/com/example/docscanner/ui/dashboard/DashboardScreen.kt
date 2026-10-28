@@ -204,6 +204,11 @@ fun DashboardScreen(
                 return@launch
             }
             val created = repository.addDocument(DocumentNaming.defaultScanTitle(), null, pages)
+            // Imported photos get the same automatic borders a capture gets. It runs
+            // in the background on the repository's scope, so the detail screen opens
+            // at once and the crop appears on the pages a moment later — the same
+            // sequence the review flow uses after the shutter.
+            repository.detectBordersInBackground(created.id)
             onNavigateToDetail(created.id)
         }
     }

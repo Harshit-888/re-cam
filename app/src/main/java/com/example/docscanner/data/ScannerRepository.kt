@@ -16,6 +16,7 @@ import com.example.docscanner.model.QuadCorners
 import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.util.BackupArchive
 import com.example.docscanner.util.CardComposition
+import com.example.docscanner.util.DocumentDetector
 import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.PageImageLoader
 import com.example.docscanner.util.OcrEngine
@@ -91,6 +92,17 @@ private const val A4_PX_HEIGHT = 2339
 
 /** Each card is scaled into a half-page cell, so decoding larger is waste. */
 private const val CARD_SOURCE_DIMENSION = 1600
+
+/**
+ * Decode size for the automatic border pass.
+ *
+ * `DocumentDetector` reduces whatever it is given to 360 px wide before it looks at
+ * it, so a 900 px decode is already four times more than the geometry can use —
+ * and the extra is not free: a page is 1–3 MB on disk and this pass runs over a
+ * whole import at once. Large enough that the border survives the downsample with
+ * a few pixels of ramp, small enough that ten pages do not cost ten full decodes.
+ */
+private const val AUTO_BORDER_DETECT_DIMENSION = 900
 
 class ScannerRepository(context: Context) {
 
@@ -485,7 +497,20 @@ class ScannerRepository(context: Context) {
      *
      * `modifiedDate` moves once, because the document genuinely did change.
      */
-    fun setPageCorners(docId: String, cornersByPage: Map<String, QuadCorners>) {
+    fun setPageCorners(
+        docId: String,
+        cornersByPage: Map<String, QuadCorners>,
+        /**
+         * Leave pages that already have corners alone.
+         *
+         * Set by the background border pass, which works from a list of *uncropped*
+         * pages: the detection of page 4 can finish after the user has already
+         * cropped page 4 by hand, and a late write would silently undo their work.
+         * The check has to be inside the update to be worth anything — comparing
+         * against a snapshot taken before the pass would have the same race.
+         */
+        onlyWhereUncropped: Boolean = false
+    ) {
         if (cornersByPage.isEmpty()) return
         _documents.update { docs ->
             docs.map { doc ->
@@ -494,12 +519,72 @@ class ScannerRepository(context: Context) {
                 } else {
                     doc.copy(
                         pages = doc.pages.map { page ->
-                            cornersByPage[page.id]?.let { page.copy(corners = it) } ?: page
+                            val replacement = cornersByPage[page.id]
+                            when {
+                                replacement == null -> page
+                                onlyWhereUncropped && !page.corners.isFullFrame -> page
+                                else -> page.copy(corners = replacement)
+                            }
                         },
                         modifiedDate = System.currentTimeMillis()
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * Finds the page border of every page of [docId] that has never been cropped.
+     *
+     * This is the "after the fact" half of border detection. A camera capture gets a
+     * border immediately — the viewfinder outlines it live, and the review screen
+     * detects it again at full resolution — but a page that arrives any other way
+     * (the gallery picker on the dashboard, the gallery button inside a document, a
+     * photo taken in another app) used to land with `QuadCorners.FULL_FRAME` and stay
+     * that way until somebody opened the editor. Imported pages looked different
+     * from scanned ones for no reason the user could see.
+     *
+     * Same detector, same 360 px working resolution, same confidence rules as the
+     * review pass — so an imported photo and a scanned one of the same page end up
+     * with the same crop. Only *unconfident* pages are left alone, and a page the
+     * user has already cropped is never touched (see `onlyWhereUncropped`).
+     *
+     * Fire-and-forget on the repository's scope, like [indexTextInBackground]: the
+     * import must not wait for it, and the result has to survive the screen that
+     * started it being popped.
+     */
+    fun detectBordersInBackground(docId: String) {
+        val pending = _documents.value
+            .firstOrNull { it.id == docId }
+            ?.pages
+            ?.filter {
+                it.corners.isFullFrame &&
+                    (!it.originalImageUri.isNullOrBlank() || it.imageUri.isNotBlank())
+            }
+            ?: return
+        if (pending.isEmpty()) return
+        scope.launch {
+            val found = LinkedHashMap<String, QuadCorners>()
+            for (page in pending) {
+                val source = page.originalImageUri?.takeIf { it.isNotBlank() } ?: page.imageUri
+                if (source.isBlank()) continue
+                val bitmap = ImageStore.loadBitmap(
+                    appContext,
+                    source,
+                    AUTO_BORDER_DETECT_DIMENSION
+                ) ?: continue
+                // `finally` so a cancelled pass frees its decode: `scope` is the
+                // repository's, and a bitmap kept alive by an abandoned coroutine is
+                // a megabyte nobody will collect.
+                val detection = try {
+                    DocumentDetector.detect(bitmap, appContext)
+                } finally {
+                    bitmap.recycle()
+                }
+                if (!detection.corners.isFullFrame) found[page.id] = detection.corners
+            }
+            if (found.isEmpty()) return@launch
+            setPageCorners(docId, found, onlyWhereUncropped = true)
         }
     }
 
