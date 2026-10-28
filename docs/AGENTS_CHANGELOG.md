@@ -4,6 +4,13 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-28 — Antigravity — Round 54 compilation fix & build verification
+
+Resolved compilation errors from Arena Round 54 integration and verified clean build:
+- **`ui/camera/ScannerCameraScreen.kt`**: Qualified `androidx.compose.animation.AnimatedVisibility` calls for the hint and status toast overlays to resolve implicit `ColumnScope` receiver collision in the redesigned `Box`/`Column` hierarchy.
+- **`ui/detail/DocumentDetailScreen.kt`**: Qualified `androidx.compose.animation.AnimatedVisibility` for tile selection check overlay, and added missing `import androidx.compose.foundation.layout.imePadding` for `MovePagesSheet`.
+- **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.9 MB), and `testDebugUnitTest` passed 100% (25 tasks, 0 failures).
+
 ## 2026-10-28 — Arena.ai — Round 54: second pass on the Round-53 reports
 
 Five of the seven Round-53 items were re-opened as still broken. All were layout bugs

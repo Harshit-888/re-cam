@@ -42,6 +42,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -1462,7 +1463,7 @@ fun PageGridItem(
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.primary.copy(alpha = washAlpha))
                 )
-                AnimatedVisibility(
+                androidx.compose.animation.AnimatedVisibility(
                     visible = selected,
                     enter = scaleIn(Motion.bouncy) + fadeIn(Motion.fade),
                     exit = scaleOut(Motion.press) + fadeOut(tween(120)),

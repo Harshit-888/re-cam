@@ -710,7 +710,7 @@ fun ScannerCameraScreen(
         // The counter moved into the control sheet, where the buttons are. One line
         // of guidance stays over the preview — and only until the first capture, so
         // it never competes with the frame.
-        AnimatedVisibility(
+        androidx.compose.animation.AnimatedVisibility(
             visible = showHint && capturedPages.isEmpty() && hasCameraPermission,
             enter = fadeIn(),
             exit = fadeOut(),
@@ -735,7 +735,7 @@ fun ScannerCameraScreen(
         // ---- transient message ------------------------------------------------
         var lastStatus by remember { mutableStateOf("") }
         LaunchedEffect(statusMessage) { statusMessage?.let { lastStatus = it } }
-        AnimatedVisibility(
+        androidx.compose.animation.AnimatedVisibility(
             visible = statusMessage != null,
             enter = fadeIn() + slideInVertically { it / 2 },
             exit = fadeOut() + slideOutVertically { it / 2 },
