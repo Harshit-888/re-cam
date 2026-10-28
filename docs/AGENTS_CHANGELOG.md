@@ -4,6 +4,41 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-28 — Arena.ai — Round 61: two new presets, `SMART` and `LIGHT_TEXT`
+
+**New public surface:** `FilterType.SMART` and `FilterType.LIGHT_TEXT` (**appended**; the
+five original entries and their serialized names are unchanged). New `internal` API in
+`DocumentFilters`: `AdaptiveMode`, `ratioCurve`, `lumaFixed`, `kneeGain`, `samplePaperQ8`,
+`paperGridQ8`, `lumaPlane`, `adaptiveColourReference`; `PaperMap` is `private` → `internal`.
+New `NativeFilters.lumaPlane` / `NativeFilters.adaptiveColour`. **`ABI_VERSION` 2 → 3**
+(`EXPECTED_ABI = 3`) — a `.so` built before this commit is now refused, and the Kotlin
+reference runs instead of being called with the wrong ABI.
+
+**Nothing existing changed output.** `APPLY`'s five original branches, every transcribed
+constant, the paper map, the divide table and `PdfGenerator` are untouched; the two new
+`when` branches are additive. `adobe-scan/` was read only.
+
+The filter: this app's paper-map divide (the only illumination-invariant step in either
+app) feeding a tone curve indexed by **pixel/paper** instead of by the absolute
+difference, then **one** gain applied to all three channels with chroma re-expanded around
+the pixel's own luma. The white-balance gain is soft-kneed, so a photo that fails
+`classifiesAsDocument` gets a near-identity curve and at most 2× lift instead of being
+repainted white — that is what the previously-dead `GAIN_KNEE_*`/`GAIN_CAP_*` constants
+were for. Everything is Q8 fixed point, so `kernels::adaptive_colour` and
+`adaptiveColourReference` are compared with `contentEquals` (self-test cases 10–11) and
+not with a tolerance.
+
+Measured (`tools/filter_ref.py`, paper 238): 92 % reflectance → **190** (Magic Color: 248),
+paper → **255** exactly, the same ink under paper 238/150/90 within 6 levels, and
+blue pen (60, 80, 160) → (13, 18, 39) rather than (0, 0, 78).
+
+**New files:** `docs/filter_combined_spec.md` (constants, pipeline, tables, limits),
+`tools/filter_ref.py` (the specification in executable form; `python3 tools/filter_ref.py
+all` regenerates every number in the doc). **New tests:** five `DocumentFiltersTest.adaptive_*`.
+
+Owed by Antigravity: `./gradlew testDebugUnitTest assembleDebug` for Rounds 60 and 61, and
+`cargo test` for the new kernel — this sandbox has no cargo, Gradle or NDK.
+
 ## 2026-10-28 — Arena.ai — Adobe Scan vs this app's filters (research, no code change)
 
 New document: **`docs/FILTER_COMPARISON_ADOBE_VS_DOC_SCANNER.md`** — the first read of

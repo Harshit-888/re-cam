@@ -26,6 +26,8 @@
 //! * v1 — initial: `medianBlurGray`, `median3x3`, `laplacian3x3`
 //! * v2 — Round 30: added `meanPool`, `applyLut`, `rec601InPlace`,
 //!         `gaussianBlur3`, `boxBlur3`, `boxBlurInPlace`
+//! * v3 — Round 61: added `adaptiveColour` (the ratio-domain filter) and
+//!         `lumaPlane` (its Rec.601 input)
 //!
 //! The Kotlin side declares these as members of an `object`, so the second
 //! parameter is the singleton reference (`JObject`), not a class.
@@ -42,7 +44,8 @@ use jni::JNIEnv;
 ///
 /// Bumped to 2 in Round 30: five new kernels added (meanPool, applyLut,
 /// rec601InPlace, gaussianBlur3, boxBlur3/boxBlurInPlace).
-const ABI_VERSION: jint = 2;
+/// Bumped to 3 in Round 61: `adaptiveColour` and `lumaPlane` added.
+const ABI_VERSION: jint = 3;
 
 #[no_mangle]
 pub extern "system" fn Java_com_example_docscanner_util_NativeFilters_nativeVersion(
@@ -418,6 +421,166 @@ fn box_blur_inplace_jni(
         .map_err(|_| ())?;
     kernels::box_blur_inplace(&mut buf, w as usize, h as usize);
     env.set_float_array_region(plane, 0, &buf)
+        .map_err(|_| ())?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Round 61: the adaptive filter
+// ---------------------------------------------------------------------------
+
+/// Rec.601 luma of every pixel into `out` (a `float[]` of `w * h`).
+///
+/// Integer luma stored as f32 — identical to `DocumentFilters.lumaPlane`.
+#[no_mangle]
+pub extern "system" fn Java_com_example_docscanner_util_NativeFilters_nativeLumaPlane(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    pixels: JIntArray<'_>,
+    out: JFloatArray<'_>,
+) -> jint {
+    match luma_plane_jni(&mut env, &pixels, &out) {
+        Ok(()) => 0,
+        Err(()) => -1,
+    }
+}
+
+fn luma_plane_jni(
+    env: &mut JNIEnv<'_>,
+    pixels: &JIntArray<'_>,
+    out: &JFloatArray<'_>,
+) -> Result<(), ()> {
+    let plen = env.get_array_length(pixels).map_err(|_| ())? as usize;
+    let olen = env.get_array_length(out).map_err(|_| ())? as usize;
+    if plen == 0 || olen < plen {
+        return Err(());
+    }
+    let mut pixel_buf = vec![0i32; plen];
+    env.get_int_array_region(pixels, 0, &mut pixel_buf)
+        .map_err(|_| ())?;
+    let mut out_buf = vec![0f32; plen];
+    kernels::luma_plane(&pixel_buf, &mut out_buf);
+    env.set_float_array_region(out, 0, &out_buf)
+        .map_err(|_| ())?;
+    Ok(())
+}
+
+/// The ratio-domain adaptive filter, in place.
+///
+/// `paperR/G/B` are the illumination grid as **Q8 integers** (`level * 256`), so the
+/// kernel is pure integer maths and its output is reproducible byte for byte.
+/// `params` is `[knee, cap, floor, chroma, detailCap, detailScale]`. `detail` may be
+/// a zero-length array, which disables edge crispening.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_com_example_docscanner_util_NativeFilters_nativeAdaptiveColour(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    pixels: JIntArray<'_>,
+    w: jint,
+    paper_r: JIntArray<'_>,
+    paper_g: JIntArray<'_>,
+    paper_b: JIntArray<'_>,
+    gw: jint,
+    gh: jint,
+    cell: jint,
+    curve: JIntArray<'_>,
+    params: JIntArray<'_>,
+    detail: JFloatArray<'_>,
+) -> jint {
+    match adaptive_jni(
+        &mut env, &pixels, w, &paper_r, &paper_g, &paper_b, gw, gh, cell, &curve, &params,
+        &detail,
+    ) {
+        Ok(()) => 0,
+        Err(()) => -1,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn adaptive_jni(
+    env: &mut JNIEnv<'_>,
+    pixels: &JIntArray<'_>,
+    w: jint,
+    paper_r: &JIntArray<'_>,
+    paper_g: &JIntArray<'_>,
+    paper_b: &JIntArray<'_>,
+    gw: jint,
+    gh: jint,
+    cell: jint,
+    curve: &JIntArray<'_>,
+    params: &JIntArray<'_>,
+    detail: &JFloatArray<'_>,
+) -> Result<(), ()> {
+    if w <= 0 || gw <= 0 || gh <= 0 || cell <= 0 {
+        return Err(());
+    }
+    let wu = w as usize;
+    let plen = env.get_array_length(pixels).map_err(|_| ())? as usize;
+    if plen == 0 || plen % wu != 0 {
+        return Err(());
+    }
+    let grid_len = (gw as usize) * (gh as usize);
+    for grid in [paper_r, paper_g, paper_b] {
+        let len = env.get_array_length(grid).map_err(|_| ())? as usize;
+        if len < grid_len {
+            return Err(());
+        }
+    }
+    if env.get_array_length(curve).map_err(|_| ())? < 256 {
+        return Err(());
+    }
+    if env.get_array_length(params).map_err(|_| ())? < 6 {
+        return Err(());
+    }
+
+    let mut pixel_buf = vec![0i32; plen];
+    env.get_int_array_region(pixels, 0, &mut pixel_buf)
+        .map_err(|_| ())?;
+
+    let mut r_buf = vec![0i32; grid_len];
+    let mut g_buf = vec![0i32; grid_len];
+    let mut b_buf = vec![0i32; grid_len];
+    env.get_int_array_region(paper_r, 0, &mut r_buf)
+        .map_err(|_| ())?;
+    env.get_int_array_region(paper_g, 0, &mut g_buf)
+        .map_err(|_| ())?;
+    env.get_int_array_region(paper_b, 0, &mut b_buf)
+        .map_err(|_| ())?;
+
+    let mut curve_buf = vec![0i32; 256];
+    env.get_int_array_region(curve, 0, &mut curve_buf)
+        .map_err(|_| ())?;
+    let mut params_buf = vec![0i32; 6];
+    env.get_int_array_region(params, 0, &mut params_buf)
+        .map_err(|_| ())?;
+
+    // The detail plane is optional: a short or empty array means "no crispening".
+    let dlen = env.get_array_length(detail).map_err(|_| ())? as usize;
+    let detail_buf: Vec<f32> = if dlen >= plen {
+        let mut buf = vec![0f32; plen];
+        env.get_float_array_region(detail, 0, &mut buf)
+            .map_err(|_| ())?;
+        buf
+    } else {
+        Vec::new()
+    };
+
+    kernels::adaptive_colour(
+        &mut pixel_buf,
+        wu,
+        &r_buf,
+        &g_buf,
+        &b_buf,
+        gw as usize,
+        gh as usize,
+        cell as usize,
+        &curve_buf,
+        &params_buf,
+        &detail_buf,
+    );
+
+    env.set_int_array_region(pixels, 0, &pixel_buf)
         .map_err(|_| ())?;
     Ok(())
 }

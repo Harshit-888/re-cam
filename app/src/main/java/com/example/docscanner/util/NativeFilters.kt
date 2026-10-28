@@ -36,7 +36,7 @@ internal object NativeFilters {
      * `src/main/jniLibs/` from an older checkout reports the old number and is
      * refused, instead of silently producing different pixels.
      */
-    private const val EXPECTED_ABI = 2
+    private const val EXPECTED_ABI = 3
 
     /**
      * True only when the shared object loaded *and* reports the ABI this Kotlin
@@ -106,6 +106,40 @@ internal object NativeFilters {
     fun boxBlurInPlace(plane: FloatArray, w: Int, h: Int): Boolean =
         runCatching { nativeBoxBlurInPlace(plane, w, h) == 0 }.getOrDefault(false)
 
+    /**
+     * Rec.601 luma of `pixels` into [out] (a `w * h` float plane), integer-exact.
+     *
+     * Mirrors `DocumentFilters.lumaPlane`.
+     */
+    fun lumaPlane(pixels: IntArray, out: FloatArray): Boolean =
+        runCatching { nativeLumaPlane(pixels, out) == 0 }.getOrDefault(false)
+
+    /**
+     * The ratio-domain adaptive filter (the `SMART` / `LIGHT_TEXT` presets), in place.
+     *
+     * Every argument is integer or a pre-quantised grid, so this kernel is
+     * reproducible byte for byte and can be parity-tested exactly. [detail] may be
+     * an empty array, which disables edge crispening.
+     *
+     * @return `true` when the kernel ran; `false` means "use the Kotlin reference".
+     */
+    @Suppress("LongParameterList")
+    fun adaptiveColour(
+        pixels: IntArray,
+        w: Int,
+        paperR: IntArray,
+        paperG: IntArray,
+        paperB: IntArray,
+        gw: Int,
+        gh: Int,
+        cell: Int,
+        curve: IntArray,
+        params: IntArray,
+        detail: FloatArray
+    ): Boolean = runCatching {
+        nativeAdaptiveColour(pixels, w, paperR, paperG, paperB, gw, gh, cell, curve, params, detail) == 0
+    }.getOrDefault(false)
+
     // ---- JNI ---------------------------------------------------------------
     // Names must match `Java_com_example_docscanner_util_NativeFilters_*` in
     // lib.rs. The receiver is the singleton instance, not a class reference.
@@ -139,4 +173,21 @@ internal object NativeFilters {
     private external fun nativeBoxBlur3(src: FloatArray, out: FloatArray, w: Int, h: Int): Int
 
     private external fun nativeBoxBlurInPlace(plane: FloatArray, w: Int, h: Int): Int
+
+    private external fun nativeLumaPlane(pixels: IntArray, out: FloatArray): Int
+
+    @Suppress("LongParameterList")
+    private external fun nativeAdaptiveColour(
+        pixels: IntArray,
+        w: Int,
+        paperR: IntArray,
+        paperG: IntArray,
+        paperB: IntArray,
+        gw: Int,
+        gh: Int,
+        cell: Int,
+        curve: IntArray,
+        params: IntArray,
+        detail: FloatArray
+    ): Int
 }

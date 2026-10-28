@@ -726,6 +726,91 @@ class DocumentFiltersTest {
         assertEquals("dead pixel must be gone", 120, DocumentFilters.greyOf(pixels[5 * w + 5]))
     }
 
+    // ------------------------------------------------- the adaptive engine (R61)
+
+    /**
+     * One adaptive pass over a single pixel on a flat paper surface.
+     *
+     * The paper grid is one cell, so the bilinear sample degenerates to that cell's
+     * value — the same arithmetic as a page, without building one.
+     */
+    private fun adaptivePixel(paper: Int, pixel: Int, lightText: Boolean = false): Int {
+        val (curve, params) = if (lightText) {
+            DocumentFilters.ratioCurve(0.78f, 0.99f, 1.5f) to intArrayOf(2048, 6144, 64, 307, 0, 50)
+        } else {
+            DocumentFilters.ratioCurve(0.60f, 0.98f, 1.6f) to intArrayOf(2048, 6144, 56, 287, 0, 50)
+        }
+        val pixels = intArrayOf(pixel)
+        val grid = intArrayOf(paper * 256)
+        DocumentFilters.adaptiveColourReference(
+            pixels, 1, grid, grid, grid, 1, 1, 1, curve, params, FloatArray(0)
+        )
+        return pixels[0]
+    }
+
+    /**
+     * The headline claim of the adaptive filter, pinned to a number.
+     *
+     * A mark at 92 % of paper reflectance — a light pencil line, a thermal receipt
+     * header — is what Magic Color cannot see: its divide table is indexed by the
+     * *absolute* difference from paper, so 219 on 238 paper lands at 248, one step
+     * off white. The ratio-domain curve reaches it.
+     */
+    @Test
+    fun adaptive_seesFaintInkThatMagicColorCannot() {
+        val mark = adaptivePixel(paper = 238, pixel = grey(219))
+        val out = DocumentFilters.greyOf(mark)
+        assertTrue("faint ink must darken visibly, got $out", out <= 200)
+        assertTrue("faint ink must stay distinguishable from paper", out < 240)
+    }
+
+    @Test
+    fun adaptive_rendersPaperPureWhite() {
+        // Anything at or above the curve's white point is paper, exactly 255.
+        assertEquals(255, DocumentFilters.greyOf(adaptivePixel(238, grey(238))))
+        assertEquals(255, DocumentFilters.greyOf(adaptivePixel(238, grey(247))))
+        assertEquals(255, DocumentFilters.greyOf(adaptivePixel(150, grey(150))))
+    }
+
+    /**
+     * Two captures of the same ink under different light must land on the same
+     * byte, which is the whole point of dividing by the paper surface. The papers
+     * are 238 / 150 / 90 — not the exact-ratio pair the Rust kernel test uses, so
+     * one level of slack absorbs the rounding of the Q8 gain itself.
+     */
+    @Test
+    fun adaptive_isInvariantToPaperLevel() {
+        val out = listOf(238, 150, 90).map { paper ->
+            DocumentFilters.greyOf(adaptivePixel(paper, grey((paper * 0.92f).roundToInt())))
+        }
+        val spread = out.maxOrNull()!! - out.minOrNull()!!
+        assertTrue("same ink, three lights, one byte: $out", spread <= 6)
+    }
+
+    /** One gain per pixel: a blue pen must stay blue-dominant, not grey. */
+    @Test
+    fun adaptive_keepsHue() {
+        val out = adaptivePixel(238, rgb(60, 80, 160))
+        val r = (out ushr 16) and 0xFF
+        val g = (out ushr 8) and 0xFF
+        val b = out and 0xFF
+        assertTrue("blue must stay blue: r=$r g=$g b=$b", b > r + 20 && b > g + 15)
+    }
+
+    /** The curve's own endpoints, so a retune cannot silently invert it. */
+    @Test
+    fun ratioCurve_isZeroBelowLoAndFullAtHi() {
+        val curve = DocumentFilters.ratioCurve(0.60f, 0.98f, 1.6f)
+        assertEquals("everything below the black ratio is ink", 0, curve[0])
+        assertEquals(0, curve[(0.55f * 255).roundToInt()])
+        assertEquals("at the white ratio it is paper", 255, curve[255])
+        assertEquals(255, curve[(0.98f * 255).roundToInt()])
+        // Monotone: a retune that is not monotone would posterise the page.
+        for (i in 1 until curve.size) {
+            assertTrue("curve must be monotone at $i", curve[i] >= curve[i - 1])
+        }
+    }
+
     private fun grey(v: Int): Int = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
 
     private fun rgb(r: Int, g: Int, b: Int): Int =

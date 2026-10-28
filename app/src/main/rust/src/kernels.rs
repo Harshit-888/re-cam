@@ -456,6 +456,213 @@ pub fn box_blur_inplace(plane: &mut [f32], w: usize, h: usize) {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Round 61: the adaptive (ratio-domain) filter kernel
+// ---------------------------------------------------------------------------
+//
+// This is the one kernel that is *not* a transcription of the original APK: it is
+// the engine behind the `SMART` and `LIGHT_TEXT` presets, designed by mixing the
+// original's paper-map illumination model with a luminance-ratio tone curve and a
+// hue-preserving colour reconstruction (the idea Adobe reaches for with its
+// CIELAB L* normalisation, done in fixed point so it stays byte-exact).
+//
+// # Why every step is integer
+//
+// The Kotlin reference in `DocumentFilters.adaptiveColourReference` must agree with
+// this function **bit for bit** or the whole engine is refused (see the parity
+// self-test). Float maths could differ in the last bit between the two languages
+// for reasons no test can catch; fixed point cannot. The only floats that cross
+// the boundary are the paper grid, which is quantised once on the Kotlin side, and
+// the detail plane, which is passed in already computed.
+//
+// # The pipeline, per pixel
+//
+//   1. paper = bilinear sample of the per-channel paper grid (Q8)
+//   2. gain  = soft-knee(255 / paper)          -> white balance + shadow removal
+//   3. c2    = round(c · gain)                 -> paper becomes 255 in every channel
+//   4. luma  = Rec.601(c2)
+//   5. outL  = curve[luma]                     -> the tone curve, indexed by the ratio
+//   6. g2    = max(floor, outL / luma)         -> hue-preserving scale, floored so
+//                                                 saturated ink keeps its colour
+//   7. g2   *= 1 + detail/scale                -> edge crispening (optional)
+//   8. out   = grey + (scaled - grey)·chroma   -> restore chroma around its own luma
+//
+// Everything is Q8 fixed point: 256 == 1.0.
+
+/// Rec.601 luma, **integer** rounding, so Kotlin and Rust cannot disagree.
+///
+/// Deliberately not the float `rec601` above: that one is the transcription of the
+/// original APK's `cvtColor` path and is used by the presets that must match it.
+/// This kernel owns its own, cheaper, exactly reproducible luma.
+#[inline]
+fn luma_fixed(r: i32, g: i32, b: i32) -> i32 {
+    (r * 299 + g * 587 + b * 114 + 500) / 1000
+}
+
+/// `(v + 128) >> 8` — a Q8 multiply's rounding step.
+#[inline]
+fn rnd_q8(v: i32) -> i32 {
+    (v + 128) >> 8
+}
+
+/// Bilinear sample of a Q8 paper grid, over cell-sized squares.
+///
+/// The grid is indexed by `(x / cell, y / cell)`; the interpolation is between cell
+/// values, so the grid only has to be smooth at the cell scale. Integer throughout.
+#[inline]
+fn sample_q8(plane: &[i32], gw: usize, gh: usize, cell: usize, x: usize, y: usize) -> i32 {
+    if gw == 0 || gh == 0 || plane.is_empty() {
+        return 255 << 8;
+    }
+    let cell = cell.max(1);
+    let gx0 = (x / cell).min(gw - 1);
+    let gy0 = (y / cell).min(gh - 1);
+    let gx1 = if gx0 + 1 < gw { gx0 + 1 } else { gx0 };
+    let gy1 = if gy0 + 1 < gh { gy0 + 1 } else { gy0 };
+    let fx = (((x - gx0 * cell) << 8) / cell) as i32;
+    let fy = (((y - gy0 * cell) << 8) / cell) as i32;
+    let top = (plane[gy0 * gw + gx0] * (256 - fx) + plane[gy0 * gw + gx1] * fx) >> 8;
+    let bottom = (plane[gy1 * gw + gx0] * (256 - fx) + plane[gy1 * gw + gx1] * fx) >> 8;
+    (top * (256 - fy) + bottom * fy) >> 8
+}
+
+/// A monotone soft knee in Q8: identity up to `knee`, asymptotic to `cap` above it.
+///
+/// A hard clamp here would put a visible contour on the page wherever the gain
+/// crosses the limit, which is precisely the artefact the illumination model exists
+/// to avoid. This curve has slope 1 at the knee and never reaches the cap, so no
+/// seam can form. It is the same "knee, never a clamp" rule as the paper map's.
+#[inline]
+fn knee_gain(raw: i32, knee: i32, cap: i32) -> i32 {
+    if raw <= knee {
+        return raw;
+    }
+    let span = cap - knee;
+    if span <= 0 {
+        return cap;
+    }
+    let over = raw - knee;
+    // 64-bit: `span * over` reaches 4.1e9 for a nearly black frame (paper 20 -> raw
+    // 835k, over 833k, span 4096). Wrapping here would be a wrong gain in release and
+    // a panic — an abort, from inside an `extern "system"` function — in debug.
+    (knee as i64 + (span as i64 * over as i64) / (span as i64 + over as i64)) as i32
+}
+
+/// The adaptive colour filter: paper-map white balance, ratio tone curve, and
+/// hue-preserving chroma restoration. See the block comment above for the steps.
+///
+/// * `paper_r/g/b` — the illumination grid, Q8, `gw × gh` entries each.
+/// * `curve` — 256 entries, `outL` for an input luma of `0..=255`.
+/// * `params` — `[knee, cap, floor, chroma, detail_cap, detail_scale]`, all Q8
+///   except `detail_scale` (a plain divisor).
+/// * `detail` — `w × h` edge strength, or empty to skip edge crispening.
+#[allow(clippy::too_many_arguments)]
+pub fn adaptive_colour(
+    pixels: &mut [i32],
+    w: usize,
+    paper_r: &[i32],
+    paper_g: &[i32],
+    paper_b: &[i32],
+    gw: usize,
+    gh: usize,
+    cell: usize,
+    curve: &[i32],
+    params: &[i32],
+    detail: &[f32],
+) {
+    if w == 0 || pixels.is_empty() || curve.len() < 256 || params.len() < 6 {
+        return;
+    }
+    let knee = params[0];
+    let cap = params[1];
+    let floor = params[2];
+    let chroma = params[3];
+    let detail_cap = params[4];
+    let detail_scale = params[5].max(1);
+    let use_detail = detail_cap > 0 && detail.len() >= pixels.len();
+
+    for_each_band_mut(pixels, w, |y0, band| {
+        for (row, chunk) in band.chunks_mut(w).enumerate() {
+            let y = y0 + row;
+            let base = y * w;
+            for (x, slot) in chunk.iter_mut().enumerate() {
+                let p = *slot;
+                let alpha = p & ALPHA_MASK;
+                let r = ((p as u32) >> 16) as i32 & 0xFF;
+                let g = ((p as u32) >> 8) as i32 & 0xFF;
+                let b = (p as u32) as i32 & 0xFF;
+
+                // 1-2. White balance against the local paper level, soft-kneed so a
+                //      scene (or a very dark frame) cannot be lifted to white.
+                let pr = sample_q8(paper_r, gw, gh, cell, x, y).max(1);
+                let pg = sample_q8(paper_g, gw, gh, cell, x, y).max(1);
+                let pb = sample_q8(paper_b, gw, gh, cell, x, y).max(1);
+                let gr = knee_gain((255 * 256 * 256) / pr, knee, cap);
+                let gg = knee_gain((255 * 256 * 256) / pg, knee, cap);
+                let gb = knee_gain((255 * 256 * 256) / pb, knee, cap);
+
+                let cr = rnd_q8(r * gr).min(255);
+                let cg = rnd_q8(g * gg).min(255);
+                let cb = rnd_q8(b * gb).min(255);
+
+                // 3-6. Tone curve on the illumination-normalised luma, then a scale
+                //      that is applied to the colour, not to each channel's own
+                //      curve: that is what keeps a stamp red instead of grey.
+                let luma = luma_fixed(cr, cg, cb).clamp(0, 255);
+                let out_luma = curve[luma as usize];
+                let mut gain = if luma > 0 { (out_luma << 8) / luma } else { 256 };
+                if gain < floor {
+                    gain = floor;
+                }
+
+                if use_detail {
+                    let d = detail[base + x];
+                    let dq = if d <= 0.0 {
+                        0
+                    } else {
+                        ((d * detail_cap as f32) / detail_scale as f32 + 0.5) as i32
+                    };
+                    let dq = if dq > detail_cap { detail_cap } else { dq };
+                    gain = (gain * (256 + dq)) >> 8;
+                }
+
+                let sr = rnd_q8(cr * gain).min(255);
+                let sg = rnd_q8(cg * gain).min(255);
+                let sb = rnd_q8(cb * gain).min(255);
+
+                // 7-8. Restore chroma around the pixel's own luma: a hue-preserving
+                //      expansion, never a per-channel clip.
+                let grey = luma_fixed(sr, sg, sb);
+                let out_r = (grey + ((sr - grey) * chroma >> 8)).clamp(0, 255);
+                let out_g = (grey + ((sg - grey) * chroma >> 8)).clamp(0, 255);
+                let out_b = (grey + ((sb - grey) * chroma >> 8)).clamp(0, 255);
+
+                *slot = alpha | (out_r << 16) | (out_g << 8) | out_b;
+            }
+        }
+    });
+}
+
+/// Rec.601 luma of every pixel into a float plane, exactly as
+/// `DocumentFilters.lumaPlane` computes it (integer luma, stored as `f32`).
+///
+/// Kept as a kernel rather than a Kotlin loop because the adaptive filter needs it
+/// only to feed the median/Laplacian pair, and at a 3200 px page that loop alone is
+/// tens of milliseconds of pure overhead.
+pub fn luma_plane(pixels: &[i32], out: &mut [f32]) {
+    if pixels.is_empty() || out.len() < pixels.len() {
+        return;
+    }
+    for (p, o) in pixels.iter().zip(out.iter_mut()) {
+        let pv = *p as u32;
+        let r = ((pv >> 16) & 0xFF) as i32;
+        let g = ((pv >> 8) & 0xFF) as i32;
+        let b = (pv & 0xFF) as i32;
+        *o = luma_fixed(r, g, b) as f32;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,6 +751,96 @@ mod tests {
         for &v in &out {
             assert!((v - 64.0).abs() < 0.001, "expected 64.0 got {v}");
         }
+    }
+
+    // ---- Round 61: adaptive kernel ----
+
+    /// A grid of one paper level, as `DocumentFilters.paperGridQ8` produces it.
+    fn uniform_grid(level: i32, gw: usize, gh: usize) -> Vec<i32> {
+        vec![level * 256; gw * gh]
+    }
+
+    /// The identity tone curve: output luma == input luma.
+    fn identity_curve() -> Vec<i32> {
+        (0..256).collect()
+    }
+
+    /// `[knee, cap, floor, chroma, detail_cap, detail_scale]` with no knee, no floor
+    /// and no detail — i.e. "white balance only".
+    fn plain_params() -> Vec<i32> {
+        vec![64 * 256, 256 * 256, 0, 256, 0, 50]
+    }
+
+    #[test]
+    fn luma_plane_matches_rec601_integer() {
+        let pixels = vec![
+            0xFF_FFFFFFu32 as i32, // white -> 255
+            0xFF_000000u32 as i32, // black -> 0
+            0xFF_FF0000u32 as i32, // red   -> (255*299+500)/1000 = 76
+        ];
+        let mut out = vec![0f32; 3];
+        luma_plane(&pixels, &mut out);
+        assert_eq!(out[0], 255.0);
+        assert_eq!(out[1], 0.0);
+        assert_eq!(out[2], 76.0);
+    }
+
+    #[test]
+    fn adaptive_white_paper_stays_white() {
+        let (w, h) = (4usize, 4usize);
+        let paper = 238;
+        let mut pixels = vec![0xFF_EEEEEEu32 as i32; w * h];
+        let grid = uniform_grid(paper, 2, 2);
+        adaptive_colour(
+            &mut pixels,
+            w,
+            &grid,
+            &grid,
+            &grid,
+            2,
+            2,
+            2,
+            &identity_curve(),
+            &plain_params(),
+            &[],
+        );
+        for p in pixels {
+            assert_eq!(p, 0xFF_FFFFFFu32 as i32, "paper must come out pure white");
+        }
+    }
+
+    #[test]
+    fn adaptive_is_invariant_to_uniform_illumination() {
+        // 74 % reflectance under two paper levels must land on the same byte. The
+        // two levels are chosen so the white-balance gains are exactly 2:1 (326 and
+        // 652 in Q8) — otherwise the rounding of the gain, not the filter, decides.
+        let (w, h) = (4usize, 4usize);
+        let lit_grid = uniform_grid(200, 2, 2);
+        let shadow_grid = uniform_grid(100, 2, 2);
+        let mut a = vec![(0xFF00_0000u32 | (148 << 16) | (148 << 8) | 148) as i32; w * h];
+        let mut b = vec![(0xFF00_0000u32 | (74 << 16) | (74 << 8) | 74) as i32; w * h];
+        adaptive_colour(&mut a, w, &lit_grid, &lit_grid, &lit_grid, 2, 2, 2, &identity_curve(), &plain_params(), &[]);
+        adaptive_colour(&mut b, w, &shadow_grid, &shadow_grid, &shadow_grid, 2, 2, 2, &identity_curve(), &plain_params(), &[]);
+        assert_eq!(a[0], b[0], "the same ink under two lights must match");
+        // 0.74 x 255 = 188.7 -> 189.
+        assert_eq!(a[0], 0xFF_BDBDBDu32 as i32);
+    }
+
+    #[test]
+    fn adaptive_keeps_hue() {
+        // A saturated blue must come out blue-dominant, not grey.
+        let (w, h) = (2usize, 2usize);
+        let grid = uniform_grid(238, 1, 1);
+        let blue = (0xFF00_0000u32 | (60 << 16) | (80 << 8) | 160) as i32;
+        let mut pixels = vec![blue; w * h];
+        // A curve that pushes everything dark, to exercise the gain floor.
+        let curve: Vec<i32> = (0..256).map(|i| if i > 60 { 0 } else { i }).collect();
+        let params = vec![64 * 256, 256 * 256, 56, 287, 0, 50];
+        adaptive_colour(&mut pixels, w, &grid, &grid, &grid, 1, 1, 2, &curve, &params, &[]);
+        let p = pixels[0] as u32;
+        let r = (p >> 16) & 0xFF;
+        let b = p & 0xFF;
+        assert!(b > r + 20, "blue ink must stay blue: got r={r} b={b}");
     }
 
     #[test]

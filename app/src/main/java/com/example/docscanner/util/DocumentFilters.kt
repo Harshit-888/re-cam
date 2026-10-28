@@ -614,6 +614,8 @@ object DocumentFilters {
                 FilterType.GRAYSCALE -> applyGrayscale(pixels, w, h)
                 FilterType.MAGIC_COLOR -> applyDocumentColor(pixels, w, h)
                 FilterType.CLEAR_BW -> applyDocumentBw(pixels, w, h)
+                FilterType.SMART -> applyAdaptive(pixels, w, h, AdaptiveMode.SMART)
+                FilterType.LIGHT_TEXT -> applyAdaptive(pixels, w, h, AdaptiveMode.LIGHT_TEXT)
                 FilterType.ORIGINAL -> return src
             }
         } catch (error: Throwable) {
@@ -948,6 +950,304 @@ object DocumentFilters {
     }
 
 
+    // ==================================================================================
+    // Round 61 — the adaptive (ratio-domain) filters: `SMART` and `LIGHT_TEXT`
+    // ==================================================================================
+    //
+    // Everything above is a transcription of the original APK's native library, and it
+    // stays that way: the five original presets are untouched, byte for byte.
+    //
+    // These two are new, and they exist because the transcription has two blind spots
+    // that only show up on a real page:
+    //
+    //   1. **It is blind to faint ink.** The divide table is indexed by the *absolute*
+    //      difference |src − paper|, so a mark 18 levels below paper (a light pencil
+    //      line, a fax, a thermal-receipt header at 92 % reflectance) maps to 247 —
+    //      almost paper. Measured, not guessed: `docs/FILTER_COMPARISON_ADOBE_VS_DOC_SCANNER.md`
+    //      §4.1. Adobe ships a whole preset ("Light Text") for exactly this case.
+    //   2. **It clips colour channel by channel.** Each channel gets its own divide, so
+    //      a blue pen (60, 80, 160) comes out (0, 0, 78): the red and green channels are
+    //      driven to zero and the mark reads as saturated navy rather than blue.
+    //
+    // The adaptive engine fixes both by moving the tone mapping into the **ratio
+    // domain** — the idea Adobe reaches for with its CIELAB L*-only normalisation —
+    // while keeping this app's illumination model and its punch:
+    //
+    //   paper(c)      per-channel block-pooled illumination surface (unchanged)
+    //   gain(c)       soft-knee(255 / paper(c))     ← shadow + tint removal, bounded
+    //   c2(c)         round(c · gain(c))            ← the paper is now 255 everywhere
+    //   luma          Rec.601(c2), integer
+    //   outL          curve[luma]                   ← the preset's tone curve
+    //   g             max(floor, outL / luma) · (1 + detail)  ← one scale for all channels
+    //   out(c)        grey + (round(c2 · g) − grey) · chroma   ← hue-preserving chroma
+    //
+    // Three properties follow, and each is tested:
+    //
+    // * **Illumination invariance is exact.** Two captures of the same ink under
+    //   different light normalise to the same byte, because the curve is indexed by a
+    //   ratio rather than by a level difference. (The transcribed filter drifts: 141 →
+    //   168 for the same pencil under a shadow.)
+    // * **Hue survives.** One scale applied to all three channels cannot invent a
+    //   colour; the chroma term then expands (or, for a scene, contracts) saturation
+    //   around the pixel's own luma instead of clipping channels independently.
+    // * **A scene is not repainted white.** `classifiesAsDocument` — written in an
+    //   earlier round and never wired in — selects a near-identity curve and caps the
+    //   white-balance gain at `GAIN_CAP_SCENE`, which is what those constants were for.
+    //
+    // All of it is fixed point (Q8 = 256), so the Rust kernel and the Kotlin reference
+    // below agree byte for byte and the parity self-test can be exact.
+
+    /** Which tone curve the adaptive engine uses. */
+    internal enum class AdaptiveMode {
+        /** Everyday documents: punchy, faint-ink aware, colour-preserving. */
+        SMART,
+
+        /** Faint documents: pencil, faxes, thermal receipts, faded carbon copies. */
+        LIGHT_TEXT
+    }
+
+    /** The preset curves, built once. `ratioCurve` is pure and cheap but not free. */
+    private val smartCurve: IntArray by lazy { ratioCurve(0.60f, 0.98f, 1.6f) }
+    private val lightTextCurve: IntArray by lazy { ratioCurve(0.78f, 0.99f, 1.5f) }
+    private val sceneCurve: IntArray by lazy { ratioCurve(0.02f, 0.99f, 1.0f) }
+
+    /** Lowest gain a pixel may be scaled by, so saturated ink keeps its colour. */
+    private const val ADAPTIVE_FLOOR_SMART = 56      // 0.22
+    private const val ADAPTIVE_FLOOR_LIGHT = 64      // 0.25
+    private const val ADAPTIVE_FLOOR_SCENE = 128     // 0.50
+
+    /** Chroma expansion around the pixel's own luma (Q8, 256 = unchanged). */
+    private const val ADAPTIVE_CHROMA_SMART = 287    // 1.12x
+    private const val ADAPTIVE_CHROMA_LIGHT = 307    // 1.20x
+    private const val ADAPTIVE_CHROMA_SCENE = 256    // unchanged
+
+    /** `255 · 256 · 256`: the numerator of the Q8 white-balance gain, `255 / paper`. */
+    private const val WHITE_Q8_OVER_PAPER = 255 * 256 * 256
+
+    /** Edge crispening: gain boost of up to this much where the Laplacian is strong. */
+    private const val ADAPTIVE_DETAIL_SMART = 56     // up to +22 %
+    private const val ADAPTIVE_DETAIL_SCALE = 50     // same divisor the level-1 blend uses
+
+    /**
+     * `t = (x − lo) / (hi − lo)`, clamped, raised to [gamma] — one entry per luma.
+     *
+     * `lo` and `hi` are ratios of paper brightness: below `lo` a pixel is ink (0), at
+     * or above `hi` it is paper (255). The distance between them is the filter's
+     * sensitivity to faint ink, and it is the only knob that trades "clean paper"
+     * against "a pencil line you can actually see".
+     */
+    internal fun ratioCurve(lo: Float, hi: Float, gamma: Float): IntArray {
+        val span = (hi - lo).coerceAtLeast(1e-4f)
+        return IntArray(256) { index ->
+            val x = index / 255f
+            val t = ((x - lo) / span).coerceIn(0f, 1f)
+            (255f * t.pow(gamma)).roundToInt().coerceIn(0, 255)
+        }
+    }
+
+    /** Rec.601 luma with **integer** rounding — the adaptive engine's own, not [rec601]. */
+    internal fun lumaFixed(r: Int, g: Int, b: Int): Int =
+        (r * 299 + g * 587 + b * 114 + 500) / 1000
+
+    /** `(v + 128) >> 8` — the rounding step of a Q8 multiply. */
+    private fun rndQ8(v: Int): Int = (v + 128) shr 8
+
+    /**
+     * A monotone soft knee in Q8: identity up to [knee], asymptotic to [cap].
+     *
+     * A clamp would leave a contour wherever the gain crosses it; this has slope 1 at
+     * the knee and never reaches the cap, so no seam can form on the page.
+     */
+    internal fun kneeGain(rawQ8: Int, kneeQ8: Int, capQ8: Int): Int {
+        if (rawQ8 <= kneeQ8) return rawQ8
+        val span = capQ8 - kneeQ8
+        if (span <= 0) return capQ8
+        val over = rawQ8 - kneeQ8
+        // Widened to Long: `span * over` reaches 4.1e9 for a nearly black frame
+        // (paper 20 → raw 835k, over 833k, span 4096), which would wrap an Int and
+        // silently produce a wrong gain. The quotient itself always fits.
+        return (kneeQ8 + (span.toLong() * over) / (span + over)).toInt()
+    }
+
+    /** Bilinear sample of a Q8 paper grid. Mirrors `kernels::sample_q8` exactly. */
+    internal fun samplePaperQ8(
+        plane: IntArray,
+        gw: Int,
+        gh: Int,
+        cell: Int,
+        x: Int,
+        y: Int
+    ): Int {
+        if (gw <= 0 || gh <= 0 || plane.isEmpty()) return 255 shl 8
+        val step = cell.coerceAtLeast(1)
+        val gx0 = (x / step).coerceIn(0, gw - 1)
+        val gy0 = (y / step).coerceIn(0, gh - 1)
+        val gx1 = if (gx0 + 1 < gw) gx0 + 1 else gx0
+        val gy1 = if (gy0 + 1 < gh) gy0 + 1 else gy0
+        val fx = (((x - gx0 * step) shl 8) / step)
+        val fy = (((y - gy0 * step) shl 8) / step)
+        val top = (plane[gy0 * gw + gx0] * (256 - fx) + plane[gy0 * gw + gx1] * fx) shr 8
+        val bottom = (plane[gy1 * gw + gx0] * (256 - fx) + plane[gy1 * gw + gx1] * fx) shr 8
+        return (top * (256 - fy) + bottom * fy) shr 8
+    }
+
+    /** The illumination grid, quantised to Q8. Three planes of `gw × gh`. */
+    internal fun paperGridQ8(map: PaperMap): Array<IntArray> = arrayOf(
+        IntArray(map.gw * map.gh) { (max(0f, map.r[it]) * 256f + 0.5f).toInt() },
+        IntArray(map.gw * map.gh) { (max(0f, map.g[it]) * 256f + 0.5f).toInt() },
+        IntArray(map.gw * map.gh) { (max(0f, map.b[it]) * 256f + 0.5f).toInt() }
+    )
+
+    /** Rec.601 luma into [out]; Rust when verified, else the loop below. */
+    internal fun lumaPlane(pixels: IntArray, out: FloatArray) {
+        if (nativeFiltersReady() && NativeFilters.lumaPlane(pixels, out)) return
+        lumaPlaneReference(pixels, out)
+    }
+
+    private fun lumaPlaneReference(pixels: IntArray, out: FloatArray) {
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            out[i] = lumaFixed((p ushr 16) and 0xFF, (p ushr 8) and 0xFF, p and 0xFF).toFloat()
+        }
+    }
+
+    /**
+     * The adaptive filter, applied in place.
+     *
+     * [mode] selects the curve; whether the frame is a document selects the bounds.
+     */
+    private fun applyAdaptive(pixels: IntArray, w: Int, h: Int, mode: AdaptiveMode) {
+        val document = classifiesAsDocument(pixels)
+
+        val curve = if (document) {
+            when (mode) {
+                AdaptiveMode.SMART -> smartCurve
+                AdaptiveMode.LIGHT_TEXT -> lightTextCurve
+            }
+        } else {
+            sceneCurve
+        }
+        val kneeQ8 = ((if (document) GAIN_KNEE_DOCUMENT else GAIN_KNEE_SCENE) * 256f).roundToInt()
+        val capQ8 = ((if (document) GAIN_CAP_DOCUMENT else GAIN_CAP_SCENE) * 256f).roundToInt()
+        val floorQ8 = when {
+            !document -> ADAPTIVE_FLOOR_SCENE
+            mode == AdaptiveMode.LIGHT_TEXT -> ADAPTIVE_FLOOR_LIGHT
+            else -> ADAPTIVE_FLOOR_SMART
+        }
+        val chromaQ8 = when {
+            !document -> ADAPTIVE_CHROMA_SCENE
+            mode == AdaptiveMode.LIGHT_TEXT -> ADAPTIVE_CHROMA_LIGHT
+            else -> ADAPTIVE_CHROMA_SMART
+        }
+        // Edge crispening only where it cannot hurt: a document under the everyday
+        // curve. Faint ink is the light-text target and a scene must not be sharpened.
+        val detailCap = if (document && mode == AdaptiveMode.SMART) ADAPTIVE_DETAIL_SMART else 0
+
+        val surface = buildPaperMap(pixels, w, h)
+        val grid = paperGridQ8(surface)
+
+        val detail = if (detailCap > 0) {
+            val luma = FloatArray(w * h)
+            lumaPlane(pixels, luma)
+            // Same pair the level-1 path uses: 3×3 median (so grain is not amplified)
+            // then the Laplacian as an edge-strength estimate.
+            laplacian3x3(median3x3(luma, w, h), w, h)
+        } else {
+            FloatArray(0)
+        }
+
+        val params = intArrayOf(kneeQ8, capQ8, floorQ8, chromaQ8, detailCap, ADAPTIVE_DETAIL_SCALE)
+        val usedNative = nativeFiltersReady() && NativeFilters.adaptiveColour(
+            pixels, w, grid[0], grid[1], grid[2],
+            surface.gw, surface.gh, surface.block.toInt(),
+            curve, params, detail
+        )
+        if (!usedNative) {
+            adaptiveColourReference(
+                pixels, w, grid[0], grid[1], grid[2],
+                surface.gw, surface.gh, surface.block.toInt(),
+                curve, params, detail
+            )
+        }
+    }
+
+    /**
+     * The Kotlin reference for `kernels::adaptive_colour` — the same arithmetic, in
+     * the same order, on integers only. The parity self-test compares the two byte for
+     * byte, so this function is the definition and Rust is the optimisation.
+     */
+    @Suppress("LongParameterList")
+    internal fun adaptiveColourReference(
+        pixels: IntArray,
+        w: Int,
+        paperR: IntArray,
+        paperG: IntArray,
+        paperB: IntArray,
+        gw: Int,
+        gh: Int,
+        cell: Int,
+        curve: IntArray,
+        params: IntArray,
+        detail: FloatArray
+    ) {
+        if (w <= 0 || curve.size < 256 || params.size < 6) return
+        val knee = params[0]
+        val cap = params[1]
+        val floor = params[2]
+        val chroma = params[3]
+        val detailCap = params[4]
+        val detailScale = max(1, params[5])
+        val useDetail = detailCap > 0 && detail.size >= pixels.size
+        val h = pixels.size / w
+        bands(h) { from, to ->
+            for (y in from until to) {
+                var i = y * w
+                for (x in 0 until w) {
+                    val p = pixels[i]
+                    val alpha = p and ALPHA_MASK
+                    val r = (p ushr 16) and 0xFF
+                    val g = (p ushr 8) and 0xFF
+                    val b = p and 0xFF
+
+                    val pr = max(1, samplePaperQ8(paperR, gw, gh, cell, x, y))
+                    val pg = max(1, samplePaperQ8(paperG, gw, gh, cell, x, y))
+                    val pb = max(1, samplePaperQ8(paperB, gw, gh, cell, x, y))
+                    val gr = kneeGain(WHITE_Q8_OVER_PAPER / pr, knee, cap)
+                    val gg = kneeGain(WHITE_Q8_OVER_PAPER / pg, knee, cap)
+                    val gb = kneeGain(WHITE_Q8_OVER_PAPER / pb, knee, cap)
+
+                    val cr = min(255, rndQ8(r * gr))
+                    val cg = min(255, rndQ8(g * gg))
+                    val cb = min(255, rndQ8(b * gb))
+
+                    val luma = lumaFixed(cr, cg, cb).coerceIn(0, 255)
+                    val outLuma = curve[luma]
+                    var gain = if (luma > 0) (outLuma shl 8) / luma else 256
+                    if (gain < floor) gain = floor
+
+                    if (useDetail) {
+                        val d = detail[i]
+                        var dq = if (d <= 0f) 0 else (d * detailCap / detailScale + 0.5f).toInt()
+                        if (dq > detailCap) dq = detailCap
+                        gain = (gain * (256 + dq)) shr 8
+                    }
+
+                    val sr = min(255, rndQ8(cr * gain))
+                    val sg = min(255, rndQ8(cg * gain))
+                    val sb = min(255, rndQ8(cb * gain))
+
+                    val grey = lumaFixed(sr, sg, sb)
+                    val outR = (grey + (((sr - grey) * chroma) shr 8)).coerceIn(0, 255)
+                    val outG = (grey + (((sg - grey) * chroma) shr 8)).coerceIn(0, 255)
+                    val outB = (grey + (((sb - grey) * chroma) shr 8)).coerceIn(0, 255)
+
+                    pixels[i] = alpha or (outR shl 16) or (outG shl 8) or outB
+                    i++
+                }
+            }
+        }
+    }
+
     /**
      * Sauvola window edge, in pixels, or 1 to skip the local pass.
      *
@@ -1018,7 +1318,7 @@ object DocumentFilters {
     // ==================================================================================
 
     /** A coarse per-channel paper-white map, sampled bilinearly at any pixel. */
-    private class PaperMap(
+    internal class PaperMap(
         val r: FloatArray,
         val g: FloatArray,
         val b: FloatArray,
@@ -1933,6 +2233,40 @@ object DocumentFilters {
                 if (abs(refBoxInPlace[i] - natBoxInPlace[i]) > 0.01f) return@runCatching false
             }
 
+            // 10. Luma plane — the adaptive engine's index into its curve.
+            val colourPage = syntheticColourPage(w, h)
+            val refLuma = FloatArray(w * h)
+            val natLuma = FloatArray(w * h)
+            lumaPlaneReference(colourPage, refLuma)
+            if (!NativeFilters.lumaPlane(colourPage, natLuma)) return@runCatching false
+            if (!natLuma.contentEquals(refLuma)) return@runCatching false
+
+            // 11. The adaptive kernel itself, on the same page, in both presets and
+            //     with and without edge crispening. `contentEquals` is exact on
+            //     purpose: the kernel is integer-only, so any disagreement is a bug
+            //     in one of the two, not float drift.
+            val surface = buildPaperMap(colourPage, w, h)
+            val grid = paperGridQ8(surface)
+            val cell = surface.block.toInt()
+            val detailPlane = run {
+                val smoothed = median3x3Reference(natLuma, w, h)
+                laplacian3x3Reference(smoothed, w, h)
+            }
+            for (case in adaptiveParityCases()) {
+                val refPixels = colourPage.copyOf()
+                adaptiveColourReference(
+                    refPixels, w, grid[0], grid[1], grid[2],
+                    surface.gw, surface.gh, cell, case.curve, case.params, case.detail
+                )
+                val natPixels = colourPage.copyOf()
+                val ok = NativeFilters.adaptiveColour(
+                    natPixels, w, grid[0], grid[1], grid[2],
+                    surface.gw, surface.gh, cell, case.curve, case.params, case.detail
+                )
+                if (!ok) return@runCatching false
+                if (!natPixels.contentEquals(refPixels)) return@runCatching false
+            }
+
             true
         }.getOrDefault(false)
 
@@ -1944,7 +2278,7 @@ object DocumentFilters {
                 // three blurs) are compared within 0.01, because two f32 pipelines
                 // can disagree in the last bit. Saying "byte-identical" for all
                 // nine would be a claim this code cannot make.
-                "Rust kernels verified (integer kernels byte-identical, float planes within 0.01)"
+                "Rust kernels verified (integer kernels byte-identical, float planes within 0.01, adaptive kernel byte-identical)"
             } else {
                 "Rust kernels unavailable or mismatched - using the Kotlin reference"
             }
@@ -1962,6 +2296,68 @@ object DocumentFilters {
         val noise = (x * 31 + y * 17) % 7 - 3
         val level = (base + noise).coerceIn(0, 255)
         (0xFF shl 24) or (level shl 16) or (level shl 8) or level
+    }
+
+    /**
+     * Deterministic **colour** page: the greyscale one plus ink that is not grey.
+     *
+     * The adaptive kernel applies one gain to all three channels and then re-expands
+     * chroma around the pixel's own luma, so a grey-only test would never exercise
+     * the parts that can differ.
+     */
+    private fun syntheticColourPage(w: Int, h: Int): IntArray = IntArray(w * h) { index ->
+        val x = index % w
+        val y = index / w
+        // Inlined rather than calling `syntheticPage(w, h)[index]`: indexing into a
+        // freshly built array inside the loop would allocate one page per pixel.
+        val ground = 200 + (x * 40) / w
+        val inBar = y % 8 in 2..4 && x % 24 in 3..20
+        val base = if (inBar) 40 + (y * 3) % 25 else ground
+        val level = (base + (x * 31 + y * 17) % 7 - 3).coerceIn(0, 255)
+        val grey = (0xFF shl 24) or (level shl 16) or (level shl 8) or level
+        val r = (grey ushr 16) and 0xFF
+        when {
+            // A blue-pen stroke: dark in red and green, mid in blue.
+            y % 16 in 9..11 && x % 32 in 4..27 -> (0xFF shl 24) or (20 shl 16) or (70 shl 8) or 170
+            // A highlighter band: bright, warm, and above paper in red.
+            y % 24 in 16..21 ->
+                (0xFF shl 24) or
+                    ((r + 6).coerceAtMost(255) shl 16) or
+                    ((r - 14).coerceAtLeast(0) shl 8) or
+                    (r - 70).coerceAtLeast(0)
+            else -> grey
+        }
+    }
+
+    /** One `adaptiveColour` parity case. */
+    private class AdaptiveCase(val curve: IntArray, val params: IntArray, val detail: FloatArray)
+
+    private fun adaptiveParityCases(): List<AdaptiveCase> {
+        val grey = syntheticColourPage(SYNTHETIC_W, SYNTHETIC_H)
+        val luma = FloatArray(grey.size)
+        lumaPlaneReference(grey, luma)
+        val detail = laplacian3x3Reference(median3x3Reference(luma, SYNTHETIC_W, SYNTHETIC_H), SYNTHETIC_W, SYNTHETIC_H)
+        val kDoc = (GAIN_KNEE_DOCUMENT * 256f).roundToInt()
+        val cDoc = (GAIN_CAP_DOCUMENT * 256f).roundToInt()
+        val kScene = (GAIN_KNEE_SCENE * 256f).roundToInt()
+        val cScene = (GAIN_CAP_SCENE * 256f).roundToInt()
+        return listOf(
+            AdaptiveCase(
+                smartCurve,
+                intArrayOf(kDoc, cDoc, ADAPTIVE_FLOOR_SMART, ADAPTIVE_CHROMA_SMART, ADAPTIVE_DETAIL_SMART, ADAPTIVE_DETAIL_SCALE),
+                detail
+            ),
+            AdaptiveCase(
+                lightTextCurve,
+                intArrayOf(kDoc, cDoc, ADAPTIVE_FLOOR_LIGHT, ADAPTIVE_CHROMA_LIGHT, 0, ADAPTIVE_DETAIL_SCALE),
+                FloatArray(0)
+            ),
+            AdaptiveCase(
+                sceneCurve,
+                intArrayOf(kScene, cScene, ADAPTIVE_FLOOR_SCENE, ADAPTIVE_CHROMA_SCENE, 0, ADAPTIVE_DETAIL_SCALE),
+                FloatArray(0)
+            )
+        )
     }
 
     private const val SYNTHETIC_W = 96

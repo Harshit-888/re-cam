@@ -76,6 +76,7 @@ Keep this table short. Delete your row when the change lands.
 
 | Agent       | Status          | Files                                                                                                                                                                                                                                                                           | Intent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Arena.ai & Antigravity | 🟡 built here, needs Antigravity build (Round 61) | `model/Models.kt`, `util/DocumentFilters.kt`, `util/NativeFilters.kt`, `app/src/main/rust/src/{kernels,lib}.rs`, `util/DocumentFiltersTest.kt`, `docs/filter_combined_spec.md` (new), `tools/filter_ref.py` (new), docs | Two **new** presets, `SMART` (label "Smart Scan") and `LIGHT_TEXT` ("Light Text"), appended to `FilterType`: this app's paper-map divide with a ratio-domain tone curve, one hue-preserving gain per pixel, a bounded (soft-kneed) white balance, and Adobe's faint-ink idea as a curve window. Rust kernel `adaptive_colour` behind byte-exact parity (ABI 3). **The five original presets are untouched** — same code, same output. See §6ax. |
 | Arena.ai & Antigravity | 🟡 built here, needs Antigravity build (Round 60) | `ui/editor/MarkupScreen.kt`, `ui/viewer/PageViewerScreen.kt`, docs | Annotate controls must never be removed by another control: the full-screen annotate bar's colour row was gated on `tool != WHITEOUT` (choosing **Erase** deleted it) and is now unconditional, and the reader's `AnnotateShelf` no longer owns a whole-shelf drag `alpha` (translation only). No visual change at rest, no output change. See §6aw. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 53) | `ui/common/ConnectedButtonGroup.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/editor/MarkupStudio.kt` (new), `ui/editor/MarkupScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/pdf/PdfExportSheet.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/DocumentShare.kt` (new), `util/ImageStore.kt`, `data/ScannerRepository.kt`, `Navigation.kt`, docs | Seven reported defects: connected page-tile verbs + hold-to-collapse, Copy/Move on hold, dashboard multi-select **Share**, in-place annotate shelf in the reader, instant rotate, collapsing dashboard header, export-sheet microinteractions, camera preview lifted 32 dp. Chrome/layout/motion only. See §6ap. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 55) | `ui/common/ConnectedButtonGroup.kt`, `ui/common/ExpressiveAction.kt`, `ui/viewer/PageViewerScreen.kt`, docs | Annotate shelf control visibility fix (pen/erase/thin/bold): removed label-bounded ripple, dimmed ink only when disabled, translate-only entrance for action bar. **Its `SegmentedButton` swap was reverted in Round 56 — see the row below.** Tested and verified. See §6ar. |
@@ -2297,3 +2298,63 @@ shelf**. Swipe past 84 dp still cancels, and the shelf swap still slides it out.
   `AnnotateShelf` and over `MarkupEditor`'s bottom bar shows no tool-dependent control, and
   the whole-tree sweep (81 Kotlin files) shows only the two known `bal3` false positives.
   `./gradlew testDebugUnitTest assembleDebug` is still owed by Antigravity for this round.
+
+## 6ax. Round 61: the combined filter — `SMART` and `LIGHT_TEXT` (Arena, 2026-10-28)
+
+The follow-on to `docs/FILTER_COMPARISON_ADOBE_VS_DOC_SCANNER.md`: *"pick the optimum filter
+and implement a better filter that mixes both designs, using Rust for speed/quality."*
+Full specification, constants and measured tables: **`docs/filter_combined_spec.md`**.
+Executable form: **`tools/filter_ref.py`** (`python3 tools/filter_ref.py all`).
+
+### What was added
+
+- `FilterType.SMART("Smart Scan")` and `FilterType.LIGHT_TEXT("Light Text")`, **appended**
+  to the enum. It is `@Serializable` and stored per page, so nothing existing moved.
+- `DocumentFilters.applyAdaptive` — the preset dispatcher, and the only production entry
+  point. It reuses `buildPaperMap` (the existing illumination model) and
+  `classifiesAsDocument` (previously dead: document vs scene).
+- `DocumentFilters.adaptiveColourReference` — the Kotlin definition of the kernel,
+  integer-only. `ratioCurve` / `lumaFixed` / `kneeGain` / `samplePaperQ8` / `paperGridQ8`
+  are its parts; `lumaPlane` prefers Rust and falls back to the reference.
+- `kernels::adaptive_colour` + `kernels::luma_plane` in `app/src/main/rust/src/kernels.rs`,
+  JNI in `lib.rs`, wrappers in `NativeFilters.kt`. **`ABI_VERSION` 2 → 3**
+  (`NativeFilters.EXPECTED_ABI = 3`), so a stale `.so` is rejected rather than called.
+- `verifyNativeFilters` cases 10–11: luma plane, then the adaptive kernel in all three
+  preset configurations **with and without edge crispening**, compared by
+  `contentEquals` against the Kotlin reference on a synthetic colour page. Any mismatch
+  means the Kotlin reference runs.
+- `DocumentFiltersTest.adaptive_*` (5 tests, pure JVM) pin the faint-ink fix, paper
+  purity, illumination invariance, hue retention and the curve's monotonicity.
+- `PaperMap` is now `internal` (was `private`) so the reference and the tests can build a
+  grid; no behaviour change.
+
+### Why this shape (short version)
+
+Magic Color is the right *base* — its paper-map divide is the only thing in either app
+that is illumination-invariant — but it indexes its curve by the absolute difference from
+paper, so a mark at 92 % reflectance lands at 248, one step off white. The fix is Adobe's
+*Light Text* idea (a curve over the paper ratio) applied to luma, with **one** gain for
+all three channels so hue survives, the gain soft-kneed so a scene is not repainted white
+(that is what the dead `GAIN_KNEE_*`/`GAIN_CAP_*` constants were for), and chroma
+re-expanded around the pixel's own luma so colour marks are not clipped per channel.
+
+Measured: 92 % reflectance → **190** under `SMART` (was 248), paper → exactly **255**, same
+ink under paper 238 / 150 / 90 within 6 levels, blue pen (60, 80, 160) → (13, 18, 39)
+instead of (0, 0, 78).
+
+### Invariants for the next agent
+
+- **The two implementations must stay byte-identical.** Change one, change the other and
+  `tools/filter_ref.py` in the same commit; the on-device gate is `contentEquals`, not a
+  tolerance. The only floats that may cross are the paper grid (quantised to Q8 on the
+  Kotlin side) and the detail plane.
+- **No float maths in the kernel.** Float drift between Kotlin and Rust is unfalsifiable
+  by test; fixed point is not.
+- `FilterType` may only grow **at the end**. A page stores its filter by name.
+- `SMART`/`LIGHT_TEXT` save to JPEG at the user's quality, like Magic Color. They are not
+  in the lossless (PNG) set — that set is Clear B&W and Grayscale only.
+- Only `SMART` sharpens (Laplacian crispening, document frames only). `LIGHT_TEXT` and
+  `SCENE` do not: faint originals are grainy, and a photograph must not be sharpened.
+- Verified by reading and by `python3 tools/filter_ref.py` only (no cargo, no Gradle, no
+  NDK in this sandbox). `./gradlew testDebugUnitTest assembleDebug` for R60 **and** R61,
+  and `cargo test`, are still owed by Antigravity.

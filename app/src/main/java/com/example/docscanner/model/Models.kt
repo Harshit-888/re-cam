@@ -3,13 +3,33 @@ package com.example.docscanner.model
 import androidx.compose.runtime.Immutable
 import kotlinx.serialization.Serializable
 
+/**
+ * The presets, in shelf order.
+ *
+ * The first five are the original APK's own ladder, transcribed one-to-one — see
+ * [com.example.docscanner.util.DocumentFilters]. The last two are this app's, and
+ * they are **appended**, never interleaved: `FilterType` is `@Serializable` and
+ * stored on every [ScannedPage], so existing pages must keep resolving to the same
+ * constant whatever happens at the end of the list.
+ *
+ * * [SMART] — the adaptive engine in colour. Same illumination divide as
+ *   [MAGIC_COLOR], but the tone curve runs on the *ratio* domain, so faint ink
+ *   (a pencil at 92 % of paper reflectance) darkens instead of vanishing, and a
+ *   single gain per pixel keeps hues where they were instead of clipping channels
+ *   independently. This is the everyday preset.
+ * * [LIGHT_TEXT] — the same engine tuned for documents that are faint all over:
+ *   pencil, fax, thermal receipt, faded carbon copy. Lighter knee, wider curve
+ *   window, more chroma retained.
+ */
 @Serializable
 enum class FilterType(val label: String) {
     ORIGINAL("Original"),
     MAGIC_COLOR("Magic Color"),
     CLEAR_BW("Clear B&W"),
     GRAYSCALE("Grayscale"),
-    LIGHTEN("Lighten")
+    LIGHTEN("Lighten"),
+    SMART("Smart Scan"),
+    LIGHT_TEXT("Light Text")
 }
 
 /**
