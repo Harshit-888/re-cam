@@ -2247,7 +2247,7 @@ object DocumentFilters {
             //     in one of the two, not float drift.
             val surface = buildPaperMap(colourPage, w, h)
             val grid = paperGridQ8(surface)
-            val cell = surface.block.toInt()
+            val adaptiveCell = surface.block.toInt()
             val detailPlane = run {
                 val smoothed = median3x3Reference(natLuma, w, h)
                 laplacian3x3Reference(smoothed, w, h)
@@ -2256,12 +2256,12 @@ object DocumentFilters {
                 val refPixels = colourPage.copyOf()
                 adaptiveColourReference(
                     refPixels, w, grid[0], grid[1], grid[2],
-                    surface.gw, surface.gh, cell, case.curve, case.params, case.detail
+                    surface.gw, surface.gh, adaptiveCell, case.curve, case.params, case.detail
                 )
                 val natPixels = colourPage.copyOf()
                 val ok = NativeFilters.adaptiveColour(
                     natPixels, w, grid[0], grid[1], grid[2],
-                    surface.gw, surface.gh, cell, case.curve, case.params, case.detail
+                    surface.gw, surface.gh, adaptiveCell, case.curve, case.params, case.detail
                 )
                 if (!ok) return@runCatching false
                 if (!natPixels.contentEquals(refPixels)) return@runCatching false

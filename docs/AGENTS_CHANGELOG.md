@@ -4,6 +4,12 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-28 — Antigravity — Rounds 60–61 compilation fix & build verification
+
+Resolved compilation error from Arena Round 61 integration and verified clean build:
+- **`util/DocumentFilters.kt`**: Fixed duplicate variable declaration `val cell` in `verifyNativeFilters()` by renaming the second instance to `val adaptiveCell = surface.block.toInt()`.
+- **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.5 MB), and `testDebugUnitTest` passed 100% (25 tasks, 0 failures).
+
 ## 2026-10-28 — Arena.ai — Round 61: two new presets, `SMART` and `LIGHT_TEXT`
 
 **New public surface:** `FilterType.SMART` and `FilterType.LIGHT_TEXT` (**appended**; the
