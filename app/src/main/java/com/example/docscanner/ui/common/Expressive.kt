@@ -15,6 +15,7 @@ import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -51,6 +52,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.docscanner.theme.DocShapes
+import com.example.docscanner.theme.Motion
 import com.example.docscanner.theme.pressScale
 
 /**
@@ -74,6 +76,17 @@ fun PillButton(
 ) {
     val interactions = remember { MutableInteractionSource() }
     val enabledAlpha by animateFloatAsState(if (enabled) 1f else 0.45f, label = "pillEnabled")
+    // A pill is already the roundest shape in the system, so there is no shape
+    // morph left to give it — the press is answered by the *icon* instead: 12 % of
+    // scale on a spring, which is the movement the eye reads as "it felt that".
+    // Cheap by construction: one graphics layer, no layout, and only while a finger
+    // is actually down.
+    val pressed by interactions.collectIsPressedAsState()
+    val iconScale by animateFloatAsState(
+        targetValue = if (pressed && enabled) 1.12f else 1f,
+        animationSpec = Motion.press,
+        label = "pillIcon"
+    )
     Surface(
         color = container,
         contentColor = content,
@@ -95,7 +108,16 @@ fun PillButton(
             modifier = Modifier.padding(horizontal = 22.dp, vertical = 14.dp)
         ) {
             if (icon != null) {
-                Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(18.dp)
+                        .graphicsLayer {
+                            scaleX = iconScale
+                            scaleY = iconScale
+                        }
+                )
                 Spacer(Modifier.width(8.dp))
             }
             Text(

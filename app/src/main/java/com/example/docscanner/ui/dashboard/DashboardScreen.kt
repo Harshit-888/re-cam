@@ -8,6 +8,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -1042,20 +1043,41 @@ private fun SelectionActionBar(
 @Composable
 private fun SelectionBadge(order: Int, modifier: Modifier = Modifier) {
     val selected = order > 0
+
+    // The disc fades between its two tones instead of switching, and the number
+    // springs in when it becomes a position in the selection order. Ticking a card
+    // is the most-repeated gesture on this screen; a badge that blinks reads as the
+    // tick *jumping* between cards, which is exactly the complaint the document grid
+    // produced with its single-selection bug.
+    val discColor by animateColorAsState(
+        targetValue = if (selected) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            // Same tonal disc as the overflow button it replaces, so an unselected
+            // card looks deliberate rather than half-finished.
+            MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.85f)
+        },
+        animationSpec = tween(durationMillis = 140),
+        label = "badgeDisc"
+    )
+    val pop = remember { Animatable(1f) }
+    LaunchedEffect(order) {
+        if (order > 0) {
+            pop.snapTo(0.55f)
+            pop.animateTo(1f, Motion.bouncy)
+        }
+    }
+
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
             .size(26.dp)
+            .graphicsLayer {
+                scaleX = pop.value
+                scaleY = pop.value
+            }
             .clip(CircleShape)
-            .background(
-                if (selected) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    // Same tonal disc as the overflow button it replaces, so an
-                    // unselected card looks deliberate rather than half-finished.
-                    MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.85f)
-                }
-            )
+            .background(discColor)
     ) {
         if (selected) {
             Text(

@@ -16,6 +16,24 @@ Newest entry at the top.
   - **indymobile/README.md**: Guide for Arena mapping C/Java reference functions to Rust NDK and Kotlin implementations.
 - No production application code or integration contracts touched. Purely additive reference documentation and evidence.
 
+## 2026-10-28 — Arena.ai — Round 50: expressive action bar, multi-page selection, motion pass
+
+- **New `ui/common/ExpressiveAction.kt`** — the app's one expressive bottom bar:
+  - `ExpressiveActionBar(modifier, containerColor, shape, shadowElevation, content)` — a tonal container that lifts 12 dp and fades in on arrival (`Motion.emphasized`).
+  - `ExpressiveActionItem(label, icon, onClick, contentColor, plateColor, accentColor, onAccentColor, emphasized, enabled)` — icon on a **plate whose corners morph 14 dp → 22 dp while held**, press scale 0.93, and a `Motion.bouncy` **icon pop on tap**. The whole cell (plate + label) is the 56 dp target.
+  - `ExpressivePager(index, count, onPrev, onNext, contentColor, railColor, accentColor, trailing)` — `‹ 3 / 8 ›` with a directional `AnimatedContent` counter (slide+fade, direction follows the page change) and a `scaleX` progress rail under it. Fixed-width number so the arrows never shuffle between `9 / 10` and `10 / 10`.
+  - `BarHairline(color)`.
+- **`ui/detail/DocumentDetailScreen.kt` — multi-page selection (bug fix).** Selection was `var selectedPageId: String?`, so ticking page 1 and then page 2 *replaced* the selection and page 1's tick vanished. It is now `selectedPageIds: Set<String>`: tapping (or long-pressing) another page **adds** it, tapping a ticked page removes it. The app bar title becomes `Page N of M` for one and `"$n pages selected"` for several, gains a **select all / clear all** action while selecting, and hides rename/PDF/ID-card for the duration. `Back` still clears instead of leaving.
+- **Bottom bar has three states**, all from `ExpressiveActionBar`: nothing picked → `Add page` · `Export PDF`; one page → `Crop` · `Annotate` · `Sign` · `More`; several → `Rotate` (all) · `Export` (**only the selected pages**) · `Delete` (all). `Crop`/`Annotate` are deliberately absent for a multi-selection: they are per-page decisions.
+- **Batch delete is one dialog.** `pagePendingDelete: ScannedPage?` → `pagesPendingDelete: List<ScannedPage>?`; the wording names the count, or the whole document when every page is picked. Selection is cleared before the pages go, so the bar never offers verbs for pages that are about to stop existing.
+- **New `exportOnly: List<ScannedPage>?`** so a batch export writes exactly those pages (title gains `(3 of 12 pages)`), instead of the boolean silently exporting the whole document.
+- **Selection motion.** The card's ring is a constant border whose *alpha* animates, the selected wash is a constant `Box` whose alpha animates, and the tick badge is an `AnimatedVisibility` (spring in / fast out). Ticking a card now costs no layout at all.
+- **`PageGridItem`** — `selected` drives `ringAlpha`, `washAlpha` and the badge; the old private `DocumentActionButton`, `DocumentActionContent` and `ACTION_HEIGHT` are **deleted** (replaced by `ExpressiveActionItem`). `rotatePage(page)` is now `rotatePages(list)` + a local `rotateOne(page)`.
+- **`ui/viewer/PageViewerScreen.kt`** — the reader's shelf is rebuilt on `ExpressiveActionBar` + `ExpressivePager`; the private `ViewerPageStep` and the R49 `ViewerActionButton` are **deleted**. The zoom badge now fades/springs in instead of appearing. Bar uses `DocShapes.card` (it floats with a margin, so top-only corners left two square bottom corners).
+- **`ui/common/Expressive.kt`** — `PillButton`'s icon scales to 1.12 on press (`Motion.press`), so the app's most-used button answers the finger with something other than a ripple.
+- **`ui/dashboard/DashboardScreen.kt`** — `SelectionBadge` animates its disc colour and springs its number in (`Motion.bouncy`) when a card joins the selection, so the library grid and the document grid tick the same way.
+- No change to filters, page geometry, `PdfGenerator`/`PdfWriter` output, captured pixels, colours or typography. **Nothing compiled here.**
+
 ## 2026-10-27 — Arena.ai — Round 49: the page reader gets a bar, and swiping
 
 - **`ui/common/ZoomablePageView.kt` — `zoom` and `pan` are now `() -> Float` / `() -> Offset`, not values.** The transform is read inside the `graphicsLayer` block, i.e. in the draw phase, so a pinch invalidates one layer and recomposes nothing above it. Call sites pass `{ zoom }`. This is what let the viewer adopt the shared gesture without giving up the zero-recomposition draw path its old hand-written gesture existed to buy. **Signature change: any other caller must pass lambdas.**

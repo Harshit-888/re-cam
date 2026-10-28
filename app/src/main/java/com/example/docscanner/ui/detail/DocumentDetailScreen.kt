@@ -2,14 +2,18 @@ package com.example.docscanner.ui.detail
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -17,7 +21,10 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ripple
 import com.example.docscanner.theme.DocShapes
+import com.example.docscanner.theme.Motion
 import com.example.docscanner.theme.pressScale
+import com.example.docscanner.ui.common.ExpressiveActionBar
+import com.example.docscanner.ui.common.ExpressiveActionItem
 import com.example.docscanner.ui.common.InfoPill
 import com.example.docscanner.ui.common.PillButton
 import androidx.compose.foundation.layout.Box
@@ -49,6 +56,7 @@ import androidx.compose.material.icons.filled.ArrowRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInFull
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.outlined.BrandingWatermark
 import androidx.compose.material.icons.outlined.CreditCard
@@ -80,7 +88,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -128,54 +135,89 @@ fun DocumentDetailScreen(
     // particular did not: it stamped page 1 no matter which page you were looking
     // at. A document and a page are different objects with different verbs, so the
     // bar now follows the selection: nothing picked means document verbs, a page
-    // picked means page verbs.
+    // picked means page verbs, several picked means batch verbs.
     //
     // Long-press to start selecting, exactly like the library's document grid — one
     // gesture for "act on this thing" in both places. It is its own mode rather than
     // a side effect of tapping a card because tapping a card already means "open it",
     // and a bar that silently changes under your thumb after you come back from the
     // viewer is a bar you cannot trust.
-    var selectedPageId by remember { mutableStateOf<String?>(null) }
+    //
+    // A **set**, not a single id. This was a `String?` and it produced the bug worth
+    // fixing: long-press page 1, then long-press page 2, and page 1's tick vanished —
+    // because page 2 had *replaced* it. Selecting pages one at a time and losing the
+    // ones you already picked is not a selection model, it is a cursor.
+    var selectedPageIds by remember { mutableStateOf<Set<String>>(emptySet()) }
 
-    // Signing targets a page now, so the dialog needs to know which one was open.
+    // Signing targets a page, so the dialog needs to know which one was open.
     var signatureTargetId by remember { mutableStateOf<String?>(null) }
 
-    // Deleting a page is destructive and irreversible — the capture, the JPEG bake
-    // and the lossless bake all go — and it used to happen on a single tap of a
-    // menu item, with no confirmation and no undo. The page is named in the dialog
-    // because "delete page 3" is a decision you can check and "delete" is not.
-    var pagePendingDelete by remember { mutableStateOf<ScannedPage?>(null) }
+    // Exporting a picked subset is a different job from exporting the document, so it
+    // gets its own slot: `null` means "the whole document", a list means "exactly
+    // these pages". Sharing the boolean above would have made the batch bar's Export
+    // quietly export all twelve pages.
+    var exportOnly by remember { mutableStateOf<List<ScannedPage>?>(null) }
 
-    // Resolved from the live page list, not stored as an object: a rotate or an
-    // annotate replaces the page, and a snapshot would then act on stale data.
-    val selectedPage = remember(document?.pages, selectedPageId) {
-        document?.pages?.firstOrNull { it.id == selectedPageId }
+    // Deleting is destructive and irreversible — the capture, the JPEG bake and the
+    // lossless bake all go — and it used to happen on a single tap of a menu item,
+    // with no confirmation and no undo. It now takes a *list*, so a batch delete is
+    // one confirmation naming a count rather than N dialogs in a row.
+    var pagesPendingDelete by remember { mutableStateOf<List<ScannedPage>?>(null) }
+
+    // Resolved from the live page list, not stored as objects: a rotate or an annotate
+    // replaces the page, and a snapshot would then act on stale data. Ordered by the
+    // document, so "page 3, page 5" is what the user sees, not tap order.
+    val selectedPages = remember(document?.pages, selectedPageIds) {
+        document?.pages?.filter { it.id in selectedPageIds }.orEmpty()
     }
+    val singleSelectedPage = selectedPages.singleOrNull()
 
-    // A deleted, moved-away or re-baked page list can leave the selection pointing
-    // at nothing. Clearing it here means the bar can never show page verbs for a
-    // page that is not there.
-    LaunchedEffect(document?.pages?.size, selectedPage?.id) {
-        if (selectedPage == null && selectedPageId != null) selectedPageId = null
+    // A deleted, moved-away or re-baked page list can leave the selection pointing at
+    // ids that no longer exist. Intersecting is cheap and means the bar can never show
+    // page verbs for a page that is not there.
+    LaunchedEffect(document?.pages, selectedPageIds) {
+        val alive = document?.pages?.map { it.id }?.toSet() ?: return@LaunchedEffect
+        if (!alive.containsAll(selectedPageIds)) {
+            selectedPageIds = selectedPageIds.intersect(alive)
+        }
     }
 
     // Back leaves selection, not the screen — the same rule as the library grid.
-    BackHandler(enabled = selectedPage != null) { selectedPageId = null }
+    BackHandler(enabled = selectedPageIds.isNotEmpty()) { selectedPageIds = emptySet() }
+
+    /** Adds or removes one page. Tapping a ticked page un-ticks it. */
+    fun toggleSelection(pageId: String) {
+        selectedPageIds = if (pageId in selectedPageIds) {
+            selectedPageIds - pageId
+        } else {
+            selectedPageIds + pageId
+        }
+    }
 
     // Re-bake so the rotation is visible immediately in the grid, the viewer and the
     // PDF — not just stored as a flag. One definition, because the card's rotate
-    // button and the selected page's More → Rotate must not drift apart.
-    fun rotatePage(page: ScannedPage) {
+    // button, the selection bar's rotate and the viewer's rotate must not drift apart.
+    fun rotatePages(pages: List<ScannedPage>) {
+        if (pages.isEmpty()) return
         scope.launch {
-            val current = repository.getDocumentById(docId)
-                ?.pages?.find { it.id == page.id } ?: return@launch
-            val baked = PageRenderer.bake(
-                context,
-                current.copy(rotationDegrees = (current.rotationDegrees + 90f) % 360f)
-            )
-            if (baked != null) {
-                repository.updatePage(docId, page.id) { baked }
+            pages.forEach { page ->
+                rotateOne(page)
             }
+        }
+    }
+
+    // One page at a time, and a page that cannot be re-baked is skipped rather than
+    // abandoning the batch: rotating nine pages and silently doing none because the
+    // tenth has a missing file is worse than rotating nine.
+    suspend fun rotateOne(page: ScannedPage) {
+        val current = repository.getDocumentById(docId)
+            ?.pages?.find { it.id == page.id } ?: return
+        val baked = PageRenderer.bake(
+            context,
+            current.copy(rotationDegrees = (current.rotationDegrees + 90f) % 360f)
+        )
+        if (baked != null) {
+            repository.updatePage(docId, page.id) { baked }
         }
     }
 
@@ -202,26 +244,52 @@ fun DocumentDetailScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    // While a page is selected the title says *which* page: the bar
-                    // below has room for verbs, not for which page they apply to, and
-                    // "Rotate" with no subject is the bug this round is fixing.
-                    Text(
-                        text = selectedPage?.let { "Page ${it.pageIndex + 1} of ${document.pages.size}" }
-                            ?: document.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    // While pages are selected the title says *which*: the bar below
+                    // has room for verbs, not for the subject they apply to, and
+                    // "Rotate" with no subject is a decision made blind. One page is
+                    // named; several are counted.
+                    val title = when {
+                        selectedPages.size > 1 -> "${selectedPages.size} pages selected"
+                        singleSelectedPage != null ->
+                            "Page ${singleSelectedPage.pageIndex + 1} of ${document.pages.size}"
+                        else -> document.title
+                    }
+                    // The count animates instead of jumping: ticking a fourth page
+                    // should look like the number became four, not like a different
+                    // string appeared.
+                    AnimatedContent(
+                        targetState = title,
+                        transitionSpec = {
+                            (fadeIn(tween(160)) + slideInVertically(tween(200)) { it / 3 })
+                                .togetherWith(fadeOut(tween(100)))
+                        },
+                        label = "detailTitle"
+                    ) { current ->
+                        Text(
+                            text = current,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 },
                 navigationIcon = {
                     IconButton(
                         onClick = {
-                            if (selectedPage != null) selectedPageId = null else onNavigateBack()
+                            if (selectedPageIds.isNotEmpty()) {
+                                selectedPageIds = emptySet()
+                            } else {
+                                onNavigateBack()
+                            }
                         }
                     ) {
                         Icon(
-                            if (selectedPage != null) Icons.Default.Close else Icons.Default.ArrowBack,
-                            contentDescription = if (selectedPage != null) {
+                            if (selectedPageIds.isNotEmpty()) {
+                                Icons.Default.Close
+                            } else {
+                                Icons.Default.ArrowBack
+                            },
+                            contentDescription = if (selectedPageIds.isNotEmpty()) {
                                 "Clear selection"
                             } else {
                                 "Back"
@@ -230,27 +298,68 @@ fun DocumentDetailScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { showRenameDialog = true }) {
-                        Icon(Icons.Outlined.Edit, contentDescription = "Edit title and notes")
-                    }
-                    IconButton(onClick = { showPdfExportSheet = true }) {
-                        Icon(Icons.Outlined.PictureAsPdf, contentDescription = "Export PDF")
-                    }
-                    // Only meaningful for exactly two pages: front and back. Shown
-                    // rather than hidden so the feature is discoverable, and disabled
-                    // with a reason rather than lying about what a tap will do.
-                    IconButton(
-                        onClick = { showIdCardDialog = true },
-                        enabled = document.pages.size == 2 && !idCardBusy
-                    ) {
-                        Icon(
-                            Icons.Outlined.CreditCard,
-                            contentDescription = if (document.pages.size == 2) {
-                                "Combine the two pages as an ID card"
+                    // While selecting, the app bar belongs to the selection: select all,
+                    // and nothing else. Leaving rename/ID-card/PDF next to a live
+                    // selection is how a tap meant for "tick this page" turns into an
+                    // export dialog.
+                    AnimatedContent(
+                        targetState = selectedPageIds.isNotEmpty(),
+                        transitionSpec = { fadeIn(tween(160)) togetherWith fadeOut(tween(100)) },
+                        label = "detailActions"
+                    ) { selecting ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (selecting) {
+                                val allSelected = selectedPages.size == document.pages.size
+                                IconButton(
+                                    onClick = {
+                                        selectedPageIds = if (allSelected) {
+                                            emptySet()
+                                        } else {
+                                            document.pages.map { it.id }.toSet()
+                                        }
+                                    }
+                                ) {
+                                    Icon(
+                                        Icons.Default.SelectAll,
+                                        contentDescription = if (allSelected) {
+                                            "Clear selection"
+                                        } else {
+                                            "Select all pages"
+                                        }
+                                    )
+                                }
                             } else {
-                                "ID card needs exactly two pages"
+                                IconButton(onClick = { showRenameDialog = true }) {
+                                    Icon(
+                                        Icons.Outlined.Edit,
+                                        contentDescription = "Edit title and notes"
+                                    )
+                                }
+                                IconButton(onClick = { showPdfExportSheet = true }) {
+                                    Icon(
+                                        Icons.Outlined.PictureAsPdf,
+                                        contentDescription = "Export PDF"
+                                    )
+                                }
+                                // Only meaningful for exactly two pages: front and
+                                // back. Shown rather than hidden so the feature is
+                                // discoverable, and disabled with a reason rather than
+                                // lying about what a tap will do.
+                                IconButton(
+                                    onClick = { showIdCardDialog = true },
+                                    enabled = document.pages.size == 2 && !idCardBusy
+                                ) {
+                                    Icon(
+                                        Icons.Outlined.CreditCard,
+                                        contentDescription = if (document.pages.size == 2) {
+                                            "Combine the two pages as an ID card"
+                                        } else {
+                                            "ID card needs exactly two pages"
+                                        }
+                                    )
+                                }
                             }
-                        )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -259,179 +368,225 @@ fun DocumentDetailScreen(
             )
         },
         bottomBar = {
-            // Two bars, one height, one fade. Document verbs when nothing is picked;
-            // page verbs when something is.
-            // Keyed on the page *id*, not the page: rotating or annotating replaces
-            // the `ScannedPage` object, and keying on the object would re-run the
+            // Three bars, one height, one fade — document verbs, one page's verbs,
+            // several pages' verbs. All three are built from the same expressive
+            // action bar, so a cell never moves house when the selection changes
+            // width; only the set of cells does.
+            //
+            // Keyed on *ids*, never on `ScannedPage` objects: rotating or annotating
+            // replaces the object, and keying on the object would re-run the
             // transition — a fading bar under a tap that never asked for one.
             AnimatedContent(
-                targetState = selectedPage?.id,
-                transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) },
+                targetState = detailBarMode(selectedPageIds),
+                transitionSpec = {
+                    (fadeIn(tween(180)) + slideInVertically(tween(220)) { it / 6 })
+                        .togetherWith(fadeOut(tween(120)))
+                },
                 label = "detailActionBar"
-            ) { key ->
-                // Resolved from the lambda's key rather than from `selectedPage`
-                // directly so the bar that is leaving keeps showing the page it was
-                // about until it has faded out.
-                val target = if (key == null) {
-                    null
-                } else {
-                    document.pages.firstOrNull { it.id == key }
+            ) { mode ->
+                // Resolved from the mode's ids, so the bar that is leaving keeps
+                // acting on what it was composed for until it has faded out.
+                val page = (mode as? DetailBarMode.Single)?.let { key ->
+                    document.pages.firstOrNull { it.id == key.id }
                 }
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    shape = DocShapes.sheet,
-                    shadowElevation = 14.dp
+                val batch = (mode as? DetailBarMode.Multiple)?.let { key ->
+                    document.pages.filter { it.id in key.ids }
+                }
+
+                ExpressiveActionBar(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                    modifier = Modifier.navigationBarsPadding()
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .navigationBarsPadding()
-                            .padding(horizontal = 10.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        if (target == null) {
-                            // Nothing is picked, so only two things can be true of
-                            // the document: it can grow, or it can become a PDF.
-                            // Sign and Mark used to sit here and both were lies at
-                            // this level — Mark stamps every page (it belongs with a
-                            // page, in More), and Sign stamped page 1 only.
-                            DocumentActionButton(
-                                label = "Add page",
-                                icon = Icons.Default.AddAPhoto,
-                                onClick = { onAddPageCamera(docId) },
-                                modifier = Modifier.weight(1f)
-                            )
-                            DocumentActionButton(
-                                label = "Export PDF",
-                                icon = Icons.Outlined.PictureAsPdf,
-                                onClick = { showPdfExportSheet = true },
-                                primary = true,
-                                modifier = Modifier.weight(1f)
-                            )
-                        } else {
-                            // The page's own verbs, in the order a scan needs them:
-                            // fix the crop and the look, add ink, sign it — then
-                            // everything rare in More.
-                            DocumentActionButton(
-                                label = "Crop",
-                                icon = Icons.Outlined.Crop,
-                                onClick = {
-                                    val id = target.id
-                                    selectedPageId = null
-                                    onNavigateToCrop(id)
-                                },
-                                modifier = Modifier.weight(1f)
-                            )
-                            DocumentActionButton(
-                                label = "Annotate",
-                                icon = Icons.Outlined.Draw,
-                                onClick = { markupTarget = target },
-                                modifier = Modifier.weight(1f)
-                            )
-                            DocumentActionButton(
-                                label = "Sign",
-                                icon = Icons.Default.Create,
-                                onClick = { signatureTargetId = target.id },
-                                modifier = Modifier.weight(1f)
-                            )
-                            Box(modifier = Modifier.weight(1f)) {
-                                var showPageMenu by remember(target.id) { mutableStateOf(false) }
-                                DocumentActionButton(
-                                    label = "More",
-                                    icon = Icons.Default.MoreVert,
-                                    onClick = { showPageMenu = true },
-                                    modifier = Modifier.fillMaxWidth()
+                        when {
+                            batch != null && batch.size > 1 -> {
+                                // Several pages, so only verbs that make sense for
+                                // several pages. Crop and annotate are per-page
+                                // decisions and quietly applying one page's crop to a
+                                // set would be the worst kind of batch action.
+                                ExpressiveActionItem(
+                                    label = "Rotate",
+                                    icon = Icons.Default.RotateRight,
+                                    onClick = { rotatePages(batch) },
+                                    modifier = Modifier.weight(1f)
                                 )
-                                DropdownMenu(
-                                    expanded = showPageMenu,
-                                    onDismissRequest = { showPageMenu = false }
-                                ) {
-                                    DropdownMenuItem(
-                                        text = { Text("Open full screen") },
-                                        leadingIcon = {
-                                            Icon(Icons.Default.OpenInFull, contentDescription = null)
-                                        },
-                                        onClick = {
-                                            showPageMenu = false
-                                            val id = target.id
-                                            selectedPageId = null
-                                            onNavigateToViewer(id)
-                                        }
+                                ExpressiveActionItem(
+                                    label = "Export",
+                                    icon = Icons.Outlined.PictureAsPdf,
+                                    onClick = { exportOnly = batch },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                ExpressiveActionItem(
+                                    label = "Delete",
+                                    icon = Icons.Default.Delete,
+                                    contentColor = MaterialTheme.colorScheme.error,
+                                    onClick = { pagesPendingDelete = batch },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+
+                            page != null -> {
+                                // The page's own verbs, in the order a scan needs
+                                // them: fix the crop and the look, add ink, sign it —
+                                // then everything rare in More.
+                                ExpressiveActionItem(
+                                    label = "Crop",
+                                    icon = Icons.Outlined.Crop,
+                                    onClick = {
+                                        selectedPageIds = emptySet()
+                                        onNavigateToCrop(page.id)
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                ExpressiveActionItem(
+                                    label = "Annotate",
+                                    icon = Icons.Outlined.Draw,
+                                    onClick = { markupTarget = page },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                ExpressiveActionItem(
+                                    label = "Sign",
+                                    icon = Icons.Default.Create,
+                                    onClick = { signatureTargetId = page.id },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Box(modifier = Modifier.weight(1f)) {
+                                    var showPageMenu by remember(page.id) { mutableStateOf(false) }
+                                    ExpressiveActionItem(
+                                        label = "More",
+                                        icon = Icons.Default.MoreVert,
+                                        onClick = { showPageMenu = true },
+                                        modifier = Modifier.fillMaxWidth()
                                     )
-                                    DropdownMenuItem(
-                                        text = { Text("Rotate 90°") },
-                                        leadingIcon = {
-                                            Icon(Icons.Default.RotateRight, contentDescription = null)
-                                        },
-                                        onClick = {
-                                            showPageMenu = false
-                                            rotatePage(target)
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Move earlier") },
-                                        leadingIcon = {
-                                            Icon(Icons.Default.ArrowLeft, contentDescription = null)
-                                        },
-                                        enabled = target.pageIndex > 0,
-                                        onClick = {
-                                            showPageMenu = false
-                                            repository.movePage(
-                                                docId,
-                                                target.pageIndex,
-                                                target.pageIndex - 1
-                                            )
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Move later") },
-                                        leadingIcon = {
-                                            Icon(Icons.Default.ArrowRight, contentDescription = null)
-                                        },
-                                        enabled = target.pageIndex < document.pages.lastIndex,
-                                        onClick = {
-                                            showPageMenu = false
-                                            repository.movePage(
-                                                docId,
-                                                target.pageIndex,
-                                                target.pageIndex + 1
-                                            )
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Watermark all pages") },
-                                        leadingIcon = {
-                                            Icon(
-                                                Icons.Outlined.BrandingWatermark,
-                                                contentDescription = null
-                                            )
-                                        },
-                                        onClick = {
-                                            showPageMenu = false
-                                            showWatermarkDialog = true
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                "Delete page",
-                                                color = MaterialTheme.colorScheme.error
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            Icon(
-                                                Icons.Default.Delete,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.error
-                                            )
-                                        },
-                                        onClick = {
-                                            showPageMenu = false
-                                            pagePendingDelete = target
-                                        }
-                                    )
+                                    DropdownMenu(
+                                        expanded = showPageMenu,
+                                        onDismissRequest = { showPageMenu = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("Open full screen") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Default.OpenInFull,
+                                                    contentDescription = null
+                                                )
+                                            },
+                                            onClick = {
+                                                showPageMenu = false
+                                                val id = page.id
+                                                selectedPageIds = emptySet()
+                                                onNavigateToViewer(id)
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Rotate 90°") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Default.RotateRight,
+                                                    contentDescription = null
+                                                )
+                                            },
+                                            onClick = {
+                                                showPageMenu = false
+                                                rotatePages(listOf(page))
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Move earlier") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Default.ArrowLeft,
+                                                    contentDescription = null
+                                                )
+                                            },
+                                            enabled = page.pageIndex > 0,
+                                            onClick = {
+                                                showPageMenu = false
+                                                repository.movePage(
+                                                    docId,
+                                                    page.pageIndex,
+                                                    page.pageIndex - 1
+                                                )
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Move later") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Default.ArrowRight,
+                                                    contentDescription = null
+                                                )
+                                            },
+                                            enabled = page.pageIndex < document.pages.lastIndex,
+                                            onClick = {
+                                                showPageMenu = false
+                                                repository.movePage(
+                                                    docId,
+                                                    page.pageIndex,
+                                                    page.pageIndex + 1
+                                                )
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Watermark all pages") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Outlined.BrandingWatermark,
+                                                    contentDescription = null
+                                                )
+                                            },
+                                            onClick = {
+                                                showPageMenu = false
+                                                showWatermarkDialog = true
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    "Delete page",
+                                                    color = MaterialTheme.colorScheme.error
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Default.Delete,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.error
+                                                )
+                                            },
+                                            onClick = {
+                                                showPageMenu = false
+                                                pagesPendingDelete = listOf(page)
+                                            }
+                                        )
+                                    }
                                 }
+                            }
+
+                            else -> {
+                                // Nothing is picked, so only two things can be true of
+                                // the document: it can grow, or it can become a PDF.
+                                // Sign and Mark used to sit here and both were lies at
+                                // this level — Mark stamps every page, and Sign stamped
+                                // page 1 regardless of which page you were reading.
+                                ExpressiveActionItem(
+                                    label = "Add page",
+                                    icon = Icons.Default.AddAPhoto,
+                                    onClick = { onAddPageCamera(docId) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                ExpressiveActionItem(
+                                    label = "Export PDF",
+                                    icon = Icons.Outlined.PictureAsPdf,
+                                    onClick = { showPdfExportSheet = true },
+                                    emphasized = true,
+                                    modifier = Modifier.weight(1f)
+                                )
                             }
                         }
                     }
@@ -519,24 +674,22 @@ fun DocumentDetailScreen(
                         page = page,
                         canMoveBackward = index > 0,
                         canMoveForward = index >= 0 && index < document.pages.lastIndex,
-                        selected = selectedPage?.id == page.id,
-                        // Tap opens the page — unless a page is already picked, in
-                        // which case tap picks (the library grid's rule, so the two
-                        // grids in the app behave the same way). Long-press picks
+                        selected = page.id in selectedPageIds,
+                        // Tap opens the page — unless something is already picked, in
+                        // which case tap *toggles* (the library grid's rule, so the two
+                        // grids in the app behave the same way). Long-press toggles
                         // either way.
                         onViewClick = {
-                            if (selectedPage == null) {
+                            if (selectedPageIds.isEmpty()) {
                                 onNavigateToViewer(page.id)
                             } else {
-                                selectedPageId = page.id
+                                toggleSelection(page.id)
                             }
                         },
-                        onSelectClick = {
-                            selectedPageId = if (selectedPage?.id == page.id) null else page.id
-                        },
+                        onSelectClick = { toggleSelection(page.id) },
                         onCropClick = { onNavigateToCrop(page.id) },
-                        onDeleteClick = { pagePendingDelete = page },
-                        onRotateClick = { rotatePage(page) },
+                        onDeleteClick = { pagesPendingDelete = listOf(page) },
+                        onRotateClick = { rotatePages(listOf(page)) },
                         onMoveBackward = { repository.movePage(docId, index, index - 1) },
                         onMoveForward = { repository.movePage(docId, index, index + 1) },
                         onAnnotateClick = { markupTarget = page }
@@ -546,45 +699,82 @@ fun DocumentDetailScreen(
         }
     }
 
-    if (showPdfExportSheet) {
+    if (showPdfExportSheet || exportOnly != null) {
+        val pagesToExport = exportOnly ?: document.pages
         PdfExportSheet(
-            title = document.title,
-            pages = document.pages,
+            // The title says which pages are in the file, because a PDF of three
+            // pages named exactly like the twelve-page document is a file you cannot
+            // tell apart in a share sheet.
+            title = if (exportOnly != null) {
+                "${document.title} (${pagesToExport.size} of ${document.pages.size} pages)"
+            } else {
+                document.title
+            },
+            pages = pagesToExport,
             settings = settings,
-            onDismiss = { showPdfExportSheet = false }
+            onDismiss = {
+                showPdfExportSheet = false
+                exportOnly = null
+            }
         )
     }
 
-    // Confirmation for a page delete. The last page is called out separately: it
-    // removes the whole document, which is not obvious from a page-level menu.
-    pagePendingDelete?.let { page ->
-        val isLastPage = document.pages.size <= 1
+    // Confirmation for a delete. One dialog for one page and for a batch: asking N
+    // times for N pages is not more careful, it is just slower. Naming the count —
+    // and saying when the last page takes the whole document with it — is what makes
+    // the decision checkable.
+    pagesPendingDelete?.let { pending ->
+        val deletesWholeDocument = pending.size >= document.pages.size
         AlertDialog(
-            onDismissRequest = { pagePendingDelete = null },
-            title = { Text(if (isLastPage) "Delete this scan?" else "Delete this page?") },
+            onDismissRequest = { pagesPendingDelete = null },
+            title = {
+                Text(
+                    when {
+                        pending.size > 1 -> "Delete ${pending.size} pages?"
+                        deletesWholeDocument -> "Delete this scan?"
+                        else -> "Delete this page?"
+                    }
+                )
+            },
             text = {
                 Text(
-                    if (isLastPage) {
-                        "This is the only page in \"${document.title}\", so the whole " +
-                            "document is deleted. This cannot be undone."
-                    } else {
-                        "Page ${page.pageIndex + 1} of \"${document.title}\" is deleted " +
-                            "permanently. The other ${document.pages.size - 1} pages stay."
+                    when {
+                        // "The other 0 stay" is the sentence this ordering exists to
+                        // avoid: deleting every page deletes the document, and that is
+                        // the thing worth saying out loud.
+                        deletesWholeDocument && pending.size > 1 ->
+                            "This is every page in \"${document.title}\", so the whole " +
+                                "document is deleted. This cannot be undone."
+                        deletesWholeDocument ->
+                            "This is the only page in \"${document.title}\", so the whole " +
+                                "document is deleted. This cannot be undone."
+                        pending.size > 1 ->
+                            "Pages ${pending.joinToString(", ") { "${it.pageIndex + 1}" }} " +
+                                "are deleted permanently, along with their edits. " +
+                                "The other ${document.pages.size - pending.size} stay."
+                        else ->
+                            "Page ${pending.first().pageIndex + 1} of \"${document.title}\" " +
+                                "is deleted permanently. The other " +
+                                "${document.pages.size - 1} pages stay."
                     }
                 )
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        pagePendingDelete = null
-                        repository.deletePage(docId, page.id)
+                        val doomed = pending
+                        pagesPendingDelete = null
+                        // Selection first: the bar must not spend a frame offering
+                        // verbs for pages that are about to stop existing.
+                        selectedPageIds = emptySet()
+                        doomed.forEach { repository.deletePage(docId, it.id) }
                     }
                 ) {
                     Text("Delete", color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pagePendingDelete = null }) { Text("Keep") }
+                TextButton(onClick = { pagesPendingDelete = null }) { Text("Keep") }
             }
         )
     }
@@ -803,6 +993,30 @@ fun DocumentDetailScreen(
     }
 }
 
+/**
+ * What the bottom bar is currently about.
+ *
+ * Deliberately keyed by **ids**, not by `ScannedPage`: a rotate or an annotate
+ * replaces the page object, and a key that changes identity on every re-bake would
+ * re-run the bar's transition under a tap that never asked for one.
+ */
+private sealed interface DetailBarMode {
+    /** Nothing picked: the document's own verbs. */
+    data object Document : DetailBarMode
+
+    /** One page picked. */
+    data class Single(val id: String) : DetailBarMode
+
+    /** Several pages picked. Ids are sorted so the key is stable whatever the tap order. */
+    data class Multiple(val ids: List<String>) : DetailBarMode
+}
+
+private fun detailBarMode(selected: Set<String>): DetailBarMode = when {
+    selected.isEmpty() -> DetailBarMode.Document
+    selected.size == 1 -> DetailBarMode.Single(selected.first())
+    else -> DetailBarMode.Multiple(selected.toList().sorted())
+}
+
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
 fun PageGridItem(
@@ -822,6 +1036,21 @@ fun PageGridItem(
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
+    // Selection is animated in *this* composable, not applied as a sudden boolean:
+    // the tick springs in, the wash fades in, the ring fades in. All three are
+    // draw-phase properties, so ticking a page costs no layout — which matters on a
+    // grid where the user is tapping down a column of cards.
+    val ringAlpha by animateFloatAsState(
+        targetValue = if (selected) 1f else 0f,
+        animationSpec = Motion.fade,
+        label = "selectRing"
+    )
+    val washAlpha by animateFloatAsState(
+        targetValue = if (selected) 0.10f else 0f,
+        animationSpec = Motion.fade,
+        label = "selectWash"
+    )
+
     val interactions = remember { MutableInteractionSource() }
     Surface(
         shape = DocShapes.cardSmall,
@@ -832,13 +1061,15 @@ fun PageGridItem(
             .clip(DocShapes.cardSmall)
             // Drawn inside the clip, so selecting a card never changes where any
             // other card sits — a selection that shifts the grid looks like a
-            // reorder.
+            // reorder. The ring *fades in* rather than being switched on: a border
+            // that blinks is the half of the old selection feel that made the tick
+            // look like it was jumping between cards instead of accumulating.
             .then(
-                if (selected) {
-                    Modifier.border(2.dp, MaterialTheme.colorScheme.primary, DocShapes.cardSmall)
-                } else {
-                    Modifier
-                }
+                Modifier.border(
+                    width = 2.dp,
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = ringAlpha),
+                    shape = DocShapes.cardSmall
+                )
             )
             // Long-press picks the page, the same gesture that starts selection in
             // the library. Same node count as `clickable`, so a scrolling grid costs
@@ -898,20 +1129,27 @@ fun PageGridItem(
                 // Centred, not in a corner: all four corners already carry a pill
                 // (look, watermark, page number), and a check badge that covers the
                 // page number tells you less than the page number did.
-                if (selected) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
-                    )
+                //
+                // The wash is always present and animates its alpha — adding and
+                // removing a full-size Box per tick would rebuild the tile's content
+                // on every selection change for something that is a colour.
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = washAlpha))
+                )
+                AnimatedVisibility(
+                    visible = selected,
+                    enter = scaleIn(Motion.bouncy) + fadeIn(Motion.fade),
+                    exit = scaleOut(Motion.press) + fadeOut(tween(120)),
+                    modifier = Modifier.align(Alignment.Center)
+                ) {
                     Surface(
                         shape = CircleShape,
                         color = MaterialTheme.colorScheme.primary,
                         contentColor = MaterialTheme.colorScheme.onPrimary,
                         shadowElevation = 6.dp,
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .size(44.dp)
+                        modifier = Modifier.size(44.dp)
                     ) {
                         Icon(
                             Icons.Default.Check,
@@ -993,68 +1231,3 @@ fun PageGridItem(
     }
 }
 
-/**
- * One action in the document bottom bar: icon above label, fixed height.
- *
- * Both variants share the same height and padding so the primary Export button can
- * never end up taller or shorter than the three text actions next to it, and the
- * label is single-line so a long word can never wrap and inflate the row.
- */
-@Composable
-private fun DocumentActionButton(
-    label: String,
-    icon: ImageVector,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    primary: Boolean = false
-) {
-    val interactions = remember { MutableInteractionSource() }
-    val container = if (primary) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.surfaceContainerHigh
-    }
-    val content = if (primary) {
-        MaterialTheme.colorScheme.onPrimary
-    } else {
-        MaterialTheme.colorScheme.onSurface
-    }
-    Surface(
-        color = container,
-        contentColor = content,
-        shape = DocShapes.cardSmall,
-        modifier = modifier
-            .height(ACTION_HEIGHT)
-            .pressScale(interactions, pressedScale = 0.95f)
-            .clip(DocShapes.cardSmall)
-            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
-    ) {
-        DocumentActionContent(label = label, icon = icon)
-    }
-}
-
-@Composable
-private fun DocumentActionContent(label: String, icon: ImageVector) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-        modifier = Modifier.fillMaxSize()
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(20.dp)
-        )
-        Spacer(modifier = Modifier.height(3.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
-}
-
-/** Shared height for every bottom-bar action, so none can grow taller than its peers. */
-private val ACTION_HEIGHT = 56.dp

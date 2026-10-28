@@ -1408,6 +1408,47 @@ change pages, which is exactly the Round 37 bug.
 - **Do not remove `PageStrip` from one stage.** See above.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
 
+## 6am. Round 50: expressive bar, multi-page selection, motion pass (Arena, 2026-10-28)
+
+**New:** `ui/common/ExpressiveAction.kt`.
+**Edited:** `ui/common/Expressive.kt`, `ui/detail/DocumentDetailScreen.kt`,
+`ui/viewer/PageViewerScreen.kt`, `ui/dashboard/DashboardScreen.kt`.
+
+- **Use `ExpressiveActionBar` / `ExpressiveActionItem` / `ExpressivePager` for any new
+  bottom bar.** They are the app's expressive action language: plate that morphs on
+  press, spring pop on tap, tonal container, pager with a progress rail. Do not hand-
+  build a fourth row of icon+label cells.
+- **Selection in the document grid is many-page.** `selectedPageIds: Set<String>`.
+  Tapping adds/removes; the bar has three states (document / one page / several). If you
+  add an action, decide which state it belongs to — `Crop` and `Annotate` are
+  single-page on purpose.
+- **Deleted private symbols** (no §3 impact, nothing outside their files used them):
+  `DocumentActionButton`, `DocumentActionContent`, `ACTION_HEIGHT` (detail screen),
+  `ViewerPageStep`, `ViewerActionButton` (viewer, added in R49).
+- **Renamed local state:** `pagePendingDelete: ScannedPage?` → `pagesPendingDelete:
+  List<ScannedPage>?`, `rotatePage(page)` → `rotatePages(list)` + `rotateOne(page)`.
+- **`exportOnly: List<ScannedPage>?`** is how a subset is exported. Do not route a
+  batch export through `showPdfExportSheet` — that exports the whole document.
+- **Motion rules used here:** press → `Motion.press`; tap pop → `Motion.bouncy`;
+  colour/fade → `Motion.fade` / 120–180 ms tweens; arrivals → `Motion.emphasized`.
+  Animate `alpha`, `translation` and `scale` **only** — never a layout property, and
+  never a `Modifier.offset`/size in a loop.
+
+### ⚠️ Repo hygiene (found while re-reading the tree — not changed)
+
+1. **293 MB of committed binaries** in `adobe-scan/` (+ 49 MB `indymobile/apks/base.apk`,
+   + 81 MB `docs/original_apk_binaries/`). Two files are ~65 MB and one is 49 MB —
+   approaching GitHub's 100 MB limit, and every clone pays for it. AGENTS.md §2.5 says
+   no binaries. Recommend release assets or external storage, text artifacts only.
+2. **The Adobe material cannot ship.** `libMagicClean.so`, the three `.tflite` models
+   and the decompiled sources are Adobe-proprietary. They are legitimate as *behavioural
+   reference* (thresholds, state machines, tensor shapes) but the weights and the code
+   cannot be linked into this app without a licence, and §2 forbids decompiled code in
+   shipping paths. Port the algorithm, never the artifact.
+3. `app/src/main/assets/border_detect_224.tflite` is tracked while `.gitignore` ignores
+   `app/src/main/assets/models/` — the build's `VerifyBorderModelTask` is the only thing
+   keeping that honest. Fine today; worth remembering if the asset moves.
+
 ## 6al. Round 49: the reader's bottom shelf and swipe paging (Arena, 2026-10-27)
 
 **Edited:** `ui/common/ZoomablePageView.kt` (signature change), `ui/viewer/PageViewerScreen.kt`.

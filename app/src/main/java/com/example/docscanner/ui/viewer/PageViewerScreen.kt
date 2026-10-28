@@ -4,9 +4,14 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
-import androidx.compose.foundation.Image
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -26,8 +31,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.ChevronLeft
-import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Crop
@@ -72,7 +75,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.theme.DocShapes
+import com.example.docscanner.theme.Motion
 import com.example.docscanner.theme.pressScale
+import com.example.docscanner.ui.common.BarHairline
+import com.example.docscanner.ui.common.ExpressiveActionBar
+import com.example.docscanner.ui.common.ExpressiveActionItem
+import com.example.docscanner.ui.common.ExpressivePager
 import com.example.docscanner.ui.common.PillButton
 import com.example.docscanner.ui.common.ZoomablePageView
 import com.example.docscanner.ui.common.rememberPageImage
@@ -298,90 +306,77 @@ fun PageViewerScreen(
 
         // ---- bottom shelf: where you are, and what you can do here -----------
         //
-        // One container rather than a pager pill above an action bar. Two floating
-        // pills stacked at the bottom of a page is two things to aim at and twice
-        // the space taken from the page; the page counter belongs to the bar the
-        // same way a page number belongs to the foot of a sheet.
-        Surface(
-            shape = DocShapes.sheet,
-            color = Color.Black.copy(alpha = 0.55f),
+        // One container, built from the app's expressive action bar: pager first
+        // because it is the thing you use most while reading, then the page's verbs.
+        // The bar is translucent so the page keeps running underneath it — an opaque
+        // slab here would crop the paper, which is the opposite of what a reader is
+        // for.
+        ExpressiveActionBar(
+            containerColor = Color.Black.copy(alpha = 0.55f),
+            // Round on *all* corners: this bar floats with a margin around it, so the
+            // sheet shape (top-only) would leave two square bottom corners hanging in
+            // the middle of the page.
+            shape = DocShapes.card,
+            shadowElevation = 0.dp,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 .padding(horizontal = 12.dp, vertical = 12.dp)
         ) {
-            Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                // Only for a document that can actually be paged. A "1 / 1" row with
-                // two dead arrows is furniture.
-                if (pages.size > 1) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        ViewerPageStep(
-                            icon = Icons.Default.ChevronLeft,
-                            description = "Previous page",
-                            enabled = safeIndex > 0,
-                            onClick = { currentPageIndex = (safeIndex - 1).coerceAtLeast(0) }
-                        )
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier
-                                .padding(horizontal = 10.dp)
-                                .width(96.dp)
-                        ) {
-                            Text(
-                                "${safeIndex + 1} / ${pages.size}",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = Color.White
-                            )
-                            // Nothing in this composable reads `scale` any more, so a
-                            // pinch recomposes none of it. The badge subscribes to the
-                            // state object itself and re-reads only when the whole
-                            // percentage changes — a few times a pinch instead of once
-                            // a frame.
-                            ViewerZoomBadge(scaleState = scaleState)
-                        }
-                        ViewerPageStep(
-                            icon = Icons.Default.ChevronRight,
-                            description = "Next page",
-                            enabled = safeIndex < pages.size - 1,
-                            onClick = {
-                                currentPageIndex = (safeIndex + 1).coerceAtMost(pages.size - 1)
-                            }
-                        )
-                    }
-                }
-
-                Row(
+            if (pages.size > 1) {
+                ExpressivePager(
+                    index = safeIndex,
+                    count = pages.size,
+                    onPrev = { currentPageIndex = (safeIndex - 1).coerceAtLeast(0) },
+                    onNext = {
+                        currentPageIndex = (safeIndex + 1).coerceAtMost(pages.size - 1)
+                    },
+                    contentColor = Color.White,
+                    // The rail is white-on-dark, not the theme accent: the accent is
+                    // tuned for a light surface and disappears against a photograph.
+                    railColor = Color.White.copy(alpha = 0.20f),
+                    accentColor = Color.White,
+                    trailing = { ViewerZoomBadge(scaleState = scaleState) },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 2.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    ViewerActionButton(
-                        label = "Crop",
-                        icon = Icons.Default.Crop,
-                        onClick = { currentPage?.let { onNavigateToCrop(it.id) } }
-                    )
-                    ViewerActionButton(
-                        label = "Annotate",
-                        icon = Icons.Outlined.Draw,
-                        onClick = { showMarkup = true }
-                    )
-                    ViewerActionButton(
-                        label = "Rotate",
-                        icon = Icons.Default.RotateRight,
-                        onClick = { rotateCurrentPage() }
-                    )
-                    ViewerMoreButton(
-                        onSign = { showSignPad = true },
-                        onExport = { showExportSheet = true }
-                    )
-                }
+                        .padding(top = 8.dp, bottom = 2.dp)
+                )
+                BarHairline(color = Color.White.copy(alpha = 0.08f))
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp, bottom = 2.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ExpressiveActionItem(
+                    label = "Crop",
+                    icon = Icons.Default.Crop,
+                    onClick = { currentPage?.let { onNavigateToCrop(it.id) } },
+                    contentColor = Color.White,
+                    plateColor = ViewerPlate
+                )
+                ExpressiveActionItem(
+                    label = "Annotate",
+                    icon = Icons.Outlined.Draw,
+                    onClick = { showMarkup = true },
+                    contentColor = Color.White,
+                    plateColor = ViewerPlate
+                )
+                ExpressiveActionItem(
+                    label = "Rotate",
+                    icon = Icons.Default.RotateRight,
+                    onClick = { rotateCurrentPage() },
+                    contentColor = Color.White,
+                    plateColor = ViewerPlate
+                )
+                ViewerMoreAction(
+                    onSign = { showSignPad = true },
+                    onExport = { showExportSheet = true }
+                )
             }
         }
     }
@@ -527,6 +522,15 @@ private const val MAX_VIEWER_ZOOM = 4f
 /** Dark, slightly warm backdrop: a page reads as paper against it. */
 private val ViewerBackdrop = Color(0xFF101215)
 
+/**
+ * The plate behind an icon in the reader's bar.
+ *
+ * A dark page behind a translucent black bar is not enough contrast on its own for a
+ * 19 dp glyph, so each action sits on a 14 % white plate: the icon reads as a control
+ * rather than as part of the photograph.
+ */
+private val ViewerPlate = Color.White.copy(alpha = 0.14f)
+
 @Composable
 private fun ViewerGlassButton(
     icon: ImageVector,
@@ -568,60 +572,47 @@ private fun ViewerZoomBadge(scaleState: FloatState) {
     val shown by remember(scaleState) {
         derivedStateOf { (scaleState.floatValue * 100).toInt() }
     }
-    if (shown > 101) {
+    // Fades and springs in rather than appearing: the badge is the only feedback
+    // that a pinch *did* something while the fingers are still down, and a value that
+    // pops into existence reads as a glitch in the chrome.
+    AnimatedVisibility(
+        visible = shown > 101,
+        enter = fadeIn(Motion.fade) + scaleIn(Motion.bouncy, initialScale = 0.7f),
+        exit = fadeOut(tween(120)) + scaleOut(tween(140), targetScale = 0.7f)
+    ) {
         Text(
             "$shown%",
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(start = 4.dp)
         )
     }
 }
 
 /**
- * One page action in the viewer's bottom shelf: icon above label, same shape as the
- * document screen's bar so the two read as the same control in two places.
+ * The rare page actions, behind one cell of the bar.
+ *
+ * The cell is an ordinary [ExpressiveActionItem] — the menu is anchored on a `Box`
+ * around it — so "More" is not a differently-shaped control that happens to be last.
+ * Signing is the one that used to be impossible from here at all.
  */
 @Composable
-private fun ViewerActionButton(
-    label: String,
-    icon: ImageVector,
-    onClick: () -> Unit
-) {
-    val interactions = remember { MutableInteractionSource() }
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-        modifier = Modifier
-            .clip(DocShapes.cardSmall)
-            .pressScale(interactions, pressedScale = 0.94f)
-            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-    ) {
-        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(21.dp))
-        Spacer(Modifier.height(3.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = Color.White
-        )
-    }
-}
-
-/** The rare actions, behind one tap — sign and export apply here, delete does not. */
-@Composable
-private fun ViewerMoreButton(
+private fun ViewerMoreAction(
     onSign: () -> Unit,
     onExport: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        ViewerActionButton(
+        ExpressiveActionItem(
             label = "More",
             icon = Icons.Default.MoreVert,
-            onClick = { expanded = true }
+            onClick = { expanded = true },
+            contentColor = Color.White,
+            plateColor = ViewerPlate
         )
-        // Opaque menu: the backdrop behind it is a dark page and a translucent menu
-        // over it is unreadable at the bottom of the screen.
+        // Opaque menu: the backdrop behind it is a dark page, and a translucent menu
+        // over one is unreadable at the bottom of the screen.
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DropdownMenuItem(
                 text = { Text("Sign this page") },
@@ -640,28 +631,5 @@ private fun ViewerMoreButton(
                 }
             )
         }
-    }
-}
-
-@Composable
-private fun ViewerPageStep(
-    icon: ImageVector,
-    description: String,
-    enabled: Boolean,
-    onClick: () -> Unit
-) {
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(38.dp)
-            .clip(CircleShape)
-            .clickable(enabled = enabled, onClick = onClick)
-    ) {
-        Icon(
-            icon,
-            contentDescription = description,
-            tint = Color.White.copy(alpha = if (enabled) 1f else 0.3f),
-            modifier = Modifier.size(20.dp)
-        )
     }
 }
