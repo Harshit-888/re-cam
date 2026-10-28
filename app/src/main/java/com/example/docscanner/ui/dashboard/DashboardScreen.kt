@@ -11,10 +11,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
@@ -34,6 +36,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -63,6 +66,7 @@ import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Sort
@@ -138,6 +142,7 @@ import com.example.docscanner.ui.common.TonalPillButton
 import com.example.docscanner.ui.pdf.PdfExportSheet
 import com.example.docscanner.util.DocumentNaming
 import com.example.docscanner.util.DocumentSearch
+import com.example.docscanner.util.DocumentShare
 import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.PageImageLoader
 import com.example.docscanner.util.PerfTrace
@@ -231,6 +236,9 @@ fun DashboardScreen(
     var isSelecting by remember { mutableStateOf(false) }
     var selection by remember { mutableStateOf<List<String>>(emptyList()) }
     var mergeRequest by remember { mutableStateOf<List<Document>>(emptyList()) }
+    // Sharing a selection writes one PDF per document, which takes long enough to be
+    // visible: the pill stays disabled and says so instead of taking a second tap.
+    var isSharing by remember { mutableStateOf(false) }
     val endSelection: () -> Unit = remember {
         {
             isSelecting = false
@@ -535,6 +543,35 @@ fun DashboardScreen(
     // Tell the debug frame monitor when a gesture starts and ends, so it can print
     // one line per scroll instead of a rolling window that averages the idle time
     // in. No-op in release builds.
+    // ---- the header condenses as the library scrolls up -------------------------
+    //
+    // The folder pills and the documents/pages pills are *context*: they answer "what
+    // am I looking at" while you arrive, and then they are two rows of screen you
+    // cannot read a document on. So they collapse as the list moves up and come back
+    // the moment it returns to the top — and the facts they carried do not vanish, they
+    // move into the search field as its caption, which is where the eye already is.
+    //
+    // Two thresholds, not one: collapsing at `offset > 24` and restoring at
+    // `offset < 8` is what stops a header that is *also* changing the viewport height
+    // from flickering against its own trigger. `snapshotFlow` + a plain boolean means
+    // this never recomposes the whole screen per scroll pixel.
+    var headerCondensed by remember { mutableStateOf(false) }
+    LaunchedEffect(gridState, listState, isGridView) {
+        snapshotFlow {
+            if (isGridView) {
+                gridState.firstVisibleItemIndex to gridState.firstVisibleItemScrollOffset
+            } else {
+                listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+            }
+        }
+            .collect { (index, offset) ->
+                when {
+                    index > 0 || offset > 28 -> if (!headerCondensed) headerCondensed = true
+                    index == 0 && offset < 8 -> if (headerCondensed) headerCondensed = false
+                }
+            }
+    }
+
     LaunchedEffect(gridState, listState) {
         snapshotFlow { gridState.isScrollInProgress || listState.isScrollInProgress }
             .distinctUntilChanged()
@@ -698,7 +735,37 @@ fun DashboardScreen(
             if (isSelecting) {
                 SelectionActionBar(
                     count = selection.size,
-                    mergeEnabled = selection.size >= 2,
+                    shareEnabled = selection.isNotEmpty() && !isSharing,
+                    mergeEnabled = selection.size >= 2 && !isSharing,
+                    onShare = {
+                        val byId = documents.associateBy { it.id }
+                        val docs = selection.mapNotNull { byId[it] }
+                        if (docs.isEmpty()) {
+                            endSelection()
+                        } else {
+                            isSharing = true
+                            // Writing several PDFs takes real time; say what is
+                            // happening rather than leaving a dead tap behind.
+                            Toast.makeText(
+                                context,
+                                "Preparing ${docs.size} PDF${if (docs.size == 1) "" else "s"}…",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            scope.launch {
+                                val shared = DocumentShare.shareDocuments(context, docs, settings)
+                                isSharing = false
+                                if (shared == 0) {
+                                    Toast.makeText(
+                                        context,
+                                        "Nothing to share — those documents have no pages",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                } else {
+                                    endSelection()
+                                }
+                            }
+                        }
+                    },
                     onMerge = {
                         // Pruned above, so this can only fail if the library changed
                         // between the tap and this line. Order follows the tap order,
@@ -738,47 +805,85 @@ fun DashboardScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            // What the header is *about*, in the words the pills use.
+            val headerSummary = buildString {
+                append(folders.firstOrNull { it.id == selectedFolderId }?.name ?: "All documents")
+                append(" · ")
+                append(activeDocs.size)
+                append(if (activeDocs.size == 1) " document" else " documents")
+                if (pageCount > 0) {
+                    append(" · ")
+                    append(pageCount)
+                    append(if (pageCount == 1) " page" else " pages")
+                }
+            }
+
             MagicSearchField(
                 query = searchQuery,
                 onQueryChange = { searchQuery = it },
+                // Condensed, the field carries the pills' facts as its caption.
+                caption = headerSummary.takeIf { headerCondensed },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 4.dp)
                     .entrance(0)
             )
 
-            FolderFilterRow(
-                folders = folders,
-                selectedFolderId = selectedFolderId,
-                onSelectFolder = { selectedFolderId = it },
-                onAddFolderClick = { showFolderDialog = true },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 10.dp)
-                    .entrance(1)
-            )
-
-            // A row of facts, not a sentence: documents · pages · current sort.
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .entrance(2),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+            // The folder row and the facts row collapse as one block.
+            //
+            // Height, not alpha: the point is to give the grid the space back, and a
+            // block that faded in place would keep holding 90 dp of nothing. They leave
+            // *towards the top* and come back from it, which is the direction the
+            // content underneath is already moving.
+            AnimatedVisibility(
+                visible = !headerCondensed,
+                enter = expandVertically(
+                    animationSpec = tween(200, easing = Motion.EaseOut),
+                    expandFrom = Alignment.Top
+                ) + fadeIn(tween(140)),
+                exit = shrinkVertically(
+                    animationSpec = tween(170, easing = Motion.EaseIn),
+                    shrinkTowards = Alignment.Top
+                ) + fadeOut(tween(90))
             ) {
-                InfoPill("${activeDocs.size} ${if (activeDocs.size == 1) "document" else "documents"}")
-                if (pageCount > 0) {
-                    InfoPill("$pageCount ${if (pageCount == 1) "page" else "pages"}")
+                Column {
+                    FolderFilterRow(
+                        folders = folders,
+                        selectedFolderId = selectedFolderId,
+                        onSelectFolder = { selectedFolderId = it },
+                        onAddFolderClick = { showFolderDialog = true },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp)
+                            .entrance(1)
+                    )
+
+                    // A row of facts, not a sentence: documents · pages · current sort.
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp)
+                            .entrance(2),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        InfoPill(
+                            "${activeDocs.size} " +
+                                if (activeDocs.size == 1) "document" else "documents"
+                        )
+                        if (pageCount > 0) {
+                            InfoPill("$pageCount ${if (pageCount == 1) "page" else "pages"}")
+                        }
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            sortOption.label,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
-                Spacer(Modifier.weight(1f))
-                Text(
-                    sortOption.label,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
             }
 
             Spacer(Modifier.height(12.dp))
@@ -969,6 +1074,8 @@ private fun SelectionTopBar(
 private fun SelectionActionBar(
     count: Int,
     mergeEnabled: Boolean,
+    shareEnabled: Boolean,
+    onShare: () -> Unit,
     onMerge: () -> Unit
 ) {
     // The bar arrives with its contents, not with its height.
@@ -1020,9 +1127,20 @@ private fun SelectionActionBar(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(10.dp))
+            // Share first, and tonal: sending the scans somewhere and merging them are
+            // different jobs, and only one of them needs the whole bar to itself.
             PillButton(
-                text = "Merge PDF",
+                text = "Share",
+                icon = Icons.Default.Share,
+                enabled = shareEnabled,
+                container = MaterialTheme.colorScheme.secondaryContainer,
+                content = MaterialTheme.colorScheme.onSecondaryContainer,
+                onClick = onShare
+            )
+            Spacer(Modifier.width(8.dp))
+            PillButton(
+                text = "Merge",
                 icon = Icons.Default.CallMerge,
                 enabled = mergeEnabled,
                 onClick = onMerge
@@ -1279,7 +1397,16 @@ private fun CaptureFab(onClick: () -> Unit) {
 fun MagicSearchField(
     query: String,
     onQueryChange: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /**
+     * The facts the header pills carry — folder, document count, page count — shown as
+     * the field's own caption once those pills have condensed away.
+     *
+     * The alternative was letting them disappear outright, which makes a scrolled
+     * library silently lose the answer to "how many pages is this folder". They move
+     * here instead: same words, one row up, next to the thing that is still on screen.
+     */
+    caption: String? = null
 ) {
     val scheme = MaterialTheme.colorScheme
     val fieldColors = TextFieldDefaults.colors(
@@ -1321,6 +1448,31 @@ fun MagicSearchField(
                 }
             }
         },
+        supportingText = {
+            AnimatedVisibility(
+                visible = caption != null,
+                // Asymmetric, like every other enter/exit in the app: the caption
+                // arrives a little slower than it leaves, so scrolling up does not
+                // produce a stutter of rows appearing and disappearing.
+                enter = expandVertically(
+                    animationSpec = tween(180, easing = Motion.EaseOut),
+                    expandFrom = Alignment.Top
+                ) + fadeIn(tween(120)),
+                exit = shrinkVertically(
+                    animationSpec = tween(140, easing = Motion.EaseIn),
+                    shrinkTowards = Alignment.Top
+                ) + fadeOut(tween(90))
+            ) {
+                Text(
+                    text = caption.orEmpty(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 6.dp, end = 6.dp)
+                )
+            }
+        },
         singleLine = true,
         shape = DocShapes.pill,
         textStyle = MaterialTheme.typography.bodyMedium,
@@ -1330,7 +1482,9 @@ fun MagicSearchField(
         // a fresh `TextFieldColors` each time is an allocation per character for
         // a value that only changes with the theme.
         colors = fieldColors,
-        modifier = modifier.height(54.dp)
+        // `heightIn`, not `height`: the caption lives inside this field, so the field
+        // has to be allowed to grow by one line when the header condenses.
+        modifier = modifier.heightIn(min = 54.dp)
     )
 }
 

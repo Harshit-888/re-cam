@@ -4,19 +4,29 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,6 +34,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -32,10 +43,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Redo
 import androidx.compose.material.icons.filled.RotateRight
+import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material.icons.outlined.Draw
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.TextFields
@@ -66,8 +81,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -84,10 +104,23 @@ import com.example.docscanner.ui.common.ExpressivePager
 import com.example.docscanner.ui.common.PillButton
 import com.example.docscanner.ui.common.ZoomablePageView
 import com.example.docscanner.ui.common.rememberPageImage
+import com.example.docscanner.model.MarkupTool
+import com.example.docscanner.ui.editor.A4_ASPECT
+import com.example.docscanner.ui.editor.MarkupInkColors
+import com.example.docscanner.ui.editor.MarkupInkSurface
+import com.example.docscanner.ui.editor.MarkupSession
+import com.example.docscanner.ui.editor.MarkupWidthLabels
+import com.example.docscanner.ui.editor.MarkupWidths
+import com.example.docscanner.ui.editor.inkLabel
+import com.example.docscanner.ui.editor.persistMarkup
+import com.example.docscanner.ui.editor.rotateBitmap
+import com.example.docscanner.ui.editor.toRotatableBitmap
 import com.example.docscanner.ui.pdf.PdfExportSheet
 import com.example.docscanner.ui.signature.SignaturePadDialog
 import com.example.docscanner.util.PageRenderer
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Full-bleed page reader.
@@ -113,8 +146,7 @@ fun PageViewerScreen(
     pageId: String,
     repository: ScannerRepository,
     onNavigateBack: () -> Unit,
-    onNavigateToCrop: (pageId: String) -> Unit,
-    onNavigateToMarkup: (pageId: String) -> Unit
+    onNavigateToCrop: (pageId: String) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -157,33 +189,126 @@ fun PageViewerScreen(
         offset = Offset.Zero
     }
 
-    // Re-bake so the rotation is real everywhere — the viewer, the grid and the PDF —
-    // and so the crossfade has a new bitmap to land on. Reset the transform afterwards:
-    // the page just turned, and keeping a 2x pan from the old orientation points it at
-    // a part of the page that no longer exists there.
-    // True while a rotate is being baked. The button turns into a spinner for that
-    // window, because a page that stays still for half a second after a tap reads as
-    // "the button did nothing" — the exact complaint this fixes.
+    // ---- annotate, in place ---------------------------------------------------
+    //
+    // Annotate used to push a route: the page you were reading disappeared, a new
+    // screen with its own app bar opened, and the ink you drew was on a *different*
+    // copy of the same pixels. Nothing about that was necessary — the ink lands in
+    // `ScannedPage.markup` and the bake rewrites the same file the reader is already
+    // showing. So the shelf now swaps in place: the way out is the same gesture as
+    // every other shelf, and the page never leaves your eyes.
+    var annotating by remember(currentPage?.id) { mutableStateOf(false) }
+    // Bumped on cancel/save so the next session starts from the stored strokes rather
+    // than from whatever was half-drawn last time.
+    var annotateEpoch by remember(currentPage?.id) { mutableIntStateOf(0) }
+    val markup = remember(currentPage?.id, annotateEpoch) {
+        MarkupSession(currentPage?.markup.orEmpty())
+    }
+    var isSavingMarkup by remember(currentPage?.id) { mutableStateOf(false) }
+
+    // The page shrinks a little while the taller annotate shelf is up, animated so the
+    // reader does not jump: the shelf grows from the bottom and the paper makes room
+    // for it in the same 220 ms.
+    val pageBottomInset by animateDpAsState(
+        targetValue = if (annotating) AnnotateShelfInset else ReaderShelfInset,
+        animationSpec = tween(220, easing = Motion.EaseOut),
+        label = "viewerPageBottomInset"
+    )
+
+    // Back leaves annotate mode, not the page: the shelf is a mode, and the platform
+    // back gesture is how a mode is left.
+    BackHandler(enabled = annotating && !isSavingMarkup) {
+        annotating = false
+        annotateEpoch++
+    }
+
+    fun saveMarkup() {
+        val page = currentPage ?: return
+        if (isSavingMarkup) return
+        isSavingMarkup = true
+        val strokes = markup.strokes
+        scope.launch {
+            // The bake is a full-resolution decode, warp and filter pass — off the main
+            // thread, or the shelf stutters while the toast-free save runs.
+            withContext(Dispatchers.IO) {
+                persistMarkup(context, repository, docId, page.id, strokes)
+            }
+            isSavingMarkup = false
+            annotating = false
+            annotateEpoch++
+            Toast.makeText(context, "Annotation saved", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ---- rotate --------------------------------------------------------------
+    //
+    // A rotate is a *bake*: decode the pristine page, warp, filter, encode, write. That
+    // is hundreds of milliseconds on a real page, and until it finished the page sat
+    // there unchanged — which is the whole of the "rotate is slow" report. It is not
+    // made faster by cheating on the bake (the pixels must stay exactly what the
+    // pipeline produces); it is made to *feel* instant, by turning the page already
+    // decoded on screen the moment the finger lifts and letting the bake replace it
+    // when it lands.
     var isRotating by remember(currentPage?.id) { mutableStateOf(false) }
+    // The turned preview, and the bitmap it was turned from — the bake's arrival is
+    // detected by the *identity* of the newly loaded page, which is exactly when the
+    // preview stops being needed.
+    var optimisticPage by remember(currentPage?.id) { mutableStateOf<ImageBitmap?>(null) }
+    var rotateBaseline by remember(currentPage?.id) { mutableStateOf<ImageBitmap?>(null) }
+
+    LaunchedEffect(pageImage) {
+        val baseline = rotateBaseline
+        if (baseline != null && pageImage != null && pageImage !== baseline) {
+            optimisticPage = null
+            rotateBaseline = null
+            isRotating = false
+        }
+    }
+
+    val shownPage = optimisticPage ?: pageImage
 
     fun rotateCurrentPage() {
         val page = currentPage ?: return
         if (isRotating) return
+        val source = pageImage ?: return
         isRotating = true
         scale = 1f
         offset = Offset.Zero
         scope.launch {
-            val latest = repository.getDocumentById(docId)
-                ?.pages?.find { it.id == page.id }
-            val baked = latest?.let {
-                runCatching {
-                    PageRenderer.bake(
-                        context,
-                        it.copy(rotationDegrees = (it.rotationDegrees + 90f) % 360f)
-                    )
-                }.getOrNull()
+            // A 90° turn of the decoded page is a memory copy, not a pipeline pass: it
+            // costs a few milliseconds even at 1600 px, and it happens before the first
+            // frame after the tap.
+            val turned = withContext(Dispatchers.Default) {
+                source.toRotatableBitmap()
+                    ?.let { runCatching { rotateBitmap(it, 90) }.getOrNull() }
+                    ?.asImageBitmap()
             }
-            if (baked != null) repository.updatePage(docId, page.id) { baked }
+            if (turned != null) {
+                optimisticPage = turned
+                rotateBaseline = source
+            }
+            withContext(Dispatchers.IO) {
+                val latest = repository.getDocumentById(docId)
+                    ?.pages?.find { it.id == page.id }
+                val baked = latest?.let {
+                    runCatching {
+                        PageRenderer.bake(
+                            context,
+                            it.copy(rotationDegrees = (it.rotationDegrees + 90f) % 360f)
+                        )
+                    }.getOrNull()
+                }
+                if (baked != null) repository.updatePage(docId, page.id) { baked }
+                baked != null
+            }.also { bakedOk ->
+                // Only a *failed* bake clears the turned preview here. A successful one
+                // keeps it up until the re-decoded page arrives, so the reader never
+                // flickers back to the unturned bitmap for a frame.
+                if (!bakedOk && rotateBaseline === source) {
+                    optimisticPage = null
+                    rotateBaseline = null
+                }
+            }
             isRotating = false
         }
     }
@@ -208,6 +333,34 @@ fun PageViewerScreen(
                     color = Color.White,
                     modifier = Modifier.align(Alignment.Center)
                 )
+            }
+            annotating -> {
+                // Annotate, on the page you are reading. The surface is sized to the
+                // page's own aspect so a stroke lands where the finger was at bake
+                // resolution — the ink is normalised against this box.
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(start = 6.dp, end = 6.dp, top = 68.dp, bottom = pageBottomInset)
+                ) {
+                    val image = shownPage
+                    val aspect = image?.let { it.width.toFloat() / it.height.toFloat() }
+                        ?: A4_ASPECT
+                    val surfaceWidth = minOf(maxWidth, maxHeight * aspect)
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        MarkupInkSurface(
+                            session = markup,
+                            image = image,
+                            modifier = Modifier.size(
+                                width = surfaceWidth,
+                                height = surfaceWidth / aspect
+                            )
+                        )
+                    }
+                }
             }
             else -> {
                 // One gesture for the whole app: pinch, clamped pan, and a
@@ -252,7 +405,7 @@ fun PageViewerScreen(
                     // from a tap as often as from a swipe, and a slide from a tap
                     // would imply movement that did not happen.
                     Crossfade(
-                        targetState = pageImage,
+                        targetState = shownPage,
                         animationSpec = tween(durationMillis = 180),
                         label = "pageSwap",
                         modifier = Modifier.fillMaxSize()
@@ -271,7 +424,7 @@ fun PageViewerScreen(
                                     start = 6.dp,
                                     end = 6.dp,
                                     top = 68.dp,
-                                    bottom = 132.dp
+                                    bottom = pageBottomInset
                                 )
                         )
                     }
@@ -340,88 +493,149 @@ fun PageViewerScreen(
                 .navigationBarsPadding()
                 .padding(horizontal = 12.dp, vertical = 12.dp)
         ) {
-            if (pages.size > 1) {
-                ExpressivePager(
-                    index = safeIndex,
-                    count = pages.size,
-                    onPrev = { currentPageIndex = (safeIndex - 1).coerceAtLeast(0) },
-                    onNext = {
-                        currentPageIndex = (safeIndex + 1).coerceAtMost(pages.size - 1)
-                    },
-                    contentColor = Color.White,
-                    // The rail is white-on-dark, not the theme accent: the accent is
-                    // tuned for a light surface and disappears against a photograph.
-                    railColor = Color.White.copy(alpha = 0.20f),
-                    accentColor = Color.White,
-                    trailing = { ViewerZoomBadge(scaleState = scaleState) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 2.dp)
-                )
-                BarHairline(color = Color.White.copy(alpha = 0.08f))
-            }
-
-            ConnectedButtonGroup(
-                actions = listOf(
-                    ConnectedAction(
-                        label = "Crop",
-                        icon = Icons.Default.Crop,
-                        onClick = { currentPage?.let { onNavigateToCrop(it.id) } }
-                    ),
-                    ConnectedAction(
-                        label = "Annotate",
-                        icon = Icons.Outlined.Draw,
-                        onClick = { currentPage?.let { onNavigateToMarkup(it.id) } }
-                    ),
-                    ConnectedAction(
-                        label = if (isRotating) "Rotating" else "Rotate",
-                        icon = Icons.Default.RotateRight,
-                        onClick = { rotateCurrentPage() },
-                        enabled = !isRotating
-                    ),
-                    // The rare actions live behind this cell's menu instead of a fifth
-                    // button: sign and export apply here, delete does not.
-                    ConnectedAction(
-                        label = "More",
-                        icon = Icons.Default.MoreVert,
-                        // The cell is the menu: no action of its own, no chevron.
-                        menuContent = { dismiss ->
-                            DropdownMenuItem(
-                                text = { Text("Sign this page") },
-                                leadingIcon = {
-                                    Icon(Icons.Outlined.Draw, contentDescription = null)
+            // Two shelves, one slot.
+            //
+            // Annotate used to be a route: tapping it pushed a screen, the page you
+            // were reading vanished under a new app bar, and back meant something
+            // different than it does here. It is a *mode of this screen*, so it gets
+            // this screen's bottom shelf — swapped, not stacked, and swapped **from the
+            // bottom**, which is where it came from conceptually and where the thumb
+            // already is.
+            AnimatedContent(
+                targetState = annotating,
+                transitionSpec = {
+                    if (targetState) {
+                        // Annotate settings rise into the slot the verbs were in.
+                        (
+                            slideInVertically(
+                                animationSpec = tween(240, easing = Motion.EaseOut),
+                                initialOffsetY = { it }
+                            ) + fadeIn(tween(150))
+                            ).togetherWith(fadeOut(tween(120)))
+                    } else {
+                        // They drop back out and the verbs fade in place — a reader
+                        // shelf that slid in from below would read as a new bar being
+                        // thrown at the user, when in fact nothing moved but a mode.
+                        fadeIn(tween(180)).togetherWith(
+                            slideOutVertically(
+                                animationSpec = tween(200, easing = Motion.EaseIn),
+                                targetOffsetY = { it }
+                            ) + fadeOut(tween(120))
+                        )
+                    }
+                },
+                label = "viewerShelf"
+            ) { editing ->
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    if (editing) {
+                        AnnotateShelf(
+                            markup = markup,
+                            isSaving = isSavingMarkup,
+                            onCancel = {
+                                annotating = false
+                                annotateEpoch++
+                            },
+                            onSave = { saveMarkup() }
+                        )
+                    } else {
+                        if (pages.size > 1) {
+                            ExpressivePager(
+                                index = safeIndex,
+                                count = pages.size,
+                                onPrev = { currentPageIndex = (safeIndex - 1).coerceAtLeast(0) },
+                                onNext = {
+                                    currentPageIndex = (safeIndex + 1).coerceAtMost(pages.size - 1)
                                 },
-                                onClick = {
-                                    dismiss()
-                                    showSignPad = true
-                                }
+                                contentColor = Color.White,
+                                // The rail is white-on-dark, not the theme accent: the
+                                // accent is tuned for a light surface and disappears
+                                // against a photograph.
+                                railColor = Color.White.copy(alpha = 0.20f),
+                                accentColor = Color.White,
+                                trailing = { ViewerZoomBadge(scaleState = scaleState) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp, bottom = 2.dp)
                             )
-                            DropdownMenuItem(
-                                text = { Text("Export PDF") },
-                                leadingIcon = {
-                                    Icon(Icons.Outlined.PictureAsPdf, contentDescription = null)
-                                },
-                                onClick = {
-                                    dismiss()
-                                    showExportSheet = true
-                                }
-                            )
+                            BarHairline(color = Color.White.copy(alpha = 0.08f))
                         }
-                    )
-                ),
-                containerColor = ViewerPlate,
-                contentColor = Color.White,
-                // No theme accent down here: `primary` is tuned for a light surface and
-                // would flash purple through a translucent bar over a photograph.
-                accentColor = Color.White,
-                modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
-            )
+
+                        ConnectedButtonGroup(
+                            actions = listOf(
+                                ConnectedAction(
+                                    label = "Crop",
+                                    icon = Icons.Default.Crop,
+                                    onClick = { currentPage?.let { onNavigateToCrop(it.id) } }
+                                ),
+                                ConnectedAction(
+                                    label = "Annotate",
+                                    icon = Icons.Outlined.Draw,
+                                    // No route: the shelf below becomes the annotate
+                                    // settings, over the page that was already open.
+                                    onClick = {
+                                        annotateEpoch++
+                                        annotating = true
+                                    }
+                                ),
+                                ConnectedAction(
+                                    label = "Rotate",
+                                    icon = Icons.Default.RotateRight,
+                                    onClick = { rotateCurrentPage() },
+                                    enabled = !isRotating
+                                ),
+                                // The rare actions live behind this cell's menu instead
+                                // of a fifth button: sign and export apply here, delete
+                                // does not.
+                                ConnectedAction(
+                                    label = "More",
+                                    icon = Icons.Default.MoreVert,
+                                    // The cell is the menu: no action of its own, no
+                                    // chevron.
+                                    menuContent = { dismiss ->
+                                        DropdownMenuItem(
+                                            text = { Text("Sign this page") },
+                                            leadingIcon = {
+                                                Icon(Icons.Outlined.Draw, contentDescription = null)
+                                            },
+                                            onClick = {
+                                                dismiss()
+                                                showSignPad = true
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Export PDF") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Outlined.PictureAsPdf,
+                                                    contentDescription = null
+                                                )
+                                            },
+                                            onClick = {
+                                                dismiss()
+                                                showExportSheet = true
+                                            }
+                                        )
+                                    }
+                                )
+                            ),
+                            containerColor = ViewerPlate,
+                            contentColor = Color.White,
+                            // No theme accent down here: `primary` is tuned for a light
+                            // surface and would flash purple through a translucent bar
+                            // over a photograph.
+                            accentColor = Color.White,
+                            onAccentColor = Color.Black,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                        )
+                    }
+                }
+            }
         }
     }
 
-    // Signing stays a dialog — it is one decision with a small pad — while annotating
-    // is a full screen of its own now (`MarkupScreen`); both re-bake on save, so the
-    // viewer, the grid thumbnail and the next PDF all read the same file.
+    // Signing stays a dialog — it is one decision with a small pad. Annotating is the
+    // shelf above, on this page; both re-bake on save, so the viewer, the grid thumbnail
+    // and the next PDF all read the same file.
 
     if (showSignPad) {
         // Signed onto the page you are reading — the same rule as the document
@@ -529,6 +743,243 @@ fun PageViewerScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * Bottom inset the page keeps clear for the reader's shelf.
+ *
+ * The page is laid out *above* the bar rather than under it: a page whose last line
+ * sits beneath a translucent slab is a line you cannot read.
+ */
+private val ReaderShelfInset = 132.dp
+
+/**
+ * The same inset while the annotate shelf is up.
+ *
+ * Taller, because annotate is three rows — tools, ink, actions — instead of one. The
+ * difference is animated by the caller, so the page makes room instead of jumping.
+ */
+private val AnnotateShelfInset = 214.dp
+
+/**
+ * Annotate settings, in the reader's own shelf.
+ *
+ * Three rows and no app bar: what the ink *is* (tool), what it looks like (colour and
+ * weight), and what to do with it (undo, redo, clear, cancel, save). Every control is a
+ * cell of the same connected group the reader's verbs use, so the shelf that replaces
+ * the verbs is visibly the same shelf — not a second, differently-built toolbar that
+ * happens to sit where the first one was.
+ *
+ * Everything here writes into one [MarkupSession]; the drawing itself is
+ * [MarkupInkSurface], over the page, and the store is the same `persistMarkup` the
+ * full-screen editor uses. Nothing about what gets saved changes with the host.
+ */
+@Composable
+private fun AnnotateShelf(
+    markup: MarkupSession,
+    isSaving: Boolean,
+    onCancel: () -> Unit,
+    onSave: () -> Unit
+) {
+    // Whiteout paints the paper, so a pen colour has no meaning while it is selected:
+    // the swatches grey out rather than silently accepting a tap that would do nothing.
+    val inkEnabled = markup.tool != MarkupTool.WHITEOUT
+
+    // The shelf answers the finger too. A mode that arrived from the bottom can be
+    // *pushed* back down: dragging the handle moves the whole shelf with the thumb, and
+    // past 84 dp it leaves — which is the same grammar as a bottom sheet, applied where
+    // the user already is instead of pushing a sheet over the page.
+    var dragY by remember { mutableFloatStateOf(0f) }
+    val dragScope = rememberCoroutineScope()
+    val settle: () -> Unit = {
+        dragScope.launch {
+            animate(
+                initialValue = dragY,
+                targetValue = 0f,
+                animationSpec = tween(200, easing = Motion.EaseOut)
+            ) { value, _ -> dragY = value }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                translationY = dragY
+                // Fades as it is pulled away, so it cannot look like the bar detached
+                // from the screen while it is being moved.
+                alpha = (1f - (dragY / (AnnotateShelfInset.toPx() * 1.6f))).coerceIn(0f, 1f)
+            }
+            .padding(top = 2.dp, bottom = 2.dp)
+    ) {
+        // The grab handle: 36 × 4 dp of white at 30 %, the same one Google's own
+        // sheets use, and the whole 24 dp strip is the target rather than the bar.
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(24.dp)
+                .pointerInput(Unit) {
+                    detectVerticalDragGestures(
+                        onVerticalDrag = { change, dy ->
+                            change.consume()
+                            dragY = (dragY + dy).coerceAtLeast(0f)
+                        },
+                        onDragEnd = {
+                            if (dragY > 84f) {
+                                dragY = 0f
+                                onCancel()
+                            } else {
+                                settle()
+                            }
+                        },
+                        onDragCancel = { settle() }
+                    )
+                }
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(width = 36.dp, height = 4.dp)
+                    .clip(DocShapes.pill)
+                    .background(Color.White.copy(alpha = 0.30f))
+            )
+        }
+
+        ConnectedButtonGroup(
+            actions = listOf(
+                ConnectedAction(
+                    label = "Pen",
+                    selected = markup.tool == MarkupTool.PEN,
+                    onClick = { markup.tool = MarkupTool.PEN }
+                ),
+                ConnectedAction(
+                    label = "Marker",
+                    selected = markup.tool == MarkupTool.HIGHLIGHTER,
+                    onClick = { markup.tool = MarkupTool.HIGHLIGHTER }
+                ),
+                ConnectedAction(
+                    label = "Erase",
+                    selected = markup.tool == MarkupTool.WHITEOUT,
+                    onClick = { markup.tool = MarkupTool.WHITEOUT }
+                )
+            ),
+            containerColor = ViewerPlate,
+            contentColor = Color.White,
+            accentColor = Color.White,
+            onAccentColor = Color.Black,
+            cellHeight = 40.dp
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            MarkupInkColors.forEach { ink ->
+                val interactions = remember { MutableInteractionSource() }
+                val chosen = inkEnabled && ink == markup.colorArgb
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .clickable(
+                            interactionSource = interactions,
+                            indication = ripple(color = Color.White.copy(alpha = 0.22f)),
+                            enabled = inkEnabled,
+                            onClickLabel = inkLabel(ink),
+                            role = Role.RadioButton,
+                            onClick = { markup.colorArgb = ink }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(22.dp)
+                            .graphicsLayer { alpha = if (inkEnabled) 1f else 0.35f }
+                            .clip(CircleShape)
+                            .background(Color(ink))
+                            .border(
+                                width = if (chosen) 3.dp else 1.dp,
+                                color = if (chosen) Color.White else Color.White.copy(alpha = 0.35f),
+                                shape = CircleShape
+                            )
+                    )
+                }
+            }
+            Spacer(Modifier.width(6.dp))
+            // A second connected group rather than a slider: three discrete weights are
+            // three decisions, and a slider you cannot hit mid-drag is worse than three
+            // cells you can.
+            ConnectedButtonGroup(
+                actions = MarkupWidths.mapIndexed { index, fraction ->
+                    ConnectedAction(
+                        label = MarkupWidthLabels[index],
+                        selected = markup.widthFraction == fraction,
+                        enabled = inkEnabled,
+                        onClick = { markup.widthFraction = fraction }
+                    )
+                },
+                modifier = Modifier.weight(1f),
+                containerColor = ViewerPlate,
+                contentColor = Color.White,
+                accentColor = Color.White,
+                onAccentColor = Color.Black,
+                cellHeight = 38.dp
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        ConnectedButtonGroup(
+            actions = listOf(
+                ConnectedAction(
+                    label = "",
+                    icon = Icons.Default.Undo,
+                    contentDescription = "Undo stroke",
+                    enabled = markup.canUndo,
+                    onClick = { markup.undo() }
+                ),
+                ConnectedAction(
+                    label = "",
+                    icon = Icons.Default.Redo,
+                    contentDescription = "Redo stroke",
+                    enabled = markup.canRedo,
+                    onClick = { markup.redo() }
+                ),
+                ConnectedAction(
+                    label = "",
+                    icon = Icons.Default.Delete,
+                    contentDescription = "Clear all ink",
+                    enabled = markup.canUndo,
+                    onClick = { markup.clear() }
+                ),
+                ConnectedAction(
+                    label = "",
+                    icon = Icons.Default.Close,
+                    contentDescription = "Cancel annotation",
+                    enabled = !isSaving,
+                    onClick = onCancel
+                ),
+                ConnectedAction(
+                    label = "",
+                    icon = Icons.Default.Check,
+                    contentDescription = if (isSaving) "Saving annotation" else "Save annotation",
+                    enabled = !isSaving,
+                    emphasized = true,
+                    onClick = onSave
+                )
+            ),
+            containerColor = ViewerPlate,
+            contentColor = Color.White,
+            // The save cell is the one filled cell, and it is filled **white** with
+            // black ink — the same snapping content colour the component gives every
+            // filled cell, which is what stopped these toggles blinking out.
+            accentColor = Color.White,
+            onAccentColor = Color.Black,
+            cellHeight = 44.dp
+        )
     }
 }
 

@@ -4,6 +4,63 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-28 — Arena.ai — Round 53: connected page verbs, in-place annotate, quick rotate, share a selection
+
+Seven reported defects. Layout, chrome and motion only: no filter, geometry, colour,
+typography, `PdfGenerator`/`PdfWriter` or captured-pixel change. Camera capture
+semantics untouched (4:3, `FIT_CENTER`, `MAXIMIZE_QUALITY`, flash/torch, shutter sound,
+auto-save, batch vs single commit, discard cleanup).
+
+- **`ui/common/ConnectedButtonGroup.kt` — the "glitch"/"disappearing button" root
+  cause.** A cell inherited the theme's `LocalContentColor` (dark ink) for its ripple on
+  black bars/sheets, and its label tint animated *through* white-on-white while the
+  selected plate crossfaded. The cell now provides `LocalContentColor`, colours the
+  ripple from its own tint, and **snaps** the content colour when it becomes filled. New
+  `iconOnly` mode (`label = ""` + an icon → 20 dp glyph, no label, no vertical
+  padding) for compact rows. Every caller that fills a cell on a dark surface must pass
+  `onAccentColor` (black on white here) — forget it and the glyph is invisible again.
+- **`ui/detail/DocumentDetailScreen.kt` — page tiles.** The four
+  `FilledTonalIconButton`s (`GridAction`, deleted) are one `ConnectedButtonGroup` of
+  icon-only cells, inside `AnimatedVisibility(!selected && !dragging)` so the strip
+  **collapses shut** when a page is held. The single-page bottom bar gained **Copy** and
+  **Move** (5 cells: Crop, Annotate, Copy, Move, More); **Sign moved into More**. The
+  batch bar gained Copy and Move too.
+- **`ScannerRepository.duplicatePages(docId, pageIds)` (new)** — copies land
+  immediately after the block they came from; files are copied per page by
+  `ImageStore.copyPageFiles` (new) so deleting one copy cannot delete the other's pixels.
+  **`ScannerRepository.movePagesToDocument(sourceDocId, pageIds, targetDocId)` (new)** —
+  bookkeeping move, source document is removed if left empty.
+- **`ui/viewer/PageViewerScreen.kt` — annotate is no longer a route.** The bottom
+  shelf swaps to annotate settings **in place** (`AnimatedContent`, slides from the
+  bottom, drag the handle down to cancel), the page becomes a drawing surface, and the
+  inked result is written by the same `persistMarkup` the editor uses. `MarkupNav` stays
+  registered for the grid's tile menu; the viewer no longer takes `onNavigateToMarkup`.
+  **Rotate feels instant**: the decoded page is turned in memory the moment the finger
+  lifts (`rotateBitmap`) and the bake runs on `Dispatchers.IO`, replacing the preview
+  when its re-decode lands. The bake itself is unchanged.
+- **`ui/editor/MarkupStudio.kt` (new)** — the shared annotation model:
+  `MarkupSession` (undo/redo through `MarkupHistory`, tool/ink/width, in-progress
+  points), `MarkupInkSurface`, `persistMarkup`, `rotateBitmap`, and the ink
+  palette/width constants (`MarkupInkColors`, `MarkupWidths`, `MarkupWidthLabels`,
+  `inkLabel`, `A4_ASPECT`) — moved out of `MarkupScreen.kt`, which now imports them.
+- **`ui/dashboard/DashboardScreen.kt`** — selection bar gained **Share**
+  (`DocumentShare.shareDocuments`, `ACTION_SEND_MULTIPLE`, one PDF per document at the
+  settings-derived defaults); "Merge PDF" is "Merge". The folder pills and the
+  documents/pages pills **collapse on scroll-up** (`snapshotFlow` + hysteresis) and their
+  facts move into `MagicSearchField`'s new `caption`, which is why that field is now
+  `heightIn(min = 54.dp)` rather than a fixed height.
+- **`util/DocumentShare.kt` (new)** — `exportConfig(settings)` (the export sheet's
+  defaults, as model code) and `shareDocuments(context, documents, settings)`.
+- **`ui/pdf/PdfExportSheet.kt`** — microinteractions: animated label/plate colours and
+  a corner relaxation on the paper cards, compression cards and choice chips; the tick
+  arrives with a scale; `ToggleRow` answers the finger (press scale, press wash, accent
+  title, crossfading subtitle); the export CTA crossfades its glyph/dots, its label and
+  its caption; `PaperSizeChooser` presses and crossfades "Change"/"Done"; "Print
+  instead" presses.
+- **`ui/camera/ScannerCameraScreen.kt`** — the viewfinder sits 32 dp above centre so a
+  band of black separates the paper from the control sheet. Capture semantics unchanged.
+- Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
+
 ## 2026-10-28 — Antigravity — Round 52 Compilation Fixes
 
 - **ui/detail/DocumentDetailScreen.kt**: Added missing import ndroidx.compose.runtime.mutableIntStateOf for drag-and-drop page reordering state.

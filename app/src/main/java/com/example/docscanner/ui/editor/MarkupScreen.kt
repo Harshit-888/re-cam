@@ -164,8 +164,8 @@ private fun MarkupEditor(
     val current = remember(pageId) { mutableStateListOf<Offset>() }
 
     var tool by remember(pageId) { mutableStateOf(MarkupTool.PEN) }
-    var colorArgb by remember(pageId) { mutableStateOf(INK_COLORS.first()) }
-    var widthFraction by remember(pageId) { mutableStateOf(WIDTHS[1]) }
+    var colorArgb by remember(pageId) { mutableStateOf(MarkupInkColors.first()) }
+    var widthFraction by remember(pageId) { mutableStateOf(MarkupWidths[1]) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     val strokes = remember(revision) { history.strokes }
     val canUndo = remember(revision) { history.canUndo }
@@ -293,7 +293,7 @@ private fun MarkupEditor(
                         // The visible dot is 30 dp; the *target* is 48 dp, because a
                         // colour picker you miss by 6 dp is a colour you did not choose.
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            INK_COLORS.forEach { ink ->
+                            MarkupInkColors.forEach { ink ->
                                 TapTarget(
                                     onClick = { colorArgb = ink },
                                     label = inkLabel(ink),
@@ -330,17 +330,17 @@ private fun MarkupEditor(
                         // exists inside a segmented-button row scope, which is also
                         // what gives it the connected corners.
                         SingleChoiceSegmentedButtonRow(modifier = Modifier.weight(1f)) {
-                            WIDTHS.forEachIndexed { index, fraction ->
+                            MarkupWidths.forEachIndexed { index, fraction ->
                                 SegmentedButton(
                                     selected = widthFraction == fraction,
                                     onClick = { widthFraction = fraction },
                                     shape = SegmentedButtonDefaults.itemShape(
                                         index = index,
-                                        count = WIDTHS.size
+                                        count = MarkupWidths.size
                                     ),
                                     label = {
                                         Text(
-                                            listOf("Thin", "Medium", "Bold")[index],
+                                            MarkupWidthLabels[index],
                                             style = MaterialTheme.typography.labelMedium,
                                             maxLines = 1
                                         )
@@ -402,7 +402,7 @@ private fun MarkupEditor(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(
-                        bitmap?.let { it.width.toFloat() / it.height.toFloat() } ?: DEFAULT_ASPECT
+                        bitmap?.let { it.width.toFloat() / it.height.toFloat() } ?: A4_ASPECT
                     )
                     .background(Color.White)
                     .border(
@@ -486,30 +486,5 @@ private fun MarkupEditor(
     }
 }
 
-/**
- * Spoken name for an ink colour. "Ink colour 1" would be useless to a screen-reader
- * user; the name is what makes the set navigable.
- */
-private fun inkLabel(argb: Int): String = when (argb) {
-    0xFF111111.toInt() -> "Black ink"
-    0xFFC62828.toInt() -> "Red ink"
-    0xFF1565C0.toInt() -> "Blue ink"
-    0xFFF9A825.toInt() -> "Yellow ink"
-    else -> "Ink colour"
-}
-
-/** Preview decode size: the page is drawn a phone wide at most. */
+/** Preview decode size for the full-screen editor: the page is drawn a phone wide at most. */
 private const val PREVIEW_DIMENSION = 1400
-
-/** A4's ratio, used for the first frame before the bitmap is decoded. */
-private const val DEFAULT_ASPECT = 0.707f
-
-private val INK_COLORS = listOf(
-    0xFF111111.toInt(),
-    0xFFC62828.toInt(),
-    0xFF1565C0.toInt(),
-    0xFFF9A825.toInt()
-)
-
-/** Fractions of the page's short side. */
-private val WIDTHS = listOf(0.004f, 0.008f, 0.016f)

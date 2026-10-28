@@ -26,10 +26,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -214,11 +216,21 @@ private fun ConnectedCell(
         animationSpec = tween(durationMillis = if (pressed) 90 else 160),
         label = "connectedPlate"
     )
-    val tint by animateColorAsState(
-        targetValue = if (filled) onAccentColor else action.tintColor ?: contentColor,
+    // The label colour **snaps** when a cell becomes filled and only animates between
+    // unfilled tones.
+    //
+    // Animating it was the "the button disappears when I toggle it" report: the fill
+    // crossfades from the container to white over 160 ms while the label is still
+    // fading from white to black over 120 ms — and for most of that window the label is
+    // white-on-near-white on a dark camera sheet. Google switches the checked item's
+    // content colour immediately for the same reason.
+    val restingTint = action.tintColor ?: contentColor
+    val animatedRestingTint by animateColorAsState(
+        targetValue = restingTint,
         animationSpec = tween(durationMillis = 120),
         label = "connectedTint"
     )
+    val tint = if (filled) onAccentColor else animatedRestingTint
     val alpha by animateFloatAsState(
         targetValue = if (action.enabled) 1f else 0.38f,
         animationSpec = Motion.fade,
@@ -228,81 +240,105 @@ private fun ConnectedCell(
     // Split button only when the cell has *both* an action and variants to offer.
     val split = action.onClick != null && action.menuContent != null
 
-    Box(modifier = modifier) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = cellHeight)
-                .graphicsLayer { this.alpha = alpha }
-                .clip(shape)
-                .background(plate)
-        ) {
-            val cellIcon = action.icon
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-                modifier = Modifier
-                    .weight(1f)
-                    .pressScale(interactions, pressedScale = 0.96f)
-                    .clickable(
-                        interactionSource = interactions,
-                        indication = ripple(bounded = true),
-                        enabled = action.enabled,
-                        role = if (action.selected) Role.Checkbox else Role.Button,
-                        onClick = {
-                            val action0 = action.onClick
-                            if (action0 != null) action0() else menuOpen = true
-                        }
-                    )
-                    .padding(horizontal = 4.dp, vertical = 8.dp)
-            ) {
-                if (cellIcon != null) {
-                    Icon(
-                        imageVector = cellIcon,
-                        contentDescription = action.contentDescription ?: action.label,
-                        tint = tint,
-                        modifier = Modifier.size(21.dp)
-                    )
-                    Spacer(Modifier.height(5.dp))
-                }
-                Text(
-                    text = action.label,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = if (filled || action.selected) {
-                        FontWeight.SemiBold
-                    } else {
-                        FontWeight.Medium
-                    },
-                    color = tint,
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+    // A cell with an icon and no label is a *compact* cell — the page grid's row of
+    // verbs, where four labelled cells do not fit across half a phone. It is the same
+    // component and the same shape tokens, just without the word under the glyph.
+    val iconOnly = action.icon != null && action.label.isBlank()
 
-            // The split button's trailing edge. One chevron, its own hit area, no
-            // second label: on a 360 dp bar the difference between "Add page" and
-            // "Add page, but from the album" has to be cheaper than a whole cell.
-            if (split) {
-                Box(
-                    contentAlignment = Alignment.Center,
+    Box(modifier = modifier) {
+        // The cell's content colour is *provided*, not inherited.
+        //
+        // Without this the ripple and any ambient `LocalContentColor` come from the
+        // theme — dark ink — while the cell sits on a black bar or a black camera
+        // sheet. The press indicator then paints a dark disc over the cell and it looks
+        // like the control vanished for a moment. That was both the camera's
+        // Single/Batch switch and the reader's More button "glitching": not a state
+        // bug, a ripple in the wrong colour.
+        CompositionLocalProvider(LocalContentColor provides tint) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = cellHeight)
+                    .graphicsLayer { this.alpha = alpha }
+                    .clip(shape)
+                    .background(plate)
+            ) {
+                val cellIcon = action.icon
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
                     modifier = Modifier
-                        .width(26.dp)
-                        .heightIn(min = cellHeight)
+                        .weight(1f)
+                        .pressScale(interactions, pressedScale = 0.96f)
                         .clickable(
+                            interactionSource = interactions,
+                            indication = ripple(
+                                bounded = true,
+                                color = tint.copy(alpha = 0.22f)
+                            ),
                             enabled = action.enabled,
-                            role = Role.Button,
-                            onClickLabel = "More ${action.label} options",
-                            onClick = { menuOpen = true }
+                            role = if (action.selected) Role.Checkbox else Role.Button,
+                            onClick = {
+                                val action0 = action.onClick
+                                if (action0 != null) action0() else menuOpen = true
+                            }
+                        )
+                        .padding(
+                            horizontal = 4.dp,
+                            vertical = if (iconOnly) 0.dp else 8.dp
                         )
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.ArrowDropDown,
-                        contentDescription = null,
-                        tint = tint.copy(alpha = 0.70f),
-                        modifier = Modifier.size(18.dp)
-                    )
+                    if (cellIcon != null) {
+                        Icon(
+                            imageVector = cellIcon,
+                            contentDescription = action.contentDescription
+                                ?: action.label.takeIf { it.isNotBlank() },
+                            tint = tint,
+                            modifier = Modifier.size(if (iconOnly) 20.dp else 21.dp)
+                        )
+                        if (!iconOnly) Spacer(Modifier.height(5.dp))
+                    }
+                    if (!iconOnly) {
+                        Text(
+                            text = action.label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (filled || action.selected) {
+                                FontWeight.SemiBold
+                            } else {
+                                FontWeight.Medium
+                            },
+                            color = tint,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                // The split button's trailing edge. One chevron, its own hit area, no
+                // second label: on a 360 dp bar the difference between "Add page" and
+                // "Add page, but from the album" has to be cheaper than a whole cell.
+                if (split) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .width(26.dp)
+                            .heightIn(min = cellHeight)
+                            .clickable(
+                                enabled = action.enabled,
+                                role = Role.Button,
+                                onClickLabel = "More ${action.label} options",
+                                onClick = { menuOpen = true }
+                            )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ArrowDropDown,
+                            contentDescription = null,
+                            tint = tint.copy(alpha = 0.70f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }

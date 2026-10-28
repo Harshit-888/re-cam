@@ -76,6 +76,7 @@ Keep this table short. Delete your row when the change lands.
 
 | Agent       | Status          | Files                                                                                                                                                                                                                                                                           | Intent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Arena.ai | 🚧 in flight (Round 53) | `ui/common/ConnectedButtonGroup.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/editor/MarkupStudio.kt` (new), `ui/editor/MarkupScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/pdf/PdfExportSheet.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/DocumentShare.kt` (new), `util/ImageStore.kt`, `data/ScannerRepository.kt`, `Navigation.kt`, docs | Seven reported defects: connected page-tile verbs + hold-to-collapse, Copy/Move on hold, dashboard multi-select **Share**, in-place annotate shelf in the reader, instant rotate, collapsing dashboard header, export-sheet microinteractions, camera preview lifted 32 dp. Chrome/layout/motion only. See §6ap. |
 | Antigravity | ✅ committed | indymobile/*, docs/AGENTS_CHANGELOG.md, docs/AGENT_COORDINATION.md | Complete Indiana Mobile (Target 1) RE artifacts: base APK, native libs, Ghidra C sources, JADX Java sources, pipeline smali/java, and REA inspection report for Arena context. |
 | Antigravity | ✅ committed    | `docs/ORIGINAL_APP_FILTER_SPEC.md`, `docs/AGENTS_CHANGELOG.md`                                                                                                                                                                                                                  | Reverse-engineered native filter spec & decompiled algorithms                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Arena.ai    | ✅ committed    | `util/DocumentNaming.kt`, `ui/editor/CropAndFilterScreen.kt`, `Navigation.kt`, `NavigationKeys.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/PerspectiveWarp.kt`, `app/build.gradle.kts`, tests + docs | Done-button crash fix, post-capture review flow, folder move, note editing                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -1937,4 +1938,39 @@ Before any optimization lands:
   `remember { }` with no keys *on purpose*; `pointerInput` does not restart when its keys
   do not change, so keying the state on `corners` silently breaks every drag after the
   first. Outside updates are adopted by the `LaunchedEffect(corners)`.
+- Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
+
+## 6ap. Round 53: connected verbs, in-place annotate, instant rotate, share a selection (Arena, 2026-10-28)
+
+**New:** `ui/editor/MarkupStudio.kt`, `util/DocumentShare.kt`,
+`ScannerRepository.duplicatePages`, `ScannerRepository.movePagesToDocument`,
+`ImageStore.copyPageFiles`.
+
+- **`ConnectedButtonGroup` cells now provide `LocalContentColor` and snap their tint.**
+  That component was the cause of the camera's Single/Batch switch and the reader's More
+  button "glitching or disappearing": a dark theme ripple on a black sheet, plus a label
+  tint that animated through white-on-white while the selected plate crossfaded. Do not
+  reintroduce an animated content colour on a filled cell, and always pass
+  `onAccentColor` when the accent is white.
+- **`ConnectedAction(label = "", icon = …)` is an icon-only cell** (20 dp glyph, no label,
+  no vertical padding). That is what the page tiles use; labelled cells are unchanged.
+- **Annotating is a mode of the reader, not a route.** `PageViewerScreen` no longer takes
+  `onNavigateToMarkup`; the shelf swaps in place and the drawing surface is
+  `MarkupInkSurface(session, image, modifier)` from `MarkupStudio.kt`. `MarkupNav` is
+  still registered for the document grid's tile menu. `MarkupScreen` keeps its own
+  full-screen chrome but imports the shared palette/constants — **do not re-declare
+  `INK_COLORS`/`WIDTHS`/`inkLabel`, they live in `MarkupStudio.kt` now.**
+- **`MarkupInkSurface` is sized by its caller and must match the page's aspect ratio.**
+  Strokes are normalised against the box they are drawn in; a letterboxed box puts the
+  ink somewhere else on the bake.
+- **Rotate is optimistic, not faster.** The decoded bitmap is turned in memory
+  (`rotateBitmap`) and the real bake runs on `Dispatchers.IO`; the preview is replaced
+  when the re-decoded page arrives (identity of the new `ImageBitmap`). Never shorten the
+  bake itself — the pixels are the contract.
+- **The library header condenses on scroll-up** (`snapshotFlow` + two thresholds, so it
+  cannot flicker against its own layout change). Its facts move into
+  `MagicSearchField(caption = …)`, which is why that field is `heightIn(min = 54.dp)`.
+- **Sharing a selection does not merge it.** `DocumentShare.shareDocuments` writes one
+  PDF per document at the Settings → PDF defaults and sends them with
+  `ACTION_SEND_MULTIPLE`. The merge cell is unchanged.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.

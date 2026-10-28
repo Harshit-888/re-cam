@@ -61,6 +61,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -545,6 +546,16 @@ fun ScannerCameraScreen(
                 // composed was not the frame that got captured.
                 modifier = Modifier
                     .align(Alignment.Center)
+                    // Lifted off the exact centre, and the reason is the sheet below.
+                    //
+                    // A 3:4 viewfinder centred on a 20:9 phone leaves equal black bands
+                    // above and below — but only the top one is empty. The bottom one
+                    // runs straight into the control sheet, so the preview's lower edge
+                    // had no edge: it read as a page floating in a black rectangle that
+                    // happened to have buttons in it. Moving the frame up keeps a band
+                    // of pure black *between* the paper and the sheet, which is what
+                    // makes the two read as separate objects.
+                    .offset(y = -CameraPreviewLift)
                     .fillMaxWidth()
                     .aspectRatio(3f / 4f)
                     .graphicsLayer {
@@ -999,6 +1010,16 @@ fun ScannerCameraScreen(
         }
     }
 }
+
+/**
+ * How far the viewfinder sits above dead centre.
+ *
+ * Not a magic number: the control sheet is ~200 dp tall, the top chrome ~90 dp, so the
+ * frame has to give the *bottom* gap more room than the top one to keep both bands
+ * visible. At 32 dp the preview clears the sheet on a 20:9 phone without crowding the
+ * close button on a 16:9 one.
+ */
+private val CameraPreviewLift = 32.dp
 
 /**
  * Batch / single switch.

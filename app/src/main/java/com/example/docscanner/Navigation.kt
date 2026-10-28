@@ -139,10 +139,11 @@ fun MainNavigation(repository: ScannerRepository) {
                     },
                     onNavigateToCrop = { pageId ->
                         backStack.add(CropAndFilterNav(key.docId, pageId, borders = true))
-                    },
-                    onNavigateToMarkup = { pageId ->
-                        backStack.add(MarkupNav(key.docId, pageId))
                     }
+                    // No markup route from here any more: annotating happens *in* the
+                    // reader, on its own bottom shelf. `MarkupNav` stays registered for
+                    // the document grid's tile menu, which is a legitimate entry point
+                    // into the full-screen editor.
                 )
             }
 

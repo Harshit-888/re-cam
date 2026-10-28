@@ -8,8 +8,10 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
@@ -19,6 +21,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material3.TopAppBarDefaults
@@ -40,6 +43,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -54,9 +59,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -69,10 +76,8 @@ import androidx.compose.material.icons.outlined.Draw
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -117,8 +122,6 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
-import androidx.compose.material3.LocalMinimumInteractiveComponentSize
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.zIndex
 
@@ -181,6 +184,13 @@ fun DocumentDetailScreen(
     // with no confirmation and no undo. It now takes a *list*, so a batch delete is
     // one confirmation naming a count rather than N dialogs in a row.
     var pagesPendingDelete by remember { mutableStateOf<List<ScannedPage>?>(null) }
+
+    // Hold is the app's one "act on this thing" gesture, and until now it only started
+    // a drag or a tick — the two things a held page most often needs, **copy** and
+    // **move**, were nowhere. They live in the bar because the bar is the answer to
+    // "what can I do with what I am holding"; the move needs a destination, so it opens
+    // a short document list rather than a menu of folders.
+    var pagesPendingMove by remember { mutableStateOf<List<ScannedPage>?>(null) }
 
     // Resolved from the live page list, not stored as objects: a rotate or an annotate
     // replaces the page, and a snapshot would then act on stale data. Ordered by the
@@ -349,12 +359,17 @@ fun DocumentDetailScreen(
     // abandoning the batch: rotating nine pages and silently doing none because the
     // tenth has a missing file is worse than rotating nine.
     suspend fun rotateOne(page: ScannedPage) {
-        val current = repository.getDocumentById(docId)
-            ?.pages?.find { it.id == page.id } ?: return
-        val baked = PageRenderer.bake(
-            context,
-            current.copy(rotationDegrees = (current.rotationDegrees + 90f) % 360f)
-        )
+        // The bake is a full-resolution decode, warp, filter and encode. It used to run
+        // on the composition's own scope, i.e. on the main thread, so rotating a page
+        // from this grid froze the grid for as long as it took. Same bake, own thread.
+        val baked = withContext(Dispatchers.IO) {
+            val current = repository.getDocumentById(docId)
+                ?.pages?.find { it.id == page.id } ?: return@withContext null
+            PageRenderer.bake(
+                context,
+                current.copy(rotationDegrees = (current.rotationDegrees + 90f) % 360f)
+            )
+        }
         if (baked != null) {
             repository.updatePage(docId, page.id) { baked }
         }
@@ -370,6 +385,45 @@ fun DocumentDetailScreen(
                 rotateOne(page)
             }
         }
+    }
+
+    /**
+     * Copies the given pages in place, right after the block they came from.
+     *
+     * The file copy is I/O, so it runs off the main thread; the selection is only
+     * cleared once the copies exist, because a bar that empties before the pixels land
+     * makes the copy look like it failed.
+     */
+    fun copyPages(pages: List<ScannedPage>) {
+        if (pages.isEmpty()) return
+        val ids = pages.map { it.id }
+        scope.launch {
+            val copies = withContext(Dispatchers.IO) { repository.duplicatePages(docId, ids) }
+            selectedPageIds = emptySet()
+            Toast.makeText(
+                context,
+                if (copies.isEmpty()) {
+                    "Could not copy those pages"
+                } else {
+                    if (copies.size == 1) "Page copied" else "${copies.size} pages copied"
+                },
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    // Moving is a bookkeeping move, not a copy: the page files travel with the records
+    // because their paths are keyed by page id. The source document is deleted only if
+    // it is left empty — the same rule as deleting its last page.
+    fun movePages(pages: List<ScannedPage>, targetDocId: String) {
+        if (pages.isEmpty()) return
+        repository.movePagesToDocument(docId, pages.map { it.id }, targetDocId)
+        selectedPageIds = emptySet()
+        Toast.makeText(
+            context,
+            if (pages.size == 1) "Page moved" else "${pages.size} pages moved",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     // The document can vanish underneath this screen: the last page was deleted,
@@ -569,6 +623,16 @@ fun DocumentDetailScreen(
                                             onClick = { rotatePages(batch) }
                                         ),
                                         ConnectedAction(
+                                            label = "Copy",
+                                            icon = Icons.Default.ContentCopy,
+                                            onClick = { copyPages(batch) }
+                                        ),
+                                        ConnectedAction(
+                                            label = "Move",
+                                            icon = Icons.Default.DriveFileMove,
+                                            onClick = { pagesPendingMove = batch }
+                                        ),
+                                        ConnectedAction(
                                             label = "Export",
                                             icon = Icons.Outlined.PictureAsPdf,
                                             onClick = { exportOnly = batch }
@@ -607,10 +671,22 @@ fun DocumentDetailScreen(
                                                 onNavigateToMarkup(page.id)
                                             }
                                         ),
+                                        // Copy and Move are the two verbs a *held*
+                                        // page asks for, and a bar holding five
+                                        // labelled cells only fits on a 360 dp phone
+                                        // if one of them is not a word — so Sign,
+                                        // the rarest of the page verbs, moved one
+                                        // level down into More instead of being
+                                        // dropped.
                                         ConnectedAction(
-                                            label = "Sign",
-                                            icon = Icons.Default.Create,
-                                            onClick = { signatureTargetId = page.id }
+                                            label = "Copy",
+                                            icon = Icons.Default.ContentCopy,
+                                            onClick = { copyPages(listOf(page)) }
+                                        ),
+                                        ConnectedAction(
+                                            label = "Move",
+                                            icon = Icons.Default.DriveFileMove,
+                                            onClick = { pagesPendingMove = listOf(page) }
                                         ),
                                         ConnectedAction(
                                             label = "More",
@@ -631,6 +707,19 @@ fun DocumentDetailScreen(
                                                         val id = page.id
                                                         selectedPageIds = emptySet()
                                                         onNavigateToViewer(id)
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("Sign page") },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            Icons.Default.Create,
+                                                            contentDescription = null
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        dismiss()
+                                                        signatureTargetId = page.id
                                                     }
                                                 )
                                                 DropdownMenuItem(
@@ -1098,6 +1187,81 @@ fun DocumentDetailScreen(
         )
     }
 
+    // Where should the held pages go? A list of the *other* documents, with a count on
+    // each so the destination is checkable before the move — "Notes" alone could be a
+    // one-page note or the forty-page contract.
+    pagesPendingMove?.let { pending ->
+        val destinations = documents.filter { it.id != docId && !it.isTrash }
+        AlertDialog(
+            onDismissRequest = { pagesPendingMove = null },
+            shape = DocShapes.dialog,
+            title = {
+                Text(
+                    if (pending.size == 1) "Move page to" else "Move ${pending.size} pages to",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                if (destinations.isEmpty()) {
+                    Text(
+                        "There is no other document yet. Scan or import another page " +
+                            "into a new document first, then move these pages into it.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    // A move is a real change to two documents, so the row says how
+                    // many pages the target already has: moving into an empty document
+                    // and moving into a full one are different decisions.
+                    Column(
+                        modifier = Modifier
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        destinations.forEach { target ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(DocShapes.pill)
+                                    .clickable {
+                                        pagesPendingMove = null
+                                        movePages(pending, target.id)
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Outlined.PictureAsPdf,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        target.title,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        if (target.pages.size == 1) "1 page" else "${target.pages.size} pages",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { pagesPendingMove = null }) { Text("Cancel") }
+            }
+        )
+    }
+
     if (showWatermarkDialog) {
         var watermarkText by remember {
             mutableStateOf(document.pages.firstOrNull()?.watermarkText ?: "CONFIDENTIAL")
@@ -1191,8 +1355,6 @@ fun PageGridItem(
     onDragCancel: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var showMenu by remember { mutableStateOf(false) }
-
     // Selection is animated in *this* composable, not applied as a sudden boolean:
     // the tick springs in, the wash fades in, the ring fades in. All three are
     // draw-phase properties, so ticking a page costs no layout — which matters on a
@@ -1352,99 +1514,95 @@ fun PageGridItem(
                 }
             }
 
-            // The page's own verbs, as Material 3 filled tonal icon buttons: they
-            // carry a tonal container a step off the card in both light and dark, so
-            // the row reads as controls rather than as part of the photo.
+            // The page's own verbs, in the **same connected group** the reader's bottom
+            // bar uses: pill ends, tight inner corners, one 2 dp gap.
             //
-            // Reordering is gone from this row on purpose — the tile itself drags now,
-            // and an arrow that moved a page one slot at a time was the slowest
-            // possible way to do what a drag does in one gesture.
+            // This replaced four filled tonal icon buttons. Those were "contrasty" in
+            // exactly the way the user described — four separate discs on a card, each
+            // with its own container fighting the photo — where a connected group reads
+            // as *one* strip of controls belonging to the page. Same component, same
+            // shape tokens, one visual language across the app.
             //
-            // `minimumInteractiveComponentSize` is relaxed to 36 dp: four 48 dp targets
-            // do not fit across a half-width card on a 360 dp phone, and the old row
-            // overflowed and clipped its last button.
-            CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 36.dp) {
-                Row(
+            // The strip collapses when the page is picked up (see `selected`) so a
+            // multi-page selection is about the pages, not about the buttons.
+            AnimatedVisibility(
+                visible = !selected && !dragging,
+                // Height, not just alpha: the point of hiding the row while pages are
+                // selected is to give the grid its space back, and a row that fades in
+                // place would hold that space for nothing.
+                enter = expandVertically(
+                    animationSpec = tween(180, easing = Motion.EaseOut),
+                    expandFrom = Alignment.Top
+                ) + fadeIn(tween(140)),
+                exit = shrinkVertically(
+                    animationSpec = tween(160, easing = Motion.EaseIn),
+                    shrinkTowards = Alignment.Top
+                ) + fadeOut(tween(90))
+            ) {
+                ConnectedButtonGroup(
+                    actions = listOf(
+                        ConnectedAction(
+                            label = "",
+                            icon = Icons.Outlined.Draw,
+                            contentDescription = "Annotate",
+                            onClick = onAnnotateClick
+                        ),
+                        ConnectedAction(
+                            label = "",
+                            icon = Icons.Default.RotateRight,
+                            contentDescription = "Rotate",
+                            onClick = onRotateClick
+                        ),
+                        ConnectedAction(
+                            label = "",
+                            icon = Icons.Outlined.Crop,
+                            contentDescription = "Crop and filter",
+                            onClick = onCropClick
+                        ),
+                        ConnectedAction(
+                            label = "",
+                            icon = Icons.Default.MoreVert,
+                            contentDescription = "More",
+                            tintColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            menuContent = { dismiss ->
+                                DropdownMenuItem(
+                                    text = { Text("Annotate") },
+                                    leadingIcon = {
+                                        Icon(Icons.Outlined.Draw, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        dismiss()
+                                        onAnnotateClick()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Delete page") },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.Delete,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.error
+                                        )
+                                    },
+                                    onClick = {
+                                        dismiss()
+                                        onDeleteClick()
+                                    }
+                                )
+                            }
+                        )
+                    ),
+                    // One step off the card, not a colour of its own: the strip has to
+                    // be distinguishable from the tile in both themes without becoming
+                    // a second surface inside a small card.
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    cellHeight = 38.dp,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 6.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    GridAction(
-                        icon = Icons.Outlined.Draw,
-                        description = "Annotate",
-                        onClick = onAnnotateClick
-                    )
-                    GridAction(
-                        icon = Icons.Default.RotateRight,
-                        description = "Rotate",
-                        onClick = onRotateClick
-                    )
-                    GridAction(
-                        icon = Icons.Outlined.Crop,
-                        description = "Crop and filter",
-                        onClick = onCropClick
-                    )
-                    Box {
-                        GridAction(
-                            icon = Icons.Default.MoreVert,
-                            description = "More",
-                            onClick = { showMenu = true }
-                        )
-                        DropdownMenu(
-                            expanded = showMenu,
-                            onDismissRequest = { showMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Annotate") },
-                                leadingIcon = {
-                                    Icon(Icons.Outlined.Draw, contentDescription = null)
-                                },
-                                onClick = {
-                                    showMenu = false
-                                    onAnnotateClick()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Delete page") },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Default.Delete,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.error
-                                    )
-                                },
-                                onClick = {
-                                    showMenu = false
-                                    onDeleteClick()
-                                }
-                            )
-                        }
-                    }
-                }
+                        .padding(horizontal = 6.dp, vertical = 5.dp)
+                )
             }
         }
-    }
-}
-
-/**
- * One compact tonal icon button in a grid tile.
- *
- * A thin wrapper so all four share size, shape and colour, and so the tonal container
- * and pressed shape come from Material rather than from a copy of it.
- */
-@Composable
-private fun GridAction(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    description: String,
-    onClick: () -> Unit
-) {
-    FilledTonalIconButton(
-        onClick = onClick,
-        shape = CircleShape,
-        modifier = Modifier.size(36.dp)
-    ) {
-        Icon(icon, contentDescription = description, modifier = Modifier.size(18.dp))
     }
 }

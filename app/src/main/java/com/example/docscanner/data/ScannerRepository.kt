@@ -347,6 +347,95 @@ class ScannerRepository(context: Context) {
     }
 
     /**
+     * Duplicates pages inside their document, keeping their order.
+     *
+     * The copies land **immediately after the block they came from**, which is where a
+     * "copy these pages" gesture promises they will be; appending them to the end would
+     * make the user hunt for them. Files are copied per page (see
+     * [ImageStore.copyPageFiles]) so deleting either copy cannot delete the other's
+     * pixels.
+     *
+     * @return the ids of the new pages, in order — empty if nothing could be copied.
+     */
+    fun duplicatePages(docId: String, pageIds: List<String>): List<String> {
+        if (pageIds.isEmpty()) return emptyList()
+        val doc = getDocumentById(docId) ?: return emptyList()
+        val originals = doc.pages.filter { it.id in pageIds }
+        if (originals.isEmpty()) return emptyList()
+        // The whole document is touched at once: one copy pass, one library emission.
+        val copies = ArrayList<ScannedPage>(originals.size)
+        originals.forEach { page ->
+            val copy = ImageStore.copyPageFiles(
+                context = appContext,
+                source = page,
+                newPageId = UUID.randomUUID().toString()
+            )
+            if (copy != null) copies.add(copy)
+        }
+        if (copies.isEmpty()) return emptyList()
+
+        _documents.update { docs ->
+            docs.map { d ->
+                if (d.id != docId) return@map d
+                val rebuilt = ArrayList<ScannedPage>(d.pages.size + copies.size)
+                // Right after the *last* selected page: a run of copies reads as one
+                // block even when the selection was tapped out of order.
+                val lastSelected = d.pages.indexOfLast { it.id in pageIds }
+                d.pages.forEachIndexed { index, page ->
+                    rebuilt.add(page)
+                    if (index == lastSelected) rebuilt.addAll(copies)
+                }
+                d.copy(
+                    pages = rebuilt.mapIndexed { index, p -> p.copy(pageIndex = index) },
+                    modifiedDate = System.currentTimeMillis()
+                )
+            }
+        }
+        return copies.map { it.id }
+    }
+
+    /**
+     * Moves pages to another document, appending them in their current order.
+     *
+     * Files travel with the records — a page's paths are absolute and keyed by page id,
+     * not by document — so this is a bookkeeping move, not a copy. A source document
+     * left with no pages is removed, the same rule [deletePage] follows.
+     */
+    fun movePagesToDocument(sourceDocId: String, pageIds: List<String>, targetDocId: String) {
+        if (pageIds.isEmpty() || sourceDocId == targetDocId) return
+        val source = getDocumentById(sourceDocId) ?: return
+        if (getDocumentById(targetDocId) == null) return
+        val moving = source.pages.filter { it.id in pageIds }
+        if (moving.isEmpty()) return
+
+        _documents.update { docs ->
+            docs.mapNotNull { d ->
+                when (d.id) {
+                    sourceDocId -> {
+                        val left = d.pages.filterNot { it.id in pageIds }
+                        if (left.isEmpty()) {
+                            null
+                        } else {
+                            d.copy(
+                                pages = left.mapIndexed { index, p ->
+                                    p.copy(pageIndex = index, documentId = sourceDocId)
+                                },
+                                modifiedDate = System.currentTimeMillis()
+                            )
+                        }
+                    }
+                    targetDocId -> d.copy(
+                        pages = (d.pages + moving.map { it.copy(documentId = targetDocId) })
+                            .mapIndexed { index, p -> p.copy(pageIndex = index) },
+                        modifiedDate = System.currentTimeMillis()
+                    )
+                    else -> d
+                }
+            }
+        }
+    }
+
+    /**
      * Moves **several** pages at once so the block lands at [targetIndex].
      *
      * This is what dragging a multi-page selection in the grid calls, and the

@@ -3,17 +3,27 @@ package com.example.docscanner.ui.pdf
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +37,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
@@ -65,6 +76,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
@@ -84,6 +96,7 @@ import com.example.docscanner.model.PdfExportConfig
 import com.example.docscanner.model.PdfMargin
 import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.theme.DocShapes
+import com.example.docscanner.theme.Motion
 import com.example.docscanner.theme.pressScale
 import com.example.docscanner.ui.common.Hairline
 import com.example.docscanner.ui.common.InfoPill
@@ -621,7 +634,9 @@ fun PdfExportSheet(
             // because sharing is what most scans are for; printing is the exception.
             if (canExport) {
                 Spacer(Modifier.height(2.dp))
+                val printInteractions = remember { MutableInteractionSource() }
                 TextButton(
+                    interactionSource = printInteractions,
                     onClick = {
                         generateThen { file ->
                             val started = PdfPrinter.print(
@@ -645,6 +660,9 @@ fun PdfExportSheet(
                     modifier = Modifier
                         .align(Alignment.CenterHorizontally)
                         .padding(top = 2.dp)
+                        // "Print instead" is the exception path, and it was the one
+                        // control in the sheet with no press answer at all.
+                        .pressScale(printInteractions)
                 ) {
                     Text(
                         if (canPrint) {
@@ -787,6 +805,7 @@ private fun PaperSizeChooser(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .pressScale(interactions, pressedScale = 0.99f)
                     .clip(DocShapes.cardSmall)
                     .clickable(
                         interactionSource = interactions,
@@ -811,11 +830,22 @@ private fun PaperSizeChooser(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Text(
-                    if (expanded) "Done" else "Change",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                // "Change" → "Done" is a *state*, so it crossfades instead of
+                // swapping glyphs; the chevron beside it is already animating, and a
+                // label that cuts while its neighbour rotates looks broken.
+                AnimatedContent(
+                    targetState = expanded,
+                    transitionSpec = {
+                        fadeIn(tween(150)).togetherWith(fadeOut(tween(90)))
+                    },
+                    label = "paperActionLabel"
+                ) { open ->
+                    Text(
+                        if (open) "Done" else "Change",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
                 Spacer(Modifier.width(4.dp))
                 Icon(
                     Icons.Default.ExpandMore,
@@ -894,16 +924,31 @@ private fun PaperOption(
         animationSpec = tween(CHOICE_MS),
         label = "paperContainer"
     )
-    val content = if (selected) {
-        MaterialTheme.colorScheme.onPrimaryContainer
-    } else {
-        MaterialTheme.colorScheme.onSurface
-    }
+    // The label colour is animated, not switched: the container is already
+    // crossfading, and a label that jumps a frame ahead of its background reads as a
+    // flicker on a sheet this dense. 140 ms is the same beat the container keeps.
+    val content by animateColorAsState(
+        targetValue = if (selected) {
+            MaterialTheme.colorScheme.onPrimaryContainer
+        } else {
+            MaterialTheme.colorScheme.onSurface
+        },
+        animationSpec = tween(140),
+        label = "paperContent"
+    )
+    // Selecting *relaxes* the corner — the same gesture the connected groups make,
+    // where the chosen cell leans to a pill. Reading a choice as a change of shape is
+    // cheaper than reading it as a change of colour alone.
+    val corner by animateDpAsState(
+        targetValue = if (selected) 16.dp else 12.dp,
+        animationSpec = tween(160),
+        label = "paperCorner"
+    )
     Column(
         modifier = modifier
             .height(54.dp)
             .pressScale(interactions)
-            .clip(DocShapes.thumbnail)
+            .clip(RoundedCornerShape(corner))
             .background(container)
             // `selectable`, not `clickable`: it publishes *which* option is chosen to
             // accessibility services, so TalkBack says "A4, selected" instead of
@@ -912,7 +957,9 @@ private fun PaperOption(
             .selectable(
                 selected = selected,
                 interactionSource = interactions,
-                indication = ripple(),
+                // Ripple from the *content* colour: on the selected container the
+                // default on-surface ripple is a dark blot on a tinted card.
+                indication = ripple(color = content.copy(alpha = 0.20f)),
                 role = Role.RadioButton,
                 onClick = onClick
             )
@@ -929,14 +976,23 @@ private fun PaperOption(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false)
             )
-            if (selected) {
-                Spacer(Modifier.width(4.dp))
-                Icon(
-                    Icons.Default.Check,
-                    contentDescription = null,
-                    tint = content,
-                    modifier = Modifier.size(14.dp)
-                )
+            // The tick arrives as a movement — scale from 0.6 with a fade — instead
+            // of appearing between frames. It is the confirmation of the whole tap, so
+            // it is the one thing on this card that has to look intentional.
+            AnimatedVisibility(
+                visible = selected,
+                enter = fadeIn(tween(120)) + scaleIn(tween(160), initialScale = 0.6f),
+                exit = fadeOut(tween(80)) + scaleOut(tween(110), targetScale = 0.6f)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = null,
+                        tint = content,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
             }
         }
         Text(
@@ -982,11 +1038,22 @@ private fun CompressionCard(
         animationSpec = tween(CHOICE_MS),
         label = "compressionContainer"
     )
-    val content = if (selected) {
-        MaterialTheme.colorScheme.onPrimaryContainer
-    } else {
-        MaterialTheme.colorScheme.onSurface
-    }
+    val content by animateColorAsState(
+        targetValue = if (selected) {
+            MaterialTheme.colorScheme.onPrimaryContainer
+        } else {
+            MaterialTheme.colorScheme.onSurface
+        },
+        animationSpec = tween(140),
+        label = "compressionContent"
+    )
+    // Same corner relaxation as the paper cards: choosing a level makes the card lean
+    // towards a pill, which is the app's one "this is the chosen one" gesture.
+    val corner by animateDpAsState(
+        targetValue = if (selected) 18.dp else 14.dp,
+        animationSpec = tween(160),
+        label = "compressionCorner"
+    )
     Column(
         modifier = modifier
             // Three lines now: label, estimate, up to two lines of detail. A
@@ -997,12 +1064,12 @@ private fun CompressionCard(
             // they carry the same structure.
             .heightIn(min = 88.dp)
             .pressScale(interactions)
-            .clip(DocShapes.cardSmall)
+            .clip(RoundedCornerShape(corner))
             .background(container)
             .selectable(
                 selected = selected,
                 interactionSource = interactions,
-                indication = ripple(),
+                indication = ripple(color = content.copy(alpha = 0.20f)),
                 role = Role.RadioButton,
                 onClick = onClick
             )
@@ -1018,14 +1085,20 @@ private fun CompressionCard(
                 maxLines = 1,
                 modifier = Modifier.weight(1f, fill = false)
             )
-            if (selected) {
-                Spacer(Modifier.width(4.dp))
-                Icon(
-                    Icons.Default.Check,
-                    contentDescription = null,
-                    tint = content,
-                    modifier = Modifier.size(14.dp)
-                )
+            AnimatedVisibility(
+                visible = selected,
+                enter = fadeIn(tween(120)) + scaleIn(tween(160), initialScale = 0.6f),
+                exit = fadeOut(tween(80)) + scaleOut(tween(110), targetScale = 0.6f)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = null,
+                        tint = content,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
             }
         }
         Spacer(Modifier.height(2.dp))
@@ -1072,11 +1145,15 @@ private fun ChoiceChip(
         animationSpec = tween(CHOICE_MS),
         label = "chipContainer"
     )
-    val content = if (selected) {
-        MaterialTheme.colorScheme.onPrimary
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
-    }
+    val content by animateColorAsState(
+        targetValue = if (selected) {
+            MaterialTheme.colorScheme.onPrimary
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        animationSpec = tween(140),
+        label = "chipContent"
+    )
     Row(
         modifier = modifier
             // 40 dp tall: a comfortable target for a two-word label, and tall enough
@@ -1088,7 +1165,7 @@ private fun ChoiceChip(
             .selectable(
                 selected = selected,
                 interactionSource = interactions,
-                indication = ripple(),
+                indication = ripple(color = content.copy(alpha = 0.22f)),
                 role = Role.RadioButton,
                 onClick = onClick
             )
@@ -1096,14 +1173,23 @@ private fun ChoiceChip(
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (selected) {
-            Icon(
-                Icons.Default.Check,
-                contentDescription = null,
-                tint = content,
-                modifier = Modifier.size(15.dp)
-            )
-            Spacer(Modifier.width(6.dp))
+        // The tick slides *in* from the left, so the label is not shoved sideways in a
+        // single frame — four chips in a 2 × 2 grid that each jump wider when chosen is
+        // the kind of motion that makes a sheet feel cheap.
+        AnimatedVisibility(
+            visible = selected,
+            enter = fadeIn(tween(110)) + expandHorizontally(tween(160, easing = Motion.EaseOut)),
+            exit = fadeOut(tween(80)) + shrinkHorizontally(tween(110, easing = Motion.EaseIn))
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Check,
+                    contentDescription = null,
+                    tint = content,
+                    modifier = Modifier.size(15.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+            }
         }
         Text(
             label,
@@ -1131,31 +1217,74 @@ private fun ToggleRow(
     checked: Boolean,
     onToggle: () -> Unit
 ) {
+    // A switch has three moments and the system only draws two of them (the thumb
+    // sliding, the track filling). The third is *the row answering the finger*, and
+    // that is what was missing here: tapping the title of a 300 dp row produced no
+    // reaction at all until the thumb moved. So the row now presses like every other
+    // control in the app — 0.99 of scale, a wash of the accent — and the title takes
+    // the accent colour when it is on.
+    val interactions = remember { MutableInteractionSource() }
+    val pressed by interactions.collectIsPressedAsState()
+    val wash by animateColorAsState(
+        targetValue = if (pressed) {
+            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+        } else {
+            Color.Transparent
+        },
+        animationSpec = tween(if (pressed) 90 else 200),
+        label = "toggleWash"
+    )
+    val titleColor by animateColorAsState(
+        targetValue = if (checked) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.onSurface
+        },
+        animationSpec = tween(160),
+        label = "toggleTitle"
+    )
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .pressScale(interactions, pressedScale = 0.99f)
             .clip(DocShapes.thumbnail)
+            .background(wash)
             // `toggleable` announces "on/off" and the Switch role; a plain clickable
             // row reads as an unnamed button that happens to contain a switch.
             .toggleable(
                 value = checked,
+                interactionSource = interactions,
+                indication = ripple(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
                 role = Role.Switch,
                 onValueChange = { onToggle() }
             )
-            .padding(vertical = 10.dp),
+            .padding(horizontal = 4.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.weight(1f)) {
             Text(
                 title,
                 style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Medium
+                fontWeight = FontWeight.Medium,
+                color = titleColor
             )
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            // The subtitle crossfades rather than swapping: turning protection on
+            // changes what this line says ("anyone can open it" → "needed to open
+            // it"), and a sentence that blinks to a different sentence under the
+            // thumb is easy to miss entirely.
+            AnimatedContent(
+                targetState = subtitle,
+                transitionSpec = {
+                    fadeIn(tween(160)).togetherWith(fadeOut(tween(90)))
+                },
+                label = "toggleSubtitle"
+            ) { text ->
+                Text(
+                    text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
         Spacer(Modifier.width(12.dp))
         Switch(checked = checked, onCheckedChange = null)
@@ -1208,6 +1337,18 @@ private fun ExportCta(
 ) {
     val interactions = remember { MutableInteractionSource() }
     val enabledAlpha by animateFloatAsState(if (enabled) 1f else 0.45f, label = "ctaAlpha")
+    // The caption is the sentence that says what the button will produce, and it
+    // changes under the finger — "12 pages · A4 · Original" becomes "Keep this screen
+    // open" the instant the write starts. Animated, so the promise does not teleport.
+    val captionColor by animateColorAsState(
+        targetValue = if (enabled || busy) {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        } else {
+            MaterialTheme.colorScheme.error
+        },
+        animationSpec = tween(160),
+        label = "ctaCaptionColor"
+    )
     Column {
         Surface(
             color = MaterialTheme.colorScheme.primary,
@@ -1231,33 +1372,59 @@ private fun ExportCta(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (busy) {
-                    LoadingDots(color = MaterialTheme.colorScheme.onPrimary, dotSize = 7.dp)
-                    Spacer(Modifier.width(10.dp))
-                } else {
-                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(19.dp))
-                    Spacer(Modifier.width(9.dp))
+                // Glyph → breathing dots, crossfaded: the leading slot changing width
+                // mid-tap is what made the button look like it flickered.
+                AnimatedContent(
+                    targetState = busy,
+                    transitionSpec = {
+                        (fadeIn(tween(160)) + scaleIn(tween(180), initialScale = 0.8f))
+                            .togetherWith(fadeOut(tween(100)))
+                    },
+                    label = "ctaLeading"
+                ) { working ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (working) {
+                            LoadingDots(
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                dotSize = 7.dp
+                            )
+                            Spacer(Modifier.width(10.dp))
+                        } else {
+                            Icon(
+                                Icons.Default.Share,
+                                contentDescription = null,
+                                modifier = Modifier.size(19.dp)
+                            )
+                            Spacer(Modifier.width(9.dp))
+                        }
+                    }
                 }
-                Text(
-                    label,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
+                AnimatedContent(
+                    targetState = label,
+                    transitionSpec = {
+                        (fadeIn(tween(160)) + slideInVertically(tween(200)) { it / 3 })
+                            .togetherWith(fadeOut(tween(100)))
+                    },
+                    label = "ctaLabel"
+                ) { text ->
+                    Text(
+                        text,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
         }
         Spacer(Modifier.height(8.dp))
         Text(
             caption,
             style = MaterialTheme.typography.labelMedium,
-            color = if (enabled || busy) {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            } else {
-                MaterialTheme.colorScheme.error
-            },
+            color = captionColor,
             maxLines = 2,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp)
+                .animateContentSize(tween(180, easing = Motion.EaseOut))
         )
     }
 }

@@ -203,6 +203,63 @@ object ImageStore {
         )
     }
 
+    /**
+     * Copies a page's files to a **new page id** and returns the copied record.
+     *
+     * Duplicating a page cannot simply reuse its paths: files are named by page id, and
+     * deleting either copy would delete the other's pixels out from under it. So the
+     * pristine capture, the bake (whichever of `.jpg`/`.png` it is) and a fresh
+     * thumbnail are all written under [newPageId].
+     *
+     * The signature overlay is deliberately **shared**: signature files are keyed by
+     * signature id and [deletePageFiles] never touches them, so one copy is correct.
+     *
+     * @return the new page, or `null` if the pristine capture could not be copied.
+     */
+    fun copyPageFiles(
+        context: Context,
+        source: ScannedPage,
+        newPageId: String
+    ): ScannedPage? {
+        val pristine = resolveFile(context, source.originalImageUri ?: source.imageUri)
+            ?: return null
+        val pristineTarget = pageFile(context, newPageId)
+        return runCatching {
+            pristine.parentFile?.let { if (!it.exists()) it.mkdirs() }
+            pristine.copyTo(pristineTarget, overwrite = true)
+            pristineTarget.setLastModified(nextStamp())
+        }.mapCatching {
+            // The baked file may be absent (a page never edited) — then there is
+            // nothing to copy and the new page starts from its pristine capture.
+            val edited = listOf(editedFile(context, source.id), editedLosslessFile(context, source.id))
+                .firstOrNull { it.isFile }
+            var newUri = pristineTarget.absolutePath
+            var revision = 0
+            if (edited != null) {
+                val target = if (edited.extension.equals("png", true)) {
+                    editedLosslessFile(context, newPageId)
+                } else {
+                    editedFile(context, newPageId)
+                }
+                edited.copyTo(target, overwrite = true)
+                target.setLastModified(nextStamp())
+                newUri = target.absolutePath
+                revision = source.revision
+            }
+            // A fresh cover for the fresh page: the source's thumbnail key belongs to
+            // the source file's size and mtime, so it cannot be reused.
+            loadBitmap(context, pristineTarget.absolutePath, ThumbnailStore.LONG_EDGE)?.let { bitmap ->
+                ThumbnailStore.writeFor(context, newUri, bitmap)
+            }
+            source.copy(
+                id = newPageId,
+                imageUri = newUri,
+                originalImageUri = pristineTarget.absolutePath,
+                revision = revision
+            )
+        }.getOrNull()
+    }
+
     // ---------------------------------------------------------------- saving
 
     /**
