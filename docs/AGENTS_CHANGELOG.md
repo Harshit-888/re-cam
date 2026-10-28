@@ -10,6 +10,12 @@ Clean-build and test verification for Arena Rounds 62–63 (shadow removal refin
 - **Test Adjustment**: Fixed synthetic test dimension in `DocumentFiltersTest.surfaceGate_acceptsAPageThatIsHalfInShadow` (`w=256, cell=4`) so that the interpolation boundary across the synthetic half-shadow matches realistic full-frame proportions (<1.5% of samples) rather than the 25% boundary artifact of a 64px image with a 16px cell.
 - **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.9 MB), and `testDebugUnitTest` passed 100% (221 tests across 25 tasks, 0 failures).
 
+## 2026-10-28 — Antigravity — Round 64 compilation fix & build verification
+
+Resolved unit test compilation error from Arena Round 64 integration and verified clean build:
+- **`DocumentFiltersTest.kt`**: Fixed argument type mismatch in `lightTextCurve_keepsFaintMarksAndReachesWhiteBeforePaper` by converting integer arguments in `assertEquals(message, expected, actual, delta)` to floats (`159f`, `curve[...].toFloat()`, `3f`).
+- **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.9 MB), and `testDebugUnitTest` passed 100% (25 tasks, 0 failures).
+
 ## 2026-10-28 — Arena.ai — Round 64: the background, taken apart (shadows, Light Text, sharpness)
 
 *"the smart scan is still not that accurate in shadow cleaning also the light text is

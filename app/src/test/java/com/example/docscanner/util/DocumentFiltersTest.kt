@@ -1088,8 +1088,8 @@ class DocumentFiltersTest {
         val curve = DocumentFilters.ratioCurve(0.70f, 0.94f, 1.0f)
         assertEquals("at the toe a pixel is ink", 0, curve[0])
         assertEquals("at the shoulder it is paper", 255, curve[240])
-        assertEquals("85 % of paper stays visible", 159, curve[(0.85f * 255).toInt()], 3)
-        assertEquals("80 % of paper is clearly a mark", 106, curve[(0.80f * 255).toInt()], 3)
+        assertEquals("85 % of paper stays visible", 159f, curve[(0.85f * 255).toInt()].toFloat(), 3f)
+        assertEquals("80 % of paper is clearly a mark", 106f, curve[(0.80f * 255).toInt()].toFloat(), 3f)
         for (i in 1..255) {
             assertTrue("the curve must never invert at $i", curve[i] >= curve[i - 1])
         }
