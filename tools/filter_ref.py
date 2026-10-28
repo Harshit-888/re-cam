@@ -105,7 +105,9 @@ DETAIL_SCALE = 50
 PRESETS = {
     # name: (curve lo, curve hi, gamma, floor Q8, chroma Q8, detail cap Q8)
     "SMART": (0.60, 0.98, 1.6, 56, 287, 56),
-    "LIGHT_TEXT": (0.78, 0.99, 1.5, 64, 307, 0),
+    # Round 63: the toe is lower (so faint marks survive) and the shoulder reaches
+    # white sooner (so a background the surface could not flatten is not greyed).
+    "LIGHT_TEXT": (0.70, 0.94, 1.0, 64, 307, 0),
     # The scene curve: near-identity, so a photograph is white-balanced and nothing
     # else. Selected by `classifiesAsDocument` returning false.
     "SCENE": (0.02, 0.99, 1.0, 128, 256, 0),

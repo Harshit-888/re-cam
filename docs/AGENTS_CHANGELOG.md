@@ -10,6 +10,122 @@ Clean-build and test verification for Arena Rounds 62–63 (shadow removal refin
 - **Test Adjustment**: Fixed synthetic test dimension in `DocumentFiltersTest.surfaceGate_acceptsAPageThatIsHalfInShadow` (`w=256, cell=4`) so that the interpolation boundary across the synthetic half-shadow matches realistic full-frame proportions (<1.5% of samples) rather than the 25% boundary artifact of a 64px image with a 16px cell.
 - **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.9 MB), and `testDebugUnitTest` passed 100% (221 tests across 25 tasks, 0 failures).
 
+## 2026-10-28 — Arena.ai — Round 64: the background, taken apart (shadows, Light Text, sharpness)
+
+*"the smart scan is still not that accurate in shadow cleaning also the light text is
+working just the opposite … i want the content as clean as possible with least background
+disturbance and shadows … also make the text more sharp."*
+
+Three complaints, one defect: **the paper estimate is spatially band-limited.** It is one
+number per cell (~1 % of the page), so a shadow edge, a page curl, the phone's own shadow
+and the shading under a hand are all faster than it can follow; where it lags, the divide
+under-corrects and a grey seam is left beside every crisp shadow. Light Text then made it
+look worse, because its curve started at 0.78 of paper: a background left at 0.92 came
+out at **141**, and a pencil at 0.82 came out at **58** — the same as ink, which is the
+"it even darkens the text" report, measured.
+
+Measured first, with a new tool, then changed. All of it is Kotlin: **no Rust edit, no
+`ABI_VERSION` bump, no kernel change**, and the five transcribed presets are untouched.
+
+**New tool: `tools/ink_probe.py`**
+
+Renders pages (text, a pencil line, wide bars, a solid ink block, sensor noise) under
+synthetic lighting — flat, gradient, a 3.2x hand shadow, vignette, lamp glare, a colour
+cast — **through a 5-tap lens blur**, and runs the *whole chain*, not just the kernel. It
+reports paper deviation from white on **clean** paper (no content within 3 px), the
+**seam** (deviation within 1.5 cells of a shadow edge — the thing users see), ink and
+faint-mark levels, ring energy, and the 10-90 % edge width. It also carries a Python
+re-derivation of the Kotlin's stages, so a constant can be swept in seconds.
+
+Two of its own bugs are worth recording because both made it lie in the flattering
+direction: a 256x error in the divide scored *perfectly* on every scene (fixed by
+`sanity()`), and pages drawn with hard edges made every sharpening look like a no-op
+(the optical blur is what gives an edge a width to sharpen). Floor-based grid sampling
+also disagreed with the Kotlin's centred bilinear by a pixel, which is a cell.
+
+**1. The fine-scale correction — `buildFineMap` + `flattenIllumination`**
+
+A second surface on a cell a fifth as wide, **trimmed 35 % from the dark side** (a 256-bin
+histogram, no sort) so ink cannot drag it down, closed with a radius equal to one *coarse*
+cell in fine cells, then median-smoothed twice. It is used **only as the ratio to the
+coarse surface**, on background pixels only (`v ≥ 0.86 · fine`), and applied to the
+*image* before the kernel: `pixel · coarse/fine` fed to an untouched kernel computes
+`pixel / fine`.
+
+Three constants were measured, not guessed. The closing radius must be a **full coarse
+cell**: at half of it, a pencil line next to a paragraph is not erased (the neighbouring
+text caps the local maximum the closing can reach), the fine estimate reports the mark's
+own darkness, and the correction brightens the mark — 208 → 229 before the curve. The
+ratio is bounded to `[0.85, 1.15]`; widening to `[0.70, 1.25]` buys 0.6 levels of seam and
+costs mark safety. A percentile pool was rejected outright: it quantises the grid, so its
+seam is *worse* (51.8 / 225 on the hand shadow) than the mean it was meant to fix.
+
+**2. The paper clamp — `finishAdaptive`**
+
+A page has no content brighter than its own paper, so every pixel within 10 % of white is
+set to **exactly** white with its chroma dropped. This is what makes the background
+*uniform* rather than merely light, and it is Adobe's `L_norm = min(100, L/L_bg · 100)`
+taken literally at the top end. It can only lighten, so it cannot introduce an artifact of
+its own.
+
+**3. Sharpening, inward only — same pass**
+
+`blur(v) − v`, positive only where a pixel is darker than its neighbourhood, then
+`min(40, (d − 3) · 0.45)` levels off, for `12 < v < 210`. This round first used the
+obvious sharpener, a 3x3 Laplacian, and it was **worth 0.00 px** of edge width: a Laplacian
+is a second derivative and is therefore zero in the middle of a ramp, which is exactly what
+a lens-blurred stroke edge is. Two 3x3 box passes (a triangle 5-tap, sigma ~1.3 px) minus
+the pixel is a first-order high pass on the darkness plane: large on the ink side of an
+edge and on thin strokes, zero inside a solid block and on paper.
+
+**4. Light Text is a different curve**
+
+`ratioCurve(0.78, 0.99, 1.5)` → **`ratioCurve(0.70, 0.94, 1.0)`**, clamping at the same
+level as Smart Scan. The old curve was doing the background's job badly; with the clamp
+doing it, the curve only has to separate a faint mark from paper — 85 % of paper lands at
+159 and 80 % at 106, i.e. clearly visible, on pure white paper.
+
+**Measured — `python3 tools/ink_probe.py report` / `light` / `edge`.** paper | worst | seam
+are clean-paper deviation from white, seam is inside 1.5 cells of a shadow edge, edge is
+the 10-90 % transition width in px:
+
+| scene | paper SMA R62→R64 | seam | ink | faint | edge |
+|---|---|---|---|---|---|
+| flat | 0.0 → 0.0 | 0.0 → 0.0 | 15.7 → 11.4 | 113.6 → 109.6 | 1.80 → 0.00 |
+| gradient | 0.7 → 0.0 | 0.1 → 0.0 | 15.4 → 11.1 | 113.3 → 109.4 | 1.80 → 0.90 |
+| hand shadow | 1.9 → 0.6 | **46.9 → 15.2** | 15.4 → 11.2 | 112.7 → 108.6 | 1.80 → 0.00 |
+| vignette | **4.3 → 0.2** | — | 15.7 → 11.1 | 117.9 → 114.3 | 1.80 → 0.00 |
+| lamp + glare | 1.5 → 1.0 | **39.2 → 27.4** | 15.4 → 11.2 | 113.9 → 109.8 | 1.80 → 0.00 |
+| shadow + cast | 1.3 → 0.3 | **29.8 → 7.8** | 15.4 → 11.2 | 113.3 → 109.2 | 1.80 → 0.00 |
+
+| scene | paper LIGHT R62→R64 | seam | ink | faint |
+|---|---|---|---|---|
+| flat | 0.0 → 0.0 | 0.0 → 0.0 | 18.0 → 12.9 | **57.8 → 130.8** |
+| hand shadow | 3.3 → 0.2 | **67.6 → 5.6** | 17.7 → 12.7 | 58.5 → 129.7 |
+| vignette | **9.2 → 0.0** | — | 17.9 → 12.6 | 63.5 → 137.9 |
+| lamp + glare | 2.0 → 0.8 | **45.1 → 22.6** | 17.7 → 12.7 | 59.4 → 131.3 |
+| shadow + cast | 2.6 → 0.0 | **53.5 → 0.0** | 17.6 → 12.7 | 58.0 → 130.2 |
+
+Ring energy (paper one pixel outside the optical reach of any content) is ≤ 1.0 level with
+the sharpening on and ≤ 0.9 with it off, i.e. the sharpening does not ring. What got
+slightly worse: the worst clean-paper pixel on the glare scene rises 220 → 255 (a pixel the
+curve had already taken to 0, pushed further by the cap), and the specular region of that
+scene is genuinely over-exposed.
+
+**Changed:** `util/DocumentFilters.kt` (new `FineMap`, `trimmedPool`, `buildFineMap`,
+`sampleFine`, `flattenIllumination`, `finishAdaptive`, constants; `applyAdaptive` calls the
+two new stages and passes `detailCap = 0`; `lightTextCurve`), `util/DocumentFiltersTest.kt`
+(8 new tests), `tools/filter_ref.py` (Light Text preset), new `tools/ink_probe.py`,
+`docs/filter_combined_spec.md` §3 and new §8.
+
+**Not changed:** the Rust crate, `ABI_VERSION` (3), `NativeFilters`, the five transcribed
+presets, `buildPaperMap`'s legacy path, PDF output, any geometry path, and any UI.
+
+**Owed:** `./gradlew testDebugUnitTest assembleDebug` (no Android SDK here) and
+`cargo test` — neither was run, and nothing here was compiled. The new stages add two
+box passes, one ratio pass and one high-pass pass per frame on the bake path (the preview
+path is ≤ 900 px); worth a `DocScannerPerf` trace on a 3200 px page.
+
 ## 2026-10-28 — Arena.ai — Round 63: live border detection, and borders for imports
 
 *"Also add the auto border detection while clicking pictures and also after capturing."*

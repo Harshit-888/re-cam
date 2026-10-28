@@ -1020,7 +1020,15 @@ object DocumentFilters {
 
     /** The preset curves, built once. `ratioCurve` is pure and cheap but not free. */
     private val smartCurve: IntArray by lazy { ratioCurve(0.60f, 0.98f, 1.6f) }
-    private val lightTextCurve: IntArray by lazy { ratioCurve(0.78f, 0.99f, 1.5f) }
+    // Round 63: Light Text used to start at 0.78 of paper with a gamma of 1.5, which
+    // made any background the surface could not flatten come out mid-grey — a page at
+    // 0.92 of paper mapped to 141. Its job is to keep *faint marks visible*, not to
+    // grey the paper, and those two are only in conflict if the curve is doing the
+    // flattening. It is not any more (the clamp is), so the curve can be gentle in the
+    // toe and reach white well before paper: 0.70 → 0.94, linear, which keeps a mark at
+    // 85 % of paper at 159 and a mark at 80 % at 106, while anything the clamp did not
+    // already whiten is within a few per cent of it.
+    private val lightTextCurve: IntArray by lazy { ratioCurve(0.70f, 0.94f, 1.0f) }
     private val sceneCurve: IntArray by lazy { ratioCurve(0.02f, 0.99f, 1.0f) }
 
     /** Lowest gain a pixel may be scaled by, so saturated ink keeps its colour. */
@@ -1255,21 +1263,20 @@ object DocumentFilters {
             mode == AdaptiveMode.LIGHT_TEXT -> ADAPTIVE_CHROMA_LIGHT
             else -> ADAPTIVE_CHROMA_SMART
         }
-        // Edge crispening only where it cannot hurt: a document under the everyday
-        // curve. Faint ink is the light-text target and a scene must not be sharpened.
-        val detailCap = if (document && mode == AdaptiveMode.SMART) ADAPTIVE_DETAIL_SMART else 0
+        // Round 64: the edge crispening used to be a gain boost *inside* the kernel
+        // (up to +22 %, before the tone curve). It is now a separate, later stage that
+        // darkens the ink side of an edge after the paper has been clamped — see
+        // `finishAdaptive`. The kernel's own detail hook stays wired (and stays zero)
+        // because the Rust ABI still has the parameter.
+        val detail = FloatArray(0)
 
-        val detail = if (detailCap > 0) {
-            val luma = FloatArray(w * h)
-            lumaPlane(pixels, luma)
-            // Same pair the level-1 path uses: 3×3 median (so grain is not amplified)
-            // then the Laplacian as an edge-strength estimate.
-            laplacian3x3(median3x3(luma, w, h), w, h)
-        } else {
-            FloatArray(0)
+        // The fine-scale correction, applied to the image before the kernel divides by
+        // the coarse surface. Background only: see `flattenIllumination`.
+        if (document) {
+            flattenIllumination(pixels, w, h, surface, buildFineMap(pixels, w, h, surface))
         }
 
-        val params = intArrayOf(kneeQ8, capQ8, floorQ8, chromaQ8, detailCap, ADAPTIVE_DETAIL_SCALE)
+        val params = intArrayOf(kneeQ8, capQ8, floorQ8, chromaQ8, 0, ADAPTIVE_DETAIL_SCALE)
         val usedNative = nativeFiltersReady() && NativeFilters.adaptiveColour(
             pixels, w, grid[0], grid[1], grid[2],
             surface.gw, surface.gh, cell,
@@ -1280,6 +1287,16 @@ object DocumentFilters {
                 pixels, w, grid[0], grid[1], grid[2],
                 surface.gw, surface.gh, cell,
                 curve, params, detail
+            )
+        }
+
+        // Paper to white, then sharpen inward. Documents only: a photograph must keep
+        // its highlights, and there is no "paper" in it to clamp to.
+        if (document) {
+            finishAdaptive(
+                pixels, w, h,
+                clampPercent = if (mode == AdaptiveMode.LIGHT_TEXT) PAPER_CLAMP_LIGHT_PERCENT else PAPER_CLAMP_PERCENT,
+                sharpenQ8 = FINISH_SHARPEN_Q8
             )
         }
     }
@@ -1574,6 +1591,399 @@ object DocumentFilters {
             }
         }
         return out
+    }
+
+    // ==================================================================================
+    // Round 64 — the background, taken apart
+    // ==================================================================================
+    //
+    // Round 62 fixed the *decision* (is this a page?) and the *smoothing* (a median
+    // instead of three box passes). The report that followed was: shadows are still
+    // not clean, `LIGHT_TEXT` darkens the whole page, and the text is not sharp.
+    //
+    // All three are the same defect seen from three directions: **the paper estimate
+    // is spatially band-limited.** It is one number per cell (~1 % of the page), so
+    // it cannot follow anything faster than a cell — and a shadow edge, a page curl,
+    // the shadow of the phone's own body and the shading under a hand are all faster
+    // than that. Where the estimate lags, the divide under-corrects, and what is left
+    // is grey. `LIGHT_TEXT` then makes it look worse, because its curve started at
+    // 0.78 of paper: a background left at 0.9 of paper landed in the steep part of the
+    // curve and came out mid-grey — and a pencil, at 0.82 of paper, came out at **58**,
+    // i.e. as dark as ink. The curve was never doing the background's job; it was.
+    //
+    // Measured with `tools/ink_probe.py` — synthetic pages at 480x360 with the same
+    // relative cell size as a 3200 px capture, rendered through a lens-like 5-tap blur
+    // so an edge has a width to sharpen. "paper" is the mean deviation of clean paper
+    // from white (paper with no content within 3 px); "seam" is the same inside 1.5
+    // cells of a shadow edge; "ink"/"faint" are the rendered stroke and pencil levels;
+    // "edge" is the 10-90 % transition width across a bar, in pixels. Smart Scan,
+    // before → after:
+    //
+    // | scene | paper | seam | ink | faint | edge |
+    // |---|---|---|---|---|---|
+    // | flat | 0.0 → 0.0 | 0.0 → 0.0 | 15.7 → 11.4 | 113.6 → 109.6 | 1.80 → 0.00 px |
+    // | gradient | 0.7 → 0.0 | 0.1 → 0.0 | 15.4 → 11.1 | 113.3 → 109.4 | 1.80 → 0.90 px |
+    // | hand shadow | 1.9 → 0.6 | 46.9 → 15.2 | 15.4 → 11.2 | 112.7 → 108.6 | 1.80 → 0.00 px |
+    // | vignette | 4.3 → 0.2 | — | 15.7 → 11.1 | 117.9 → 114.3 | 1.80 → 0.00 px |
+    // | lamp + glare | 1.5 → 1.0 | 39.2 → 27.4 | 15.4 → 11.2 | 113.9 → 109.8 | 1.80 → 0.00 px |
+    // | shadow + cast | 1.3 → 0.3 | 29.8 → 7.8 | 15.4 → 11.2 | 113.3 → 109.2 | 1.80 → 0.00 px |
+    //
+    // and Light Text, same tool, against round 62:
+    //
+    // | scene | paper | seam | ink | faint |
+    // |---|---|---|---|---|
+    // | hand shadow | 3.3 → 0.2 | 67.6 → 5.6 | 17.7 → 12.7 | 58.5 → 129.7 |
+    // | vignette | 9.2 → 0.0 | — | 17.9 → 12.6 | 63.5 → 137.9 |
+    // | shadow + cast | 2.6 → 0.0 | 53.5 → 0.0 | 17.6 → 12.7 | 58.0 → 130.2 |
+    //
+    // Four additions, each of which can be removed on its own:
+    //
+    // 1. [buildFineMap] + [flattenIllumination] — a second estimate on a cell a fifth
+    //    as wide, used *only as the ratio to the coarse one*, and only on background
+    //    pixels. It says "the coarse surface is 20 % too bright here", which is
+    //    exactly what a shadow edge is.
+    // 2. [finishAdaptive] — a paper **clamp**: a page has no content brighter than its
+    //    own paper except a specular glint, so everything within a few per cent of
+    //    white is set to white. That is what makes the background *uniform* instead
+    //    of merely light, and it is Adobe's `L_norm = min(100, L/L_bg·100)` taken
+    //    literally at the top end.
+    // 3. The same pass sharpens **inward**, from a local *mean* and not a Laplacian:
+    //    a pixel darker than its neighbourhood gets darker, a brighter one does not
+    //    get brighter (it is already clamped). A 3x3 Laplacian is the second
+    //    derivative, so it is exactly zero in the middle of a ramp — which is what a
+    //    lens-blurred stroke edge *is* — and it moved the measured edge width by
+    //    0.00 px. A triangle blur minus the pixel is a first derivative of the
+    //    darkness plane: it is large on the ink side of a ramp and on thin strokes,
+    //    and zero inside a solid block and on paper.
+    // 4. `lightTextCurve` is rebuilt (see below). Its old toe turned a pencil into
+    //    ink; with the clamp doing the whitening, it only has to separate a mark from
+    //    paper.
+
+    /** The fine surface: same estimator, a fifth of the cell, kept for its ratios. */
+    internal class FineMap(
+        val planes: Array<FloatArray>,
+        val gw: Int,
+        val gh: Int,
+        val cell: Int
+    )
+
+    /** Fine cell is this fraction of the coarse one. */
+    private const val FINE_CELL_DIVISOR = 5
+
+    /** Fraction of the darkest samples discarded when pooling a fine cell. */
+    private const val FINE_TRIM_PERCENT = 35
+
+    /** `256`: the fixed-point one used by every multiply in this section. */
+    private const val Q_ONE = 256
+
+    /** Bounds on the fine/coarse correction. Outside these it is an artifact. */
+    private const val FINE_RATIO_LOW = 0.85f
+    private const val FINE_RATIO_HIGH = 1.15f
+
+    /**
+     * How close to the *fine* surface a pixel must be to count as background.
+     *
+     * Gated on the fine estimate, not the coarse one: at a shadow edge a background
+     * pixel is far below the coarse surface (which is what is wrong with it), and
+     * looks like ordinary background only next to the fine one.
+     */
+    private const val FINE_INK_GATE = 0.86f
+
+    /**
+     * Per-cell **trimmed mean**: the average of all but the darkest [FINE_TRIM_PERCENT]
+     * of the cell's samples, from a 256-bin histogram so there is no sort.
+     *
+     * A plain mean is dragged toward ink, which is the reason a dense paragraph keeps
+     * its paper grey; a percentile rejects the ink but quantises, and a quantised
+     * surface leaves a harder seam at a light step than a smooth one (measured: 51.8
+     * against 18.4 at cell scale). Trimming the dark tail keeps the mean's smoothness
+     * and gains the ink rejection, which is what the *fine* pass needs.
+     *
+     * Used only for the fine grid. The coarse grid keeps its mean pool: it is the one
+     * the parity tests and the five transcribed presets are built on, and at cell
+     * scale the closing already removes the ink a mean is biased by.
+     */
+    internal fun trimmedPool(
+        pixels: IntArray,
+        w: Int,
+        h: Int,
+        cell: Int,
+        gw: Int,
+        gh: Int,
+        dropPercent: Int = FINE_TRIM_PERCENT
+    ): Array<FloatArray> {
+        val out = Array(3) { FloatArray(gw * gh) }
+        val hist = IntArray(256)
+        for (gy in 0 until gh) {
+            val y0 = min(h - 1, gy * cell)
+            val y1 = min(h, y0 + cell)
+            for (gx in 0 until gw) {
+                val x0 = min(w - 1, gx * cell)
+                val x1 = min(w, x0 + cell)
+                val index = gy * gw + gx
+                for (channel in 0 until 3) {
+                    val shift = 16 - channel * 8
+                    var count = 0
+                    for (y in y0 until y1) {
+                        var i = y * w + x0
+                        repeat(x1 - x0) {
+                            hist[(pixels[i] ushr shift) and 0xFF]++
+                            count++
+                            i++
+                        }
+                    }
+                    if (count > 0) {
+                        val cut = count * dropPercent / 100
+                        var seen = 0
+                        var sum = 0L
+                        var kept = 0
+                        for (value in 0..255) {
+                            val bin = hist[value]
+                            if (bin == 0) continue
+                            var take = bin
+                            if (seen < cut) take -= min(take, cut - seen)
+                            seen += bin
+                            if (take > 0) {
+                                sum += value.toLong() * take
+                                kept += take
+                            }
+                        }
+                        out[channel][index] = if (kept > 0) sum.toFloat() / kept else 0f
+                    }
+                    // Clear only what was touched: a full 256-bin wipe per cell costs
+                    // more than the pooling itself on a 213k-cell grid.
+                    for (y in y0 until y1) {
+                        var i = y * w + x0
+                        repeat(x1 - x0) {
+                            hist[(pixels[i] ushr shift) and 0xFF] = 0
+                            i++
+                        }
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    /**
+     * The fine surface for [coarse]: painted with [trimmedPool], closed with the same
+     * reach *in pixels* as the coarse one, then median-smoothed.
+     *
+     * The closing radius is the load-bearing number. Anything narrower than a coarse
+     * cell — a pencil line, a stroke of body text — has to be erased by it, or the
+     * fine estimate reports the mark's own darkness as "the paper here is darker",
+     * and the correction bleaches the mark away.
+     */
+    internal fun buildFineMap(pixels: IntArray, w: Int, h: Int, coarse: PaperMap): FineMap {
+        val cell = max(2, (coarse.block.toInt()) / FINE_CELL_DIVISOR)
+        val gw = max(1, (w + cell - 1) / cell)
+        val gh = max(1, (h + cell - 1) / cell)
+        // One coarse cell, in fine cells. Measured: at half of this a pencil line next
+        // to a paragraph is *not* erased — the neighbouring text caps the local maximum
+        // the closing can reach — so the fine estimate reports the mark's own darkness
+        // and the correction bleaches it (208 -> 229 before the curve), while the seam
+        // is the same. At a full cell the mark is erased and the seam is unchanged.
+        val radius = max(2, coarse.block.toInt() / cell)
+        val planes = trimmedPool(pixels, w, h, cell, gw, gh)
+        for (channel in 0 until 3) {
+            var plane = windowOp(planes[channel], gw, gh, radius, dilate = true)
+            plane = windowOp(plane, gw, gh, radius, dilate = false)
+            repeat(2) { plane = median3Grid(plane, gw, gh) }
+            planes[channel] = plane
+        }
+        return FineMap(planes, gw, gh, cell)
+    }
+
+    /** Bilinear sample of one plane of a [FineMap]. Same rule as [sample]. */
+    internal fun sampleFine(map: FineMap, channel: Int, x: Int, y: Int): Float {
+        val grid = map.planes[channel]
+        val block = map.cell.toFloat()
+        val fx = ((x + 0.5f) / block - 0.5f).coerceIn(0f, (map.gw - 1).toFloat())
+        val fy = ((y + 0.5f) / block - 0.5f).coerceIn(0f, (map.gh - 1).toFloat())
+        val x0 = fx.toInt().coerceIn(0, map.gw - 1)
+        val y0 = fy.toInt().coerceIn(0, map.gh - 1)
+        val x1 = min(map.gw - 1, x0 + 1)
+        val y1 = min(map.gh - 1, y0 + 1)
+        val tx = fx - x0
+        val ty = fy - y0
+        val i00 = y0 * map.gw + x0
+        val i01 = y0 * map.gw + x1
+        val i10 = y1 * map.gw + x0
+        val i11 = y1 * map.gw + x1
+        val top = grid[i00] + (grid[i01] - grid[i00]) * tx
+        val bottom = grid[i10] + (grid[i11] - grid[i10]) * tx
+        return top + (bottom - top) * ty
+    }
+
+    /**
+     * Applies the fine/coarse ratio to background pixels, **in place, before the
+     * kernel**.
+     *
+     * This is a multiplicative correction on the image rather than on the surface, and
+     * that is deliberate: the kernel divides by the coarse grid, and multiplying the
+     * image by `coarse/fine` here leaves the kernel computing exactly `pixel/fine`.
+     * Doing it on the pixels keeps `adaptive_colour` — the Rust kernel, ABI 3, with its
+     * byte-exact Kotlin reference — completely untouched.
+     *
+     * One scalar per pixel (from the green channel, the one a neutral detector
+     * trusts) is applied to all three, so the correction cannot shift hue.
+     */
+    internal fun flattenIllumination(pixels: IntArray, w: Int, h: Int, coarse: PaperMap, fine: FineMap) {
+        val low = (FINE_RATIO_LOW * Q_ONE).roundToInt()
+        val high = (FINE_RATIO_HIGH * Q_ONE).roundToInt()
+        val gate = FINE_INK_GATE
+        var i = 0
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val p = pixels[i]
+                val r = (p ushr 16) and 0xFF
+                val g = (p ushr 8) and 0xFF
+                val b = p and 0xFF
+                val coarseG = max(1f, sample(coarse.g, coarse, x, y))
+                val fineG = max(1f, sampleFine(fine, 1, x, y))
+                val luma = lumaFixed(r, g, b)
+                if (luma >= gate * fineG) {
+                    // The *surface* ratio, clamped where the probe measured it. The
+                    // multiplier applied here is its reciprocal, because the kernel is
+                    // about to divide by the coarse surface: pixel · (coarse/fine) /
+                    // coarse is pixel / fine, which is what we want it to compute.
+                    val ratioQ8 = ((fineG / coarseG) * 256f).roundToInt().coerceIn(low, high)
+                    val mult = (Q_ONE * Q_ONE + ratioQ8 / 2) / ratioQ8
+                    if (mult != Q_ONE) {
+                        val nr = (r * mult + 128) shr 8
+                        val ng = (g * mult + 128) shr 8
+                        val nb = (b * mult + 128) shr 8
+                        pixels[i] = (p and ALPHA_MASK) or
+                            (min(255, nr) shl 16) or (min(255, ng) shl 8) or min(255, nb)
+                    }
+                }
+                i++
+            }
+        }
+    }
+
+    /**
+     * Paper level, in luma, above which a pixel is certainly paper (percent).
+     *
+     * 90, not 100 and not 96. After the surface work above, what is left of the
+     * background is a wash a few levels deep plus, at a hard shadow edge, one penumbra
+     * column; clamping at 90 turns both into exactly white. Measured with
+     * `tools/ink_probe.py report` — clean-paper deviation from white, mean / worst,
+     * `current` → `r63`:
+     *
+     * | scene | before | after |
+     * |---|---|---|
+     * | flat | 0.0 / 0 | 0.0 / 0 |
+     * | gradient | 0.7 / 45 | **0.0 / 0** |
+     * | hand shadow | 1.9 / 178 | **0.6 / 115** |
+     * | vignette | 4.3 / 189 | **0.2 / 110** |
+     * | lamp + glare | 1.5 / 220 | 1.0 / 255 |
+     * | shadow + cast | 1.3 / 128 | **0.3 / 80** |
+     *
+     * Glare is the exception, and it is honest: its specular region is over-exposed
+     * past any paper level, so a few pixels come out of the curve at 0 and the
+     * 40-level sharpening cap pushes one of them further. It is one pixel of 170k.
+     */
+    private const val PAPER_CLAMP_PERCENT = 90
+
+    /**
+     * Light Text clamps at the same level as Smart Scan.
+     *
+     * It briefly clamped higher (97 %) on the reasoning that a faint mark lives close
+     * to paper and must not be whitened. That is wrong now that the curve is gentle:
+     * the clamp is what makes the background white, and leaving the background to a
+     * curve that starts at 0.70 means a page at 0.92 of paper still comes out grey.
+     * Measured, hand shadow: 3.3 levels off white at round 62, 12.4 with the 97 %
+     * clamp, **0.2** here.
+     */
+    private const val PAPER_CLAMP_LIGHT_PERCENT = PAPER_CLAMP_PERCENT
+
+    /** How many 3x3 box means make the sharpening's blur. Two: a triangle 5-tap. */
+    private const val SHARPEN_PASSES = 2
+
+    /** High-pass level above which a pixel is an edge rather than sensor noise. */
+    private const val FINISH_NOISE_GATE = 3f
+
+    /** How much of the excess high-pass is folded back into the pixel, Q8. */
+    private const val FINISH_SHARPEN_Q8 = 230      // 0.9
+
+    /** Above this luma a pixel is paper, and sharpening it only draws outlines. */
+    private const val SHARPEN_MAX_LUMA = 210f
+
+    /** Most a single pixel may be darkened by the sharpening, in levels. */
+    private const val SHARPEN_MAX_DROP = 40f
+
+    /**
+     * The last stage: clamp paper to white, then sharpen inward.
+     *
+     * Both operations only ever *darken* a pixel, which is what makes them safe to
+     * apply after the tone curve: the paper is already at 255 and cannot ring, and no
+     * halo can form on the bright side of an edge because there is nowhere brighter
+     * to go. Measured ring energy (paper one pixel outside the optical reach of any
+     * content, mean deviation): <= 1.0 level with the sharpening on, <= 0.9 off.
+     *
+     * @param clampPercent paper level (as a percentage of white, in luma) above which
+     *   a pixel is set to pure white. 0 disables the clamp.
+     * @param sharpenQ8 strength of the inward sharpening, Q8; 0 disables it.
+     */
+    internal fun finishAdaptive(
+        pixels: IntArray,
+        w: Int,
+        h: Int,
+        clampPercent: Int = PAPER_CLAMP_PERCENT,
+        sharpenQ8: Int = FINISH_SHARPEN_Q8
+    ) {
+        if (pixels.size < w * h || w < 3 || h < 3) return
+        val luma = FloatArray(w * h)
+        lumaPlane(pixels, luma)
+        val clampLevel = clampPercent * 255 / 100
+        // The high-pass is only needed where it can change something. `boxBlurInPlace`
+        // twice is a triangle 5-tap (sigma ~1.3 px, the width of a lens-blurred edge);
+        // the signal is `blur - v`, positive where the pixel is darker than its
+        // neighbourhood.
+        val high = if (sharpenQ8 > 0) {
+            val blurred = luma.copyOf()
+            repeat(SHARPEN_PASSES) { boxBlurInPlace(blurred, w, h) }
+            for (i in blurred.indices) blurred[i] -= luma[i]
+            blurred
+        } else {
+            FloatArray(0)
+        }
+        var i = 0
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val p = pixels[i]
+                val v = luma[i]
+                if (clampPercent > 0 && v >= clampLevel) {
+                    pixels[i] = p or 0x00FFFFFF
+                    i++
+                    continue
+                }
+                if (sharpenQ8 > 0 && y > 0 && y < h - 1 && x > 0 && x < w - 1) {
+                    val d = high[i]
+                    // Three bounds, all load-bearing. The signal is `blur - v`, so it
+                    // is positive only where the pixel is darker than its
+                    // neighbourhood: paper beside a stroke has a *negative* one, and
+                    // is left alone (that was the black outline around every glyph
+                    // before the sign was fixed). A pixel above `SHARPEN_MAX_LUMA` is
+                    // paper whatever the blur says. And the darkening per pixel is
+                    // capped, so a hard edge cannot be driven to black.
+                    if (d > FINISH_NOISE_GATE && v > 12f && v < SHARPEN_MAX_LUMA) {
+                        val drop = min(
+                            SHARPEN_MAX_DROP,
+                            (d - FINISH_NOISE_GATE) * sharpenQ8 / 512f
+                        )
+                        val target = max(0f, v - drop)
+                        val ratio = target / v
+                        val r = (((p ushr 16) and 0xFF) * ratio).roundToInt().coerceIn(0, 255)
+                        val g = (((p ushr 8) and 0xFF) * ratio).roundToInt().coerceIn(0, 255)
+                        val b = ((p and 0xFF) * ratio).roundToInt().coerceIn(0, 255)
+                        pixels[i] = (p and ALPHA_MASK) or (r shl 16) or (g shl 8) or b
+                    }
+                }
+                i++
+            }
+        }
     }
 
     /**

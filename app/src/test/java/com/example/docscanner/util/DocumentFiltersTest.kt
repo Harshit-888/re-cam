@@ -908,6 +908,187 @@ class DocumentFiltersTest {
         )
     }
 
+    // ------------------------------------ the background and the finish (R63)
+
+    /**
+     * The trimmed pool is what lets the fine surface reject ink without quantising.
+     *
+     * A cell that is 30 % ink has a mean of 200 * 0.7 + 20 * 0.3 = 146 — a 27 % error
+     * in the paper estimate, which is 27 % of shadow the divide cannot remove. Dropping
+     * the darkest third (the ink) gives paper back exactly.
+     */
+    @Test
+    fun trimmedPool_rejectsInkAndKeepsThePaperLevel() {
+        val paper = 200
+        val ink = 20
+        // 100 samples: 70 paper, 30 ink, shuffled deterministically.
+        val values = IntArray(100) { i -> if (i % 10 < 7) paper else ink }
+        val w = 10
+        val h = 10
+        val pixels = IntArray(100) { i -> grey(values[i]) }
+        val plane = DocumentFilters.trimmedPool(pixels, w, h, 10, 1, 1, dropPercent = 35)
+
+        assertEquals("paper must survive the trim exactly", paper.toFloat(), plane[1][0], 0.01f)
+
+        val mean = values.average()
+        assertTrue("a plain mean would be dragged down to $mean", mean < 160)
+    }
+
+    /** The trim has to be unbiased on paper, or every page under-corrects. */
+    @Test
+    fun trimmedPool_isUnbiasedOnFlatPaper() {
+        val pixels = IntArray(64) { i -> grey(128 + (i % 3) - 1) }   // 127..129
+        val plane = DocumentFilters.trimmedPool(pixels, 8, 8, 8, 1, 1)
+        assertEquals(128f, plane[0][0], 1.5f)
+    }
+
+    /**
+     * The fine surface has to see a step that is *narrower than a coarse cell*.
+     *
+     * That is the whole reason it exists: the coarse grid is one number per cell, so a
+     * shadow edge inside a cell is invisible to it, and the divide leaves a grey seam.
+     */
+    @Test
+    fun fineMap_seesAShadowBandNarrowerThanACoarseCell() {
+        val w = 80
+        val h = 64
+        // 32 px wide: wider than twice the fine closing radius, so the closing cannot
+        // fill it, but still inside a single 8 px *coarse* cell's blind spot (the
+        // coarse grid here is one cell, i.e. maximally blind).
+        val bandFrom = 24
+        val bandTo = 56
+        val lit = 240
+        val band = 200
+        val pixels = IntArray(w * h) { i ->
+            val x = i % w
+            grey(if (x in bandFrom until bandTo) band else lit)
+        }
+        val flat = FloatArray(1) { lit.toFloat() }
+        val coarse = DocumentFilters.PaperMap(flat, flat, flat, 1, 1, block = 8f)
+
+        val fine = DocumentFilters.buildFineMap(pixels, w, h, coarse)
+        assertEquals(
+            "the fine cell must be a fifth of the coarse one",
+            2f,
+            fine.cell.toFloat(),
+            0.01f
+        )
+        val inside = DocumentFilters.sampleFine(fine, 1, (bandFrom + bandTo) / 2, h / 2)
+        val outside = DocumentFilters.sampleFine(fine, 1, 4, h / 2)
+        assertTrue("the band must read as darker paper, got $inside", inside < outside - 20f)
+    }
+
+    /**
+     * The correction lifts a background the coarse surface over-estimated, and leaves
+     * everything else — including ink — alone.
+     */
+    @Test
+    fun flatten_brightensAnOverEstimatedBackgroundAndNeverTouchesInk() {
+        val w = 40
+        val h = 20
+        val dim = 200
+        val lit = 240
+        val ink = 30
+        // Left half is paper in shadow, right half is paper in the light; one pixel of
+        // ink sits in the shadowed half.
+        val pixels = IntArray(w * h) { i ->
+            val x = i % w
+            grey(if (x < w / 2) dim else lit)
+        }
+        val inkIndex = 5 * w + 5
+        pixels[inkIndex] = grey(ink)
+
+        // The coarse grid believes the whole frame is at the lit level: exactly the
+        // failure being corrected.
+        val flatCoarse = FloatArray(1) { lit.toFloat() }
+        val coarse = DocumentFilters.PaperMap(flatCoarse, flatCoarse, flatCoarse, 1, 1, block = 8f)
+        // The fine grid knows the truth.
+        val fineR = FloatArray(w) { x -> if (x < w / 2) dim.toFloat() else lit.toFloat() }
+        val finePlanes = arrayOf(fineR, fineR, fineR)
+        val fine = DocumentFilters.FineMap(finePlanes, w, 1, 1)
+
+        DocumentFilters.flattenIllumination(pixels, w, h, coarse, fine)
+
+        val shadow = DocumentFilters.greyOf(pixels[5 * w + 2])
+        val bright = DocumentFilters.greyOf(pixels[5 * w + w - 3])
+        assertTrue("shadowed paper must be lifted, got $shadow", shadow > dim + 10)
+        // The multiplier is the reciprocal of a 0.85 floor, i.e. at most 1/0.85.
+        assertTrue("the correction is bounded, got $shadow", shadow <= (dim * 1.18f) + 1)
+        assertEquals("lit paper must not move", lit, bright)
+        assertEquals(
+            "a pixel a long way below the surface is ink and must be untouched",
+            ink,
+            DocumentFilters.greyOf(pixels[inkIndex])
+        )
+    }
+
+    /** The clamp: near-white becomes exactly white, and nothing else moves. */
+    @Test
+    fun finish_clampsPaperToWhiteAndLeavesMidtones() {
+        val w = 9
+        val h = 9
+        val pixels = IntArray(w * h) { grey(150) }
+        pixels[4 * w + 4] = grey(244)
+        DocumentFilters.finishAdaptive(pixels, w, h, clampPercent = 90, sharpenQ8 = 0)
+        assertEquals("244 is paper at a 90 % clamp", 255, DocumentFilters.greyOf(pixels[4 * w + 4]))
+        assertEquals("a midtone must not be clamped", 150, DocumentFilters.greyOf(pixels[0]))
+    }
+
+    /**
+     * The sharpening only darkens, and only on the ink side of an edge.
+     *
+     * Sharpening the brightness plane would put a bright halo on the paper side of
+     * every stroke, which is the ringing this design exists to avoid: the paper is
+     * already at the clamp and a brighter pixel would clip.
+     */
+    @Test
+    fun finish_sharpensInwardOnly() {
+        val w = 15
+        val h = 15
+        val ink = 60
+        val paper = 200
+        val pixels = IntArray(w * h) { i -> grey(if ((i % w) < 7) ink else paper) }
+        DocumentFilters.finishAdaptive(pixels, w, h, clampPercent = 0, sharpenQ8 = 230)
+
+        val inkSide = DocumentFilters.greyOf(pixels[7 * w + 6])
+        val paperSide = DocumentFilters.greyOf(pixels[7 * w + 7])
+        assertTrue("the ink side of the edge darkens, got $inkSide", inkSide < ink)
+        assertEquals("the paper side must not brighten or darken", paper, paperSide)
+        assertTrue(
+            "the darkening is capped, got $inkSide",
+            inkSide >= ink - 41
+        )
+    }
+
+    /** A flat plane has no Laplacian, so the finish must not be able to change it. */
+    @Test
+    fun finish_isIdentityOnAFlatPlaneApartFromTheClamp() {
+        val w = 11
+        val h = 11
+        val pixels = IntArray(w * h) { grey(170) }
+        val before = pixels.copyOf()
+        DocumentFilters.finishAdaptive(pixels, w, h, clampPercent = 90, sharpenQ8 = 230)
+        assertTrue(before.contentEquals(pixels))
+    }
+
+    /**
+     * Light Text's new curve: gentle in the toe, white well before paper.
+     *
+     * The old one started at 0.78 of paper, so a background the surface left at 0.92
+     * came out at 141 — the "Light Text greys the whole page" report.
+     */
+    @Test
+    fun lightTextCurve_keepsFaintMarksAndReachesWhiteBeforePaper() {
+        val curve = DocumentFilters.ratioCurve(0.70f, 0.94f, 1.0f)
+        assertEquals("at the toe a pixel is ink", 0, curve[0])
+        assertEquals("at the shoulder it is paper", 255, curve[240])
+        assertEquals("85 % of paper stays visible", 159, curve[(0.85f * 255).toInt()], 3)
+        assertEquals("80 % of paper is clearly a mark", 106, curve[(0.80f * 255).toInt()], 3)
+        for (i in 1..255) {
+            assertTrue("the curve must never invert at $i", curve[i] >= curve[i - 1])
+        }
+    }
+
     private fun grey(v: Int): Int = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
 
     private fun rgb(r: Int, g: Int, b: Int): Int =

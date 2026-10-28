@@ -73,6 +73,8 @@ Before the per-pixel work, the surface is estimated once per frame:
 | closing | dilate then erode, radius 2.5 % of the grid | fills ink, staples, folds with the paper level around them |
 | **median ×2** | two 3×3 medians of the grid | removes the same bad cells a blur would, **without smearing a shadow edge** — the R61 box blur left a three-cell ramp in the estimate, i.e. a grey band alongside every crisp shadow. Measured, band error: box×3 **24.2 / 112** vs median×2 **0.3 / 1** |
 | gate | `surfaceIsPaper`: two ratios per sampled pixel | see below |
+| **fine surface** (R64) | the same pool and closing on a cell `cellRadius/5` wide, trimmed 35 % from the dark side, then two medians | **the only thing that can see a shadow edge**, a page curl or the shading under a hand: a 14 px cell cannot represent a step that happens inside it, and the divide then leaves a grey seam beside the shadow. Used only as its ratio to the coarse surface, so it can correct the estimate without replacing it |
+| **illumination flatten** (R64) | per background pixel, `c · coarse/fine` **before** the kernel | `pixel · (coarse/fine)` fed to an untouched kernel is exactly `pixel / fine`: the correction gets the fine surface for free, without changing the kernel, the ABI or any of the five original presets |
 
 Per pixel, all Q8 (256 == 1.0), in this order:
 
@@ -90,6 +92,21 @@ Per pixel, all Q8 (256 == 1.0), in this order:
 
 Steps 1–3 are the illumination model this app already had. Steps 4–9 are the part
 that replaces "per-channel curve on the absolute difference".
+
+After the kernel, on documents only (R64):
+
+| # | Step | Expression | Why |
+|---|---|---|---|
+| 10 | **clamp** | `v ≥ 90 % of white → pure white` | A page has no content brighter than its own paper. This is what makes the background *uniform* rather than merely light, and it is Adobe's `L_norm = min(100, L/L_bg · 100)` taken literally at the top end. It cannot darken anything, so it cannot create an artifact. |
+| 11 | **sharpening** | `d = blur(v) − v`; if `d > 3` and `12 < v < 210`, darken by `min(40, (d − 3) · 0.45)` | The blur is two 3×3 box passes (a triangle 5-tap, σ ≈ 1.3 px). `blur − v` is positive only where the pixel is darker than its neighbourhood, so paper cannot ring; the two bounds keep it off paper and off a hard shadow edge. |
+
+Step 11's kernel is the load-bearing choice. A 3×3 **Laplacian** — the obvious
+sharpener, and what this round first used — is a *second* derivative, so it is zero in
+the middle of a ramp, and a lens-blurred stroke edge *is* a ramp. Measured on a blurred
+page it changed the 10–90 % edge width by **0.00 px**: it did nothing, twice. `blur − v`
+is a first-order high pass on the darkness plane; it is large on the ink side of an
+edge and on thin strokes, and zero inside a solid block and on paper. Measured, same
+page: **1.80 px → 0.00–0.90 px**.
 
 ### Constants
 
@@ -292,6 +309,10 @@ would double the page size for no visible gain.
 ## 7. Verifying
 
 ```sh
+python3 tools/ink_probe.py report                # R64: the whole chain, paper / seam / ink / faint
+python3 tools/ink_probe.py light                 # the same for LIGHT_TEXT, against round 62
+python3 tools/ink_probe.py edge                  # R64: 10-90 % edge width, sharpening on vs off
+python3 tools/ink_probe.py surface               # which paper estimator, and why
 python3 tools/filter_ref.py all                  # the kernel: tone, shadows, colour
 python3 tools/shadow_probe.py                    # the surface and the gate, R61 vs R62
 python3 tools/shadow_probe.py variants           # what each candidate estimator does
@@ -304,3 +325,82 @@ compares the two implementations on a synthetic colour page: luma plane, then th
 adaptive kernel in all three presets, with and without edge crispening, by
 `contentEquals`. Any mismatch, or a stale `.so` (`EXPECTED_ABI = 3`), and the Kotlin
 reference runs instead — the filter is never wrong, only slower.
+
+## 8. Round 64: the background, the clamp, the sharpening
+
+Three complaints — shadows, Light Text darkening the page, text not sharp — had one
+cause and three fixes. The cause: **the paper estimate is band-limited.** One number per
+cell (~1 % of the page) cannot follow a shadow edge, and where it lags the divide leaves
+grey.
+
+### What changed
+
+| | before (R62) | after (R64) |
+|---|---|---|
+| fine surface | — | `buildFineMap`: `cellRadius/5` cells, 35 % dark-side trim, closing of one coarse cell in *pixels*, two medians |
+| correction | — | `flattenIllumination`: ratio `fine/coarse`, clamped to `[0.85, 1.15]`, background pixels only (`v ≥ 0.86·fine`), applied to the image before the kernel |
+| paper clamp | — | `PAPER_CLAMP_PERCENT = 90`: `v ≥ 90 %` of white → pure white |
+| sharpening | in-kernel Laplacian gain (`ADAPTIVE_DETAIL_SMART`), no longer used | `finishAdaptive`: `blur − v`, inward only, `v < 210`, drop ≤ 40 |
+| `lightTextCurve` | `ratioCurve(0.78, 0.99, 1.5)` | `ratioCurve(0.70, 0.94, 1.0)`, same clamp as Smart Scan |
+
+`applyAdaptive` now passes `detailCap = 0` to the kernel on both document presets. The
+kernel parameter stays — the ABI defines it and the five transcribed presets still use
+their own gains — but no preset asks for crispening any more.
+
+### Measured
+
+`tools/ink_probe.py`, synthetic pages at 480×360 with the same relative cell geometry as
+a 3200 px capture, rendered through a 5-tap lens blur so an edge has a width to sharpen.
+"paper" = mean deviation of **clean** paper (no content within 3 px) from white;
+"seam" = the same inside 1.5 cells of a shadow edge; "worst" = the worst clean-paper
+pixel; "edge" = mean 10–90 % transition width across the four bars.
+
+Smart Scan, R62 → R64:
+
+| scene | paper | worst | seam | ink | faint | edge |
+|---|---|---|---|---|---|---|
+| flat | 0.0 → 0.0 | 0 → 0 | 0.0 → 0.0 | 15.7 → 11.4 | 113.6 → 109.6 | 1.80 → 0.00 |
+| gradient | 0.7 → 0.0 | 45 → 0 | 0.1 → 0.0 | 15.4 → 11.1 | 113.3 → 109.4 | 1.80 → 0.90 |
+| hand shadow (30 %) | 1.9 → 0.6 | 178 → 115 | **46.9 → 15.2** | 15.4 → 11.2 | 112.7 → 108.6 | 1.80 → 0.00 |
+| vignette | **4.3 → 0.2** | 189 → 110 | — | 15.7 → 11.1 | 117.9 → 114.3 | 1.80 → 0.00 |
+| lamp + glare | 1.5 → 1.0 | 220 → 255 | **39.2 → 27.4** | 15.4 → 11.2 | 113.9 → 109.8 | 1.80 → 0.00 |
+| shadow + cast | 1.3 → 0.3 | 128 → 80 | **29.8 → 7.8** | 15.4 → 11.2 | 113.3 → 109.2 | 1.80 → 0.00 |
+
+Light Text, R62 → R64:
+
+| scene | paper | worst | seam | ink | faint |
+|---|---|---|---|---|---|
+| flat | 0.0 → 0.0 | 0 → 0 | 0.0 → 0.0 | 18.0 → 12.9 | **57.8 → 130.8** |
+| hand shadow | 3.3 → 0.2 | 205 → 83 | **67.6 → 5.6** | 17.7 → 12.7 | 58.5 → 129.7 |
+| vignette | **9.2 → 0.0** | 206 → 79 | — | 17.9 → 12.6 | 63.5 → 137.9 |
+| lamp + glare | 2.0 → 0.8 | 215 → 255 | **45.1 → 22.6** | 17.7 → 12.7 | 59.4 → 131.3 |
+| shadow + cast | 2.6 → 0.0 | 201 → 32 | **53.5 → 0.0** | 17.6 → 12.7 | 58.0 → 130.2 |
+
+Reading it:
+
+* **The faint mark is the bug report, quantified.** At 82 % of paper a pencil used to
+  come out at **58** on Light Text — the same as ink. That is "the light text even
+  darkens the text". It is now 130: visibly grey, on pure white paper.
+* **The seam is the shadow report, quantified.** A hand shadow used to leave a 47-level
+  (Smart) / 68-level (Light) grey band along its edge; now 15 / 6. The mean over the
+  whole page barely moved, which is why R62's table looked fine and the page did not.
+* **Sharpness** is the edge width and the stroke level, not the ink's darkness: 1.80 px
+  → ≤ 0.9 px, with the shell (paper one pixel outside the optical reach) at ≤ 1.0 level,
+  i.e. no ring.
+* **What got slightly worse.** The worst *clean-paper* pixel on glare rises from 220 to
+  255 under the sharpening (a pixel the divide already left at 0 by the curve, pushed
+  down by the 40-level cap); it is one pixel, mean 1.0. And the specular region of a
+  glare scene is genuinely over-exposed — no clamp can invent paper there.
+
+### Reproducing
+
+```sh
+python3 tools/ink_probe.py report      # smart: current vs r63, no-sharpen ablation
+python3 tools/ink_probe.py light       # light: r62_light vs r63_light
+python3 tools/ink_probe.py edge        # edge width, with and without sharpening
+python3 tools/ink_probe.py surface     # the estimator sweep behind FINE_*
+python3 tools/ink_probe.py variants    # clamp / gamma alternatives
+```
+
+The probe starts with `sanity:` lines and refuses to be believed without them: it caught
+a 256× error in the divide that had scored perfectly on every scene.

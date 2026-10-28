@@ -79,6 +79,7 @@ Keep this table short. Delete your row when the change lands.
 
 | Agent       | Status          | Files                                                                                                                                                                                                                                                                           | Intent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Arena.ai | 🔧 in review (Round 64) | `util/DocumentFilters.kt`, `util/DocumentFiltersTest.kt`, `tools/ink_probe.py` (new), `tools/filter_ref.py`, `docs/filter_combined_spec.md` §3/§8, docs | Shadow cleaning, Light Text and sharpness, re-opened. The paper surface is now corrected by a **fine** estimate (cell/5, 35 % dark-side trim, one-coarse-cell closing) used only as its ratio to the coarse one, a **paper clamp** at 90 % of white, and **inward sharpening** from `blur − v` rather than a Laplacian (which was worth 0.00 px of edge width). `lightTextCurve` 0.78/0.99/1.5 → 0.70/0.94/1.0. Measured: hand-shadow seam 47 → 15, vignette paper 4.3 → 0.2, Light Text pencil 58 → 130, edge width 1.80 → ≤ 0.9 px. **No Rust, ABI, kernel, PDF or UI change; the five original presets are untouched.** See §6ba. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 63) | `util/LiveBorderTracker.kt` (new), `ui/camera/LiveBorderAnalyzer.kt` (new), `ui/camera/LiveBorderOverlay.kt` (new), `ui/camera/ScannerCameraScreen.kt`, `data/ScannerRepository.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `app/src/test/.../util/LiveBorderTrackerTest.kt` (new), `docs/LIVE_BORDER_DETECTION.md` (new), docs | Auto border detection while framing (a live page outline from a third CameraX use case, confidence/tolerance/glide smoothed in `LiveBorderTracker`) **and** after the fact: imported pages now get the same automatic border a capture gets, via `ScannerRepository.detectBordersInBackground`. `setPageCorners` gained `onlyWhereUncropped = false`. No detector, filter, PDF or Rust change; the live quad is never stored as a crop. **The two-stream bind fallback is load-bearing** (LEGACY cameras). See §6az. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 62) | `util/DocumentFilters.kt`, `util/DocumentFiltersTest.kt`, `docs/filter_combined_spec.md`, `tools/shadow_probe.py` (new), docs | `SMART`/`LIGHT_TEXT` still showed shadows in two measured cases: the absolute-threshold document/scene gate called a shadowed page a *scene* (41 %) so no shadow was removed, and the box-blurred surface smeared hard shadow edges into a 65-level band. Replaced by `surfaceIsPaper` (two ratios against the surface) and `median3Grid`. **No kernel, Rust or ABI change; the five transcribed presets keep their exact output.** See §6ay. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 61) | `model/Models.kt`, `util/DocumentFilters.kt`, `util/NativeFilters.kt`, `app/src/main/rust/src/{kernels,lib}.rs`, `util/DocumentFiltersTest.kt`, `docs/filter_combined_spec.md` (new), `tools/filter_ref.py` (new), docs | Two **new** presets, `SMART` (label "Smart Scan") and `LIGHT_TEXT` ("Light Text"), appended to `FilterType`: this app's paper-map divide with a ratio-domain tone curve, one hue-preserving gain per pixel, a bounded (soft-kneed) white balance, and Adobe's faint-ink idea as a curve window. Rust kernel `adaptive_colour` behind byte-exact parity (ABI 3). **The five original presets are untouched** — same code, same output. See §6ax. |
@@ -2432,6 +2433,44 @@ because that would change *their* output — it is a one-line change if it is ev
   probe before moving them.
 - Verified by reading and by `tools/shadow_probe.py` only (no Gradle, NDK or cargo here).
   `./gradlew testDebugUnitTest assembleDebug` for R60–R62 is owed by Antigravity.
+
+## 6ba. Round 64: the background taken apart, and Light Text inverted (Arena, 2026-10-28)
+
+**User report, verbatim:** *"the smart scan is still not that accurate in shadow cleaning
+also the light text is working just the opposite the light text even darkens the photo and
+text … i want the content as clean as possible with least background disturbance and
+shadows … also make the text more sharp."*
+
+`SMART`/`LIGHT_TEXT` only. No Rust, ABI, kernel, PDF, geometry or UI change; the five
+transcribed presets keep their exact output.
+
+1. **Fine surface + flatten** (`buildFineMap`, `flattenIllumination`). The coarse surface
+   is one number per ~1 % cell, so it cannot represent a shadow edge *inside* a cell, and
+   the divide leaves a grey seam along it. A second surface on `cellRadius/5`, trimmed 35 %
+   from the dark side, closed with a radius of one coarse cell (in fine cells) and medianed
+   twice, is used **only as the ratio to the coarse one**, gated to background pixels
+   (`v ≥ 0.86 · fine`), and applied to the image *before* the kernel, so the untouched
+   kernel computes `pixel / fine`. Ratio bounded to `[0.85, 1.15]`.
+2. **Paper clamp** (`finishAdaptive`, `PAPER_CLAMP_PERCENT = 90`): `v ≥ 90 %` of white →
+   pure white, chroma dropped. Lighten-only, so it cannot create an artifact.
+3. **Inward sharpening** in the same pass: `d = blur(v) − v` (two 3x3 box passes), applied
+   only for `d > 3` and `12 < v < 210`, capped at 40 levels. A Laplacian was the first
+   attempt and is worthless here — second derivative, zero on a ramp, **0.00 px** of edge
+   width.
+4. **`lightTextCurve`** `ratioCurve(0.78, 0.99, 1.5)` → `ratioCurve(0.70, 0.94, 1.0)`, and
+   Light Text clamps at the same 90 %. The old toe is what turned a pencil (0.82 of paper)
+   into **58**, i.e. ink.
+5. `applyAdaptive` passes `detailCap = 0` for both document modes; the parameter stays in
+   the ABI for the other presets.
+
+**Evidence** — `tools/ink_probe.py`, 480x360 pages with a 5-tap lens blur, clean-paper
+metrics. Smart: vignette paper 4.3 → 0.2, hand-shadow seam 46.9 → 15.2, cast seam 29.8 →
+7.8, edge width 1.80 → 0.00–0.90 px, ring ≤ 1.0. Light: vignette 9.2 → 0.0, seams 67.6 →
+5.6 / 53.5 → 0.0, pencil 58 → 130. Full tables in `docs/filter_combined_spec.md` §8.
+
+**Owed by Antigravity:** `./gradlew testDebugUnitTest assembleDebug` and `cargo test` for
+R60–R64, an ABI-3 `.so` rebuild if the crate is touched, a device trace of the extra bake
+passes, and a real-photo comparison — the probe is synthetic by construction.
 
 ## 6az. Round 63: live border detection, and borders for imports (Arena, 2026-10-28)
 
