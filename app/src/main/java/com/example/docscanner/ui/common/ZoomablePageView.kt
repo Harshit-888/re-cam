@@ -49,13 +49,18 @@ import kotlin.math.max
  * page turn lives where there is nothing to pan — exactly where the user has nothing
  * else to lose.
  *
- * ## Why the state is hoisted instead of owned here
+ * ## Why the state is hoisted, and read through lambdas
  *
  * Callers reset the zoom when the page changes, and the editor shows a zoom badge and a
  * reset control in its own chrome. A composable that owned `zoom` could not offer
- * either. This one reads through [rememberUpdatedState] so a pinch never restarts the
- * gesture block (which is the bug that made corner dragging do nothing in an earlier
- * round), and reports every change up through [onZoomPanChange].
+ * either — so it is hoisted and reported back through [onZoomPanChange].
+ *
+ * `zoom` and `pan` are **readers, not values**, and that is not stylistic. A pinch
+ * produces a value per frame; taking `Float` parameters would mean the caller reads the
+ * state to form the argument, and every one of those frames would recompose the caller
+ * — for the viewer that is the page, both chrome bars and the pager. Read inside the
+ * `graphicsLayer` block instead and the same pinch invalidates one layer and recomposes
+ * nothing. `{ zoom }` at the call site is the whole price.
  *
  * @param contentSize the on-screen size of the thing being transformed, when it is
  *   smaller than the frame (a letterboxed page). Pan is clamped to *its* overflow, so
@@ -66,8 +71,8 @@ import kotlin.math.max
  */
 @Composable
 fun ZoomablePageView(
-    zoom: Float,
-    pan: Offset,
+    zoom: () -> Float,
+    pan: () -> Offset,
     onZoomPanChange: (zoom: Float, pan: Offset) -> Unit,
     modifier: Modifier = Modifier,
     onSwipePrev: (() -> Unit)? = null,
@@ -76,8 +81,6 @@ fun ZoomablePageView(
     maxZoom: Float = MAX_PAGE_ZOOM,
     content: @Composable BoxScope.() -> Unit
 ) {
-    val latestZoom by rememberUpdatedState(zoom)
-    val latestPan by rememberUpdatedState(pan)
     val report by rememberUpdatedState(onZoomPanChange)
     val prev by rememberUpdatedState(onSwipePrev)
     val next by rememberUpdatedState(onSwipeNext)
@@ -121,8 +124,8 @@ fun ZoomablePageView(
                     // a pinch would repeatedly apply its change to an older zoom and
                     // silently lose most of the magnification. The mirror is seeded
                     // from the parent (the only other writer) and reported back out.
-                    var localZoom = latestZoom
-                    var localPan = latestPan
+                    var localZoom = zoom()
+                    var localPan = pan()
 
                     var event: PointerEvent
                     do {
@@ -193,10 +196,13 @@ fun ZoomablePageView(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    scaleX = zoom
-                    scaleY = zoom
-                    translationX = pan.x
-                    translationY = pan.y
+                    // Read here, in the draw phase: a pinch changes a layer, not a
+                    // composition.
+                    val current = zoom()
+                    scaleX = current
+                    scaleY = current
+                    translationX = pan().x
+                    translationY = pan().y
                 },
             contentAlignment = Alignment.Center,
             content = content

@@ -16,6 +16,19 @@ Newest entry at the top.
   - **indymobile/README.md**: Guide for Arena mapping C/Java reference functions to Rust NDK and Kotlin implementations.
 - No production application code or integration contracts touched. Purely additive reference documentation and evidence.
 
+## 2026-10-27 — Arena.ai — Round 49: the page reader gets a bar, and swiping
+
+- **`ui/common/ZoomablePageView.kt` — `zoom` and `pan` are now `() -> Float` / `() -> Offset`, not values.** The transform is read inside the `graphicsLayer` block, i.e. in the draw phase, so a pinch invalidates one layer and recomposes nothing above it. Call sites pass `{ zoom }`. This is what let the viewer adopt the shared gesture without giving up the zero-recomposition draw path its old hand-written gesture existed to buy. **Signature change: any other caller must pass lambdas.**
+- **`ui/viewer/PageViewerScreen.kt`** — three changes:
+  - **Swipe paging.** The viewer's own `detectTransformGestures` block is gone; the page is now wrapped in `ZoomablePageView`, so pinch (1–5×), clamped pan **and** horizontal swipe to the previous/next page all work. Swipe is gated on 1× and does not wrap at either end; a one-page document has none.
+  - **New bottom shelf.** The floating pager pill (`‹ 3 / 8 100% ›`) and the page actions now live in **one** container (`DocShapes.sheet`, dark translucent) instead of two stacked pills: a pager row (hidden when `pages.size == 1`) above **Crop · Annotate · Rotate · More** (More → Sign this page, Export PDF). `ViewerActionButton`/`ViewerMoreButton` are new private composables.
+  - **Rotate and crop moved out of the top chrome**, which is now back / title / recognised text only. Page verbs belong with the page verbs.
+  - Sign and annotate re-bake onto the page **being read** (id captured at tap time, re-read by id on confirm), then reset the transform.
+- Page inset changed to `top 68 dp / bottom 132 dp` so the last line clears the taller shelf.
+- New imports in the viewer: `ZoomablePageView`, `MarkupDialog`, `SignaturePadDialog`, `PdfExportSheet`, `DropdownMenu`/`DropdownMenuItem`, `MoreVert`/`Draw`/`PictureAsPdf`. Removed: `detectTransformGestures`, `pointerInput`, `graphicsLayer`.
+- The viewer now collects `repository.settings` for the export sheet.
+- No change to filters, geometry, `PdfGenerator`/`PdfWriter` output, captured pixels, colours or typography. **Nothing compiled here.**
+
 ## 2026-10-27 — Arena.ai — Round 48: the filter preview zooms and pages, and the bottom bar follows the page
 
 - **New `ui/common/ZoomablePageView.kt`** — one pinch / pan / swipe gesture for anything that shows a page, with the pan clamped to the *content's* overflow (`contentSize`), not the frame's, so a letterboxed page can never be dragged into its own margins. Exposes `MAX_PAGE_ZOOM = 5f` (matches the editor's `MAX_ZOOM`). Swipe-left/right turns the page **only at 1×** and only for a deliberately horizontal drag (1.4:1 axis bias, 56 dp travel): zoomed in, a horizontal drag is the only way to reach the right-hand edge of the page and hijacking it would make a zoomed page unreadable. `onSwipePrev`/`onSwipeNext` are nullable, so the first and last page simply do nothing.

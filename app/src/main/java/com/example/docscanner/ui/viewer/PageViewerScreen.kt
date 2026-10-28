@@ -9,7 +9,6 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,9 +31,14 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Crop
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.RotateRight
+import androidx.compose.material.icons.outlined.Draw
+import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,9 +64,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -72,7 +74,11 @@ import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.theme.DocShapes
 import com.example.docscanner.theme.pressScale
 import com.example.docscanner.ui.common.PillButton
+import com.example.docscanner.ui.common.ZoomablePageView
 import com.example.docscanner.ui.common.rememberPageImage
+import com.example.docscanner.ui.editor.MarkupDialog
+import com.example.docscanner.ui.pdf.PdfExportSheet
+import com.example.docscanner.ui.signature.SignaturePadDialog
 import com.example.docscanner.util.PageRenderer
 import kotlinx.coroutines.launch
 
@@ -81,8 +87,17 @@ import kotlinx.coroutines.launch
  *
  * A page viewer is a reading surface: opaque app bars steal vertical space from the
  * thing the user came to look at. So the chrome floats over a dark backdrop — a glass
- * back button, a title pill, three glass actions — and the page itself runs edge to
- * edge with only enough inset to clear the glass.
+ * back button, a title pill, the recognised-text action — and the page itself runs
+ * edge to edge with only enough inset to clear the chrome.
+ *
+ * The bottom shelf is the exception: it holds where you are (`3 / 8`, live zoom) and
+ * the page's verbs (crop, annotate, rotate, more). They are in one container rather
+ * than two floating pills because two stacked pills at the bottom is twice the space
+ * taken from the page and two things to aim at.
+ *
+ * Pinch, pan and swipe come from `ZoomablePageView`, the same gesture the editor's
+ * filter preview uses — swiping is gated on being at 1x, so a zoomed page can still be
+ * panned sideways to its edge.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -97,6 +112,7 @@ fun PageViewerScreen(
     val scope = rememberCoroutineScope()
 
     val documents by repository.documents.collectAsState()
+    val settings by repository.settings.collectAsState()
     val document = remember(documents, docId) { documents.find { it.id == docId } }
     val pages = remember(document) { document?.pages ?: emptyList() }
 
@@ -108,11 +124,16 @@ fun PageViewerScreen(
 
     // Held as the state object as well as the delegated value: the zoom badge needs
     // to observe it *by reference* so it can subscribe on its own without the parent
-    // reading the float (and therefore recomposing on every pinch frame).
+    // reading the float (and therefore recomposing on every pinch frame). `scale` is
+    // passed to `ZoomablePageView` as a *lambda*, so this whole screen is read only by
+    // the badge and by the layer block that applies the transform.
     val scaleState = remember { mutableFloatStateOf(1f) }
     var scale by scaleState
     var offset by remember { mutableStateOf(Offset.Zero) }
     var showOcrSheet by remember { mutableStateOf(false) }
+    var showMarkup by remember { mutableStateOf(false) }
+    var showSignPad by remember { mutableStateOf(false) }
+    var showExportSheet by remember { mutableStateOf(false) }
 
     // Reference the decoded bitmap so the composable recomposes after a re-bake.
     val pageImage = rememberPageImage(currentPage?.imageUri, reqWidth = 1600, reqHeight = 2200)
@@ -120,6 +141,27 @@ fun PageViewerScreen(
     LaunchedEffect(safeIndex) {
         scale = 1f
         offset = Offset.Zero
+    }
+
+    // Re-bake so the rotation is real everywhere — the viewer, the grid and the PDF —
+    // and so the crossfade has a new bitmap to land on. Reset the transform afterwards:
+    // the page just turned, and keeping a 2x pan from the old orientation points it at
+    // a part of the page that no longer exists there.
+    fun rotateCurrentPage() {
+        val page = currentPage ?: return
+        scope.launch {
+            val latest = repository.getDocumentById(docId)
+                ?.pages?.find { it.id == page.id } ?: return@launch
+            val baked = PageRenderer.bake(
+                context,
+                latest.copy(rotationDegrees = (latest.rotationDegrees + 90f) % 360f)
+            )
+            if (baked != null) {
+                repository.updatePage(docId, page.id) { baked }
+                scale = 1f
+                offset = Offset.Zero
+            }
+        }
     }
 
     Box(
@@ -144,52 +186,47 @@ fun PageViewerScreen(
                 )
             }
             else -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(Unit) {
-                            detectTransformGestures { _, pan, zoom, _ ->
-                                val next = (scale * zoom).coerceIn(1f, MAX_VIEWER_ZOOM)
-                                scale = next
-                                // Clamp the pan to the part of the page that is
-                                // actually outside the viewport. Without this the
-                                // page can be flung into empty space and the user
-                                // has to guess their way back.
-                                val maxX = (size.width * (next - 1f)) / 2f
-                                val maxY = (size.height * (next - 1f)) / 2f
-                                offset = if (next > 1f) {
-                                    Offset(
-                                        (offset.x + pan.x).coerceIn(-maxX, maxX),
-                                        (offset.y + pan.y).coerceIn(-maxY, maxY)
-                                    )
-                                } else {
-                                    Offset.Zero
-                                }
-                            }
-                        }
-                        // The **lambda** form of `graphicsLayer`.
-                        //
-                        // `graphicsLayer(scaleX = scale, …)` reads `scale` and
-                        // `offset` during composition, so every frame of a pinch
-                        // recomposed this screen, and a changed parameter also makes
-                        // Compose rebuild the layer. Reading them inside the block
-                        // instead defers both to the draw phase: the gesture now
-                        // updates a layer and nothing above it is recomposed at all.
-                        .graphicsLayer {
-                            scaleX = scale
-                            scaleY = scale
-                            translationX = offset.x
-                            translationY = offset.y
-                        },
-                    contentAlignment = Alignment.Center
+                // One gesture for the whole app: pinch, clamped pan, and a
+                // horizontal swipe that turns the page — but only at 1x, because
+                // zoomed in a horizontal drag is the only way to reach the edge of
+                // the page. See `ZoomablePageView`.
+                //
+                // `zoom = { scale }` rather than `scale`: the transform is read in
+                // the draw phase, so a pinch updates a layer and recomposes neither
+                // this page nor either chrome bar. The old hand-written gesture
+                // existed to buy exactly that, and it is why this screen never got
+                // swipe: the two features lived in the same lambda and only one
+                // could win.
+                ZoomablePageView(
+                    zoom = { scale },
+                    pan = { offset },
+                    onZoomPanChange = { newScale, newOffset ->
+                        scale = newScale
+                        offset = newOffset
+                    },
+                    // A one-page document gets no swipe at all, and neither end of a
+                    // longer one wraps around: a page turn that lands you back at the
+                    // start reads as a bug.
+                    onSwipePrev = if (safeIndex > 0) {
+                        { currentPageIndex = safeIndex - 1 }
+                    } else {
+                        null
+                    },
+                    onSwipeNext = if (safeIndex < pages.lastIndex) {
+                        { currentPageIndex = safeIndex + 1 }
+                    } else {
+                        null
+                    },
+                    modifier = Modifier.fillMaxSize()
                 ) {
                     // Pages swap with a crossfade rather than a cut.
                     //
                     // Tapping next used to replace one bitmap with another in a
                     // single frame; at 120 Hz that is 8 ms of nothing, which reads as
                     // a glitch rather than a page turn. 180 ms of crossfade is the
-                    // whole transition — no slide, because the pager is a tap, and a
-                    // slide would imply the pages are side by side when they are not.
+                    // whole transition — no slide, because the page still arrives
+                    // from a tap as often as from a swipe, and a slide from a tap
+                    // would imply movement that did not happen.
                     Crossfade(
                         targetState = pageImage,
                         animationSpec = tween(durationMillis = 180),
@@ -202,7 +239,16 @@ fun PageViewerScreen(
                             contentScale = ContentScale.Fit,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(horizontal = 6.dp, vertical = 68.dp)
+                                // Asymmetric on purpose: the action bar at the bottom
+                                // is taller than the glass strip at the top, and a
+                                // page whose last line sits under it is a page you
+                                // cannot read.
+                                .padding(
+                                    start = 6.dp,
+                                    end = 6.dp,
+                                    top = 68.dp,
+                                    bottom = 132.dp
+                                )
                         )
                     }
                 }
@@ -239,31 +285,10 @@ fun PageViewerScreen(
                 )
             }
             Spacer(Modifier.width(10.dp))
-            ViewerGlassButton(
-                icon = Icons.Default.RotateRight,
-                contentDescription = "Rotate",
-                onClick = {
-                    val page = currentPage ?: return@ViewerGlassButton
-                    scope.launch {
-                        val baked = PageRenderer.bake(
-                            context,
-                            page.copy(rotationDegrees = (page.rotationDegrees + 90f) % 360f)
-                        )
-                        if (baked != null) {
-                            repository.updatePage(docId, page.id) { baked }
-                            scale = 1f
-                            offset = Offset.Zero
-                        }
-                    }
-                }
-            )
-            Spacer(Modifier.width(8.dp))
-            ViewerGlassButton(
-                icon = Icons.Default.Crop,
-                contentDescription = "Crop and filter",
-                onClick = { currentPage?.let { onNavigateToCrop(it.id) } }
-            )
-            Spacer(Modifier.width(8.dp))
+            // Rotate and crop used to live up here. They moved down to the action
+            // bar with the rest of the page verbs: an action that changes the page
+            // belongs with the other actions that change the page, and the top strip
+            // is now purely "which document am I in, and take me out".
             ViewerGlassButton(
                 icon = Icons.Outlined.TextFields,
                 contentDescription = "Recognised text",
@@ -271,51 +296,153 @@ fun PageViewerScreen(
             )
         }
 
-        // ---- floating pager ---------------------------------------------------
-        if (pages.size > 1) {
-            Surface(
-                shape = DocShapes.pill,
-                color = Color.Black.copy(alpha = 0.5f),
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(bottom = 18.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
-                ) {
-                    ViewerPageStep(
-                        icon = Icons.Default.ChevronLeft,
-                        description = "Previous page",
-                        enabled = safeIndex > 0,
-                        onClick = { currentPageIndex = (safeIndex - 1).coerceAtLeast(0) }
-                    )
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(horizontal = 10.dp)
+        // ---- bottom shelf: where you are, and what you can do here -----------
+        //
+        // One container rather than a pager pill above an action bar. Two floating
+        // pills stacked at the bottom of a page is two things to aim at and twice
+        // the space taken from the page; the page counter belongs to the bar the
+        // same way a page number belongs to the foot of a sheet.
+        Surface(
+            shape = DocShapes.sheet,
+            color = Color.Black.copy(alpha = 0.55f),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 12.dp, vertical = 12.dp)
+        ) {
+            Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                // Only for a document that can actually be paged. A "1 / 1" row with
+                // two dead arrows is furniture.
+                if (pages.size > 1) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(
-                            "${safeIndex + 1} / ${pages.size}",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = Color.White
+                        ViewerPageStep(
+                            icon = Icons.Default.ChevronLeft,
+                            description = "Previous page",
+                            enabled = safeIndex > 0,
+                            onClick = { currentPageIndex = (safeIndex - 1).coerceAtLeast(0) }
                         )
-                        // Nothing in this composable reads `scale` any more, so a
-                        // pinch recomposes none of it. The badge subscribes to the
-                        // state object itself and re-reads only when the whole
-                        // percentage changes — a few times a pinch instead of once
-                        // a frame.
-                        ViewerZoomBadge(scaleState = scaleState)
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier
+                                .padding(horizontal = 10.dp)
+                                .width(96.dp)
+                        ) {
+                            Text(
+                                "${safeIndex + 1} / ${pages.size}",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = Color.White
+                            )
+                            // Nothing in this composable reads `scale` any more, so a
+                            // pinch recomposes none of it. The badge subscribes to the
+                            // state object itself and re-reads only when the whole
+                            // percentage changes — a few times a pinch instead of once
+                            // a frame.
+                            ViewerZoomBadge(scaleState = scaleState)
+                        }
+                        ViewerPageStep(
+                            icon = Icons.Default.ChevronRight,
+                            description = "Next page",
+                            enabled = safeIndex < pages.size - 1,
+                            onClick = {
+                                currentPageIndex = (safeIndex + 1).coerceAtMost(pages.size - 1)
+                            }
+                        )
                     }
-                    ViewerPageStep(
-                        icon = Icons.Default.ChevronRight,
-                        description = "Next page",
-                        enabled = safeIndex < pages.size - 1,
-                        onClick = { currentPageIndex = (safeIndex + 1).coerceAtMost(pages.size - 1) }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 2.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ViewerActionButton(
+                        label = "Crop",
+                        icon = Icons.Default.Crop,
+                        onClick = { currentPage?.let { onNavigateToCrop(it.id) } }
+                    )
+                    ViewerActionButton(
+                        label = "Annotate",
+                        icon = Icons.Outlined.Draw,
+                        onClick = { showMarkup = true }
+                    )
+                    ViewerActionButton(
+                        label = "Rotate",
+                        icon = Icons.Default.RotateRight,
+                        onClick = { rotateCurrentPage() }
+                    )
+                    ViewerMoreButton(
+                        onSign = { showSignPad = true },
+                        onExport = { showExportSheet = true }
                     )
                 }
             }
         }
+    }
+
+    // Annotation and signature are both "mark this page" actions, so they live here
+    // and both re-bake on save: the viewer, the grid thumbnail and the next PDF all
+    // read the baked file.
+    currentPage?.let { page ->
+        if (showMarkup) {
+            MarkupDialog(
+                page = page,
+                onDismiss = { showMarkup = false },
+                onSave = { strokes ->
+                    showMarkup = false
+                    scope.launch {
+                        val latest = repository.getDocumentById(docId)
+                            ?.pages?.find { it.id == page.id } ?: return@launch
+                        repository.updatePage(docId, page.id) { it.copy(markup = strokes) }
+                        val baked = runCatching {
+                            PageRenderer.bake(context, latest.copy(markup = strokes))
+                        }.getOrNull()
+                        if (baked != null) {
+                            repository.updatePage(docId, page.id) { baked }
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    if (showSignPad) {
+        // Signed onto the page you are reading — the same rule as the document
+        // screen, where signing used to stamp page 1 of the document regardless.
+        val targetId = currentPage?.id
+        SignaturePadDialog(
+            onDismiss = { showSignPad = false },
+            onSignatureConfirmed = { signaturePath ->
+                showSignPad = false
+                if (targetId == null) return@SignaturePadDialog
+                scope.launch {
+                    val latest = repository.getDocumentById(docId)
+                        ?.pages?.find { it.id == targetId } ?: return@launch
+                    val baked = PageRenderer.bake(
+                        context,
+                        latest.copy(signatureOverlayUri = signaturePath)
+                    )
+                    if (baked != null) {
+                        repository.updatePage(docId, targetId) { baked }
+                    }
+                }
+            }
+        )
+    }
+
+    if (showExportSheet) {
+        PdfExportSheet(
+            title = document?.title ?: "Document",
+            pages = pages,
+            settings = settings,
+            onDismiss = { showExportSheet = false }
+        )
     }
 
     if (showOcrSheet) {
@@ -447,6 +574,72 @@ private fun ViewerZoomBadge(scaleState: FloatState) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.primary
         )
+    }
+}
+
+/**
+ * One page action in the viewer's bottom shelf: icon above label, same shape as the
+ * document screen's bar so the two read as the same control in two places.
+ */
+@Composable
+private fun ViewerActionButton(
+    label: String,
+    icon: ImageVector,
+    onClick: () -> Unit
+) {
+    val interactions = remember { MutableInteractionSource() }
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = Modifier
+            .clip(DocShapes.cardSmall)
+            .pressScale(interactions, pressedScale = 0.94f)
+            .clickable(interactionSource = interactions, indication = ripple(), onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(21.dp))
+        Spacer(Modifier.height(3.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White
+        )
+    }
+}
+
+/** The rare actions, behind one tap — sign and export apply here, delete does not. */
+@Composable
+private fun ViewerMoreButton(
+    onSign: () -> Unit,
+    onExport: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        ViewerActionButton(
+            label = "More",
+            icon = Icons.Default.MoreVert,
+            onClick = { expanded = true }
+        )
+        // Opaque menu: the backdrop behind it is a dark page and a translucent menu
+        // over it is unreadable at the bottom of the screen.
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("Sign this page") },
+                leadingIcon = { Icon(Icons.Outlined.Draw, contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    onSign()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Export PDF") },
+                leadingIcon = { Icon(Icons.Outlined.PictureAsPdf, contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    onExport()
+                }
+            )
+        }
     }
 }
 

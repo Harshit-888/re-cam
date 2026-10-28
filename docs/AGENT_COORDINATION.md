@@ -1408,6 +1408,26 @@ change pages, which is exactly the Round 37 bug.
 - **Do not remove `PageStrip` from one stage.** See above.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
 
+## 6al. Round 49: the reader's bottom shelf and swipe paging (Arena, 2026-10-27)
+
+**Edited:** `ui/common/ZoomablePageView.kt` (signature change), `ui/viewer/PageViewerScreen.kt`.
+
+- **`ZoomablePageView(zoom: () -> Float, pan: () -> Offset, …)`** — pass `{ state }`,
+  never `state`. Reading the value at the call site recomposes the caller on every
+  pinch frame; the lambda is read in the draw layer instead. Do not "simplify" this
+  back to plain parameters.
+- **The viewer no longer has its own gesture.** `detectTransformGestures` was removed
+  from `PageViewerScreen`; do not reintroduce a per-screen pinch. Pinch/pan/swipe now
+  behave identically in the viewer and the editor's filter preview.
+- **The viewer's bottom shelf is one container** (pager row + Crop/Annotate/Rotate/More).
+  Adding an action means adding a cell there, not a second floating pill.
+- **Rotate/crop are no longer in the viewer's top chrome.** The top strip is
+  back / title / OCR only.
+- **Sign and annotate act on the page being read**, like the document screen — never
+  on `pages.first()`.
+- Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed, and
+  pinch/swipe/shelf need a device pass.
+
 ## 6ak. Round 48: filter preview zoom + swipe, contextual detail bar (Arena, 2026-10-27)
 
 **New:** `ui/common/ZoomablePageView.kt`.

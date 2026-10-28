@@ -861,8 +861,10 @@ fun CropAndFilterScreen(
                 else -> FilterPreview(
                     image = image,
                     aspect = previewAspect,
-                    zoom = zoom,
-                    pan = pan,
+                    // Readers, not values: `ZoomablePageView` reads these inside its
+                    // draw layer, so a pinch does not recompose the editor.
+                    zoom = { zoom },
+                    pan = { pan },
                     onZoomPanChange = { newZoom, newPan -> zoom = newZoom; pan = newPan },
                     // Swiping in the filter stage is how the user compares one look
                     // across pages: `goToPage` keeps the chosen filter here (that is
@@ -1432,8 +1434,8 @@ private fun MagnifyingLoupe(
 private fun FilterPreview(
     image: ImageBitmap,
     aspect: Float,
-    zoom: Float,
-    pan: Offset,
+    zoom: () -> Float,
+    pan: () -> Offset,
     onZoomPanChange: (Float, Offset) -> Unit,
     onSwipePrev: (() -> Unit)?,
     onSwipeNext: (() -> Unit)?
@@ -1486,7 +1488,7 @@ private fun FilterPreview(
         // Only while zoomed, so it never competes with the filter strip for attention.
         // Tapping it returns to fit — a zoom you cannot get out of is worse than one
         // you could not get into.
-        if (zoom > 1.01f) {
+        if (zoom() > 1.01f) {
             Surface(
                 shape = DocShapes.pill,
                 color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.92f),
@@ -1507,7 +1509,7 @@ private fun FilterPreview(
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        "${(zoom * 100).roundToInt()}%",
+                        "${(zoom() * 100).roundToInt()}%",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
