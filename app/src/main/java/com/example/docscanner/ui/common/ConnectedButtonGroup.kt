@@ -28,7 +28,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
@@ -48,7 +47,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.docscanner.theme.Motion
-import com.example.docscanner.theme.pressScale
 
 /**
  * A **connected button group**, built to Google's own numbers.
@@ -267,10 +265,19 @@ private fun ConnectedCell(
         animationSpec = tween(durationMillis = if (pressed) 90 else 160),
         label = "connectedPress"
     )
-    val alpha by animateFloatAsState(
+    // The *ink* dims when the cell is disabled; the plate never does.
+    //
+    // The old value faded the whole cell with `graphicsLayer { alpha = … }` on the Row,
+    // plate included. On a light bar a 38 %-opaque white plate over the bar's own
+    // surface is, for practical purposes, nothing: the cell stopped looking disabled and
+    // started looking *absent*, and its label — the same 38 % — went with it. That is
+    // how the annotate shelf's Thin/Medium/Bold "disappeared" whenever Erase was chosen
+    // (choosing the eraser used to disable the width group). A disabled control still has
+    // to be a control: it keeps its shape and its place, and only its ink goes quiet.
+    val inkAlpha by animateFloatAsState(
         targetValue = if (action.enabled) 1f else 0.38f,
         animationSpec = Motion.fade,
-        label = "connectedAlpha"
+        label = "connectedInkAlpha"
     )
 
     // Split button only when the cell has *both* an action and variants to offer.
@@ -296,7 +303,6 @@ private fun ConnectedCell(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = cellHeight)
-                    .graphicsLayer { this.alpha = alpha }
                     .clip(shape)
                     .background(plate)
                     // The press state layer: the cell's own ink at 14 %, so it darkens a
@@ -310,13 +316,30 @@ private fun ConnectedCell(
                     verticalArrangement = Arrangement.Center,
                     modifier = Modifier
                         .weight(1f)
-                        .pressScale(interactions, pressedScale = 0.96f)
+                        .graphicsLayer { this.alpha = inkAlpha }
+                        // ## No ripple, and no scale. The state layer *is* the feedback.
+                        //
+                        // Both of them painted over the label. The ripple was coloured
+                        // with the cell's own ink (`tint.copy(alpha = 0.22f)`) and was
+                        // bounded to this Column — i.e. exactly the rectangle the label
+                        // occupies — so a tap laid a wash of the label's colour on top
+                        // of the label. On the annotate shelf's label-only cells, where
+                        // the word is the entire cell, that reads as the button blinking
+                        // out under the finger and coming back: the "disappearing when
+                        // tapped, appears when long pressed" report.
+                        //
+                        // `pressLayer` above is the M3 Expressive answer and it is
+                        // already here: the cell's own ink at 14 %, drawn *under* the
+                        // content. It cannot touch the label, it is symmetric in and out
+                        // of the filled state, and it needs no indication at all.
+                        //
+                        // `pressScale` went with it. A 0.96 scale inside a clipped pill,
+                        // on a cell whose neighbours are 2 dp away, is a half-scaling,
+                        // half-clipped edge on every press — three layers animating for
+                        // one affordance that the plate already shows.
                         .clickable(
                             interactionSource = interactions,
-                            indication = ripple(
-                                bounded = true,
-                                color = tint.copy(alpha = 0.22f)
-                            ),
+                            indication = null,
                             enabled = action.enabled,
                             role = if (action.selected) Role.Checkbox else Role.Button,
                             onClick = {
@@ -375,7 +398,7 @@ private fun ConnectedCell(
                         Icon(
                             imageVector = Icons.Default.ArrowDropDown,
                             contentDescription = null,
-                            tint = tint.copy(alpha = 0.70f),
+                            tint = tint.copy(alpha = 0.70f * inkAlpha),
                             modifier = Modifier.size(18.dp)
                         )
                     }

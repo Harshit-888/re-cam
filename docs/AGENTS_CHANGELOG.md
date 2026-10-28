@@ -11,6 +11,37 @@ Resolved compilation errors from Arena Round 54 integration and verified clean b
 - **`ui/detail/DocumentDetailScreen.kt`**: Qualified `androidx.compose.animation.AnimatedVisibility` for tile selection check overlay, and added missing `import androidx.compose.foundation.layout.imePadding` for `MovePagesSheet`.
 - **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.9 MB), and `testDebugUnitTest` passed 100% (25 tasks, 0 failures).
 
+## 2026-10-28 — Arena.ai — Round 55: the annotate shelf's disappearing controls
+
+Reported against the Round-54 build: in the reader's annotate shelf, **Pen, Erase, Thin
+and Bold vanish when tapped and come back when held**. Five independent causes, all
+removed. No signature changes; UI only (no filter, geometry, pixel, typography or PDF
+output change).
+
+- **`ui/common/ConnectedButtonGroup.kt`** — cells no longer take a ripple
+  (`indication = null`; the 14 % ink `pressLayer` is the feedback), no longer carry
+  `pressScale`, and the disabled state dims **the ink only**. The whole-cell
+  `graphicsLayer { alpha }` is gone: it faded the plate with the label, so a disabled
+  cell on a light card read as *absent* rather than *dimmed*. `ConnectedAction` is
+  unchanged, so call sites compile as before — but **anything relying on the ripple for
+  press feedback now relies on the state layer**.
+- **`ui/common/ExpressiveAction.kt`** — `ExpressiveActionBar`'s entrance is
+  **translate-only**. Its `alpha` used to start at 0 and be restored by a
+  `LaunchedEffect(Unit)` inside the bar itself, so any recreation of the bar replayed a
+  fade-in from invisible: every control in it blinked out. Do not give a persistent bar
+  an entrance that can hide it.
+- **`ui/viewer/PageViewerScreen.kt`** — the annotate shelf's tool row and weight row are
+  now `SingleChoiceSegmentedButtonRow`/`SegmentedButton` (new private
+  `shelfSegmentedColors()`); only the action row stays a connected group. `inkEnabled`
+  (the eraser disabling the weight row and the swatches) is **deleted — no control on
+  the shelf is ever disabled**. The shelf-wide drag detector is gone; the 20 dp handle
+  band is the drag target again. Swatches use `indication = null` + a 12 % press squeeze.
+  The shelf swap builds its `ContentTransform` explicitly with
+  `SizeTransform(clip = false)`, because `a togetherWith b using x` binds `using` to the
+  else branch only.
+
+Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed by Antigravity.
+
 ## 2026-10-28 — Arena.ai — Round 54: second pass on the Round-53 reports
 
 Five of the seven Round-53 items were re-opened as still broken. All were layout bugs

@@ -2049,3 +2049,64 @@ Read this section before touching any of these files again.
   groups are all `surfaceContainerLowest` on `primary` with `onPrimary` ink.
 
 Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed by Antigravity.
+
+## 6ar. Round 55: the annotate shelf's disappearing controls (Arena, 2026-10-28)
+
+Reported on the Round-54 build: in the reader, with the annotate shelf open, **Pen,
+Erase, Thin and Bold disappear when tapped and come back when held**. Five independent
+ways for the same words to stop being drawn, all of them now removed. Do not
+reintroduce any of them; each one is a control that can hide itself.
+
+1. **An ink-coloured ripple, bounded to the label's own rectangle.**
+   `ConnectedButtonGroup`'s cell used `ripple(color = tint.copy(alpha = 0.22f))` on the
+   `Column` that *is* the label. A tap therefore laid a wash of the label's colour over
+   the label. Cells are now `indication = null`; the press is the 14 % ink state layer
+   that was already drawn *under* the content (`pressLayer`). This is also what
+   `MaterialButtonGroup` does — a state layer, not a ripple.
+2. **A whole-cell `graphicsLayer { alpha }` for the disabled state.** It faded the
+   *plate* with the ink, so a disabled cell on a white card became 38 % white — i.e.
+   absent, not dimmed. Disabled now dims the **ink only** (`inkAlpha`, applied to the
+   content `Column` and to the split chevron); the plate is always opaque.
+3. **The eraser disabled the width row.** `AnnotateShelf` had `inkEnabled = tool !=
+   WHITEOUT` wired into the width cells and the swatches. Choosing Erase therefore
+   greyed out Thin/Medium/Bold — the exact buttons in the report. **No control on the
+   shelf is disabled any more**: weight applies to a whiteout stroke as much as to a
+   pen, and a colour chosen while erasing is simply the colour of the next stroke.
+4. **`ExpressiveActionBar` owned an entrance that could hide it.** Its `remember {
+   Animatable(0f) }` + `LaunchedEffect(Unit)` drove `alpha` from 0 to 1 — a bar that is
+   invisible by default and only visible because an effect ran. Any recreation of the
+   composable restarts that from zero, and every control in the bar blinks out. The
+   entrance is now **translate-only**; a translation cannot hide anything.
+5. **`AnimatedContent` clips to its animating size.** The two shelves have different
+   heights, so during a swap the incoming shelf's lower rows are clipped away. The
+   transform is now built explicitly:
+   `ContentTransform(enter, exit, sizeTransform = SizeTransform(clip = false))`. Written
+   as the constructor because `a togetherWith b using x` binds `using` to the **else
+   branch only** — a trap that would have silently left the annotate direction clipped.
+
+### The switches are no longer connected-group cells
+
+`SingleChoiceSegmentedButtonRow` + `SegmentedButton` (the same control `MarkupScreen`
+uses) for the tool row and the weight row; the action row (undo/redo/clear/cancel/save)
+stays a `ConnectedButtonGroup`. A single-choice switch and an action bar are different
+controls: the group's cell is a plate + state layer + ripple + press scale + a shape that
+animates through three radii, which is a lot of machinery for two words and five ways to
+lose them. `pressScale` is gone from the cell for the same reason (it was the third
+animating layer on one affordance, and it scaled content inside a clipped pill 2 dp from
+its neighbour).
+
+### Also in this round
+
+- The shelf's drag target is the **20 dp handle band** again (8 dp above the dash, 4 dp
+  of dash, 8 dp below — the same 8 dp as everything else), not the whole shelf. A
+  `pointerInput` drag detector wrapped around a row of buttons competes with their click
+  handlers in the same pass, so a tap that drifts is claimed by the drag and the click is
+  cancelled.
+- Swatches: `indication = null`, a 12 % squeeze of the dot on press, ring always drawn.
+  A colour is never disabled.
+- `MarkupScreen` still hides its swatch row while erasing (`if (tool != WHITEOUT)`). That
+  is a *layout* change in a full-screen editor, and it was not reported; the reader keeps
+  a fixed three-row card instead, because a row appearing and disappearing changes the
+  bar's height under the finger.
+
+Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed by Antigravity.

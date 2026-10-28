@@ -76,9 +76,21 @@ fun ExpressiveActionBar(
     shadowElevation: Dp = 14.dp,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    // Arrives with a short lift. A bar that is simply *there* on screen open reads
-    // as part of the page; 12 dp and a fade reads as chrome that has slid up to be
-    // useful, which is what it is.
+    // Arrives with a short lift — **and never with a fade**.
+    //
+    // The entrance used to drive both: `alpha = arrive.value` from 0 to 1 over the
+    // spring. That is a bar which is *invisible by default* and only becomes visible
+    // because a `LaunchedEffect(Unit)` inside it happened to run. Every way that effect
+    // can be re-run — the bar being re-created by a `key`, moved between branches of an
+    // `if`, re-entered by an `AnimatedContent` swap, or its content being restored after
+    // a state change — starts the bar over at alpha 0. The user sees every control in it
+    // vanish and then fade back in, which is precisely the "the buttons disappeared when
+    // I tapped" report, and no amount of tuning the curve fixes it, because the failure
+    // is the *ownership* of the animation: a persistent piece of chrome must not own an
+    // entrance that can hide it.
+    //
+    // A translation cannot hide anything. It keeps the arrival (the bar still rises those
+    // last 12 dp) and it is safe to restart, at any time, from anywhere.
     val arrive = remember { Animatable(0f) }
     LaunchedEffect(Unit) { arrive.animateTo(1f, Motion.emphasized) }
 
@@ -87,7 +99,6 @@ fun ExpressiveActionBar(
         shape = shape,
         shadowElevation = shadowElevation,
         modifier = modifier.graphicsLayer {
-            alpha = arrive.value
             translationY = (1f - arrive.value) * 12.dp.toPx()
         }
     ) {
