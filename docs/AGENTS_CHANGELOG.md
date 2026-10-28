@@ -4,6 +4,12 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-28 — Antigravity — Round 52 Compilation Fixes
+
+- **ui/detail/DocumentDetailScreen.kt**: Added missing import ndroidx.compose.runtime.mutableIntStateOf for drag-and-drop page reordering state.
+- **ui/editor/CropAndFilterScreen.kt**: Added missing imports ndroidx.compose.material3.TopAppBar and ndroidx.compose.material3.TopAppBarDefaults for EditorHeader.
+- **Build verified**: ./gradlew testDebugUnitTest assembleDebug 100% green; app-debug.apk built successfully.
+
 ## 2026-10-28 — Arena.ai — Round 52: annotate is a screen, drag to reorder, Files-style camera
 
 Seven reported problems, plus the editor and camera re-skinned in Material 3. No filter,
