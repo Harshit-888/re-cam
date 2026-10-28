@@ -40,7 +40,6 @@ import androidx.compose.material.icons.outlined.Draw
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -78,8 +77,9 @@ import com.example.docscanner.theme.DocShapes
 import com.example.docscanner.theme.Motion
 import com.example.docscanner.theme.pressScale
 import com.example.docscanner.ui.common.BarHairline
+import com.example.docscanner.ui.common.ConnectedAction
+import com.example.docscanner.ui.common.ConnectedButtonGroup
 import com.example.docscanner.ui.common.ExpressiveActionBar
-import com.example.docscanner.ui.common.ExpressiveActionItem
 import com.example.docscanner.ui.common.ExpressivePager
 import com.example.docscanner.ui.common.PillButton
 import com.example.docscanner.ui.common.ZoomablePageView
@@ -345,39 +345,60 @@ fun PageViewerScreen(
                 BarHairline(color = Color.White.copy(alpha = 0.08f))
             }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 4.dp, bottom = 2.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                ExpressiveActionItem(
-                    label = "Crop",
-                    icon = Icons.Default.Crop,
-                    onClick = { currentPage?.let { onNavigateToCrop(it.id) } },
-                    contentColor = Color.White,
-                    plateColor = ViewerPlate
-                )
-                ExpressiveActionItem(
-                    label = "Annotate",
-                    icon = Icons.Outlined.Draw,
-                    onClick = { showMarkup = true },
-                    contentColor = Color.White,
-                    plateColor = ViewerPlate
-                )
-                ExpressiveActionItem(
-                    label = "Rotate",
-                    icon = Icons.Default.RotateRight,
-                    onClick = { rotateCurrentPage() },
-                    contentColor = Color.White,
-                    plateColor = ViewerPlate
-                )
-                ViewerMoreAction(
-                    onSign = { showSignPad = true },
-                    onExport = { showExportSheet = true }
-                )
-            }
+            ConnectedButtonGroup(
+                actions = listOf(
+                    ConnectedAction(
+                        label = "Crop",
+                        icon = Icons.Default.Crop,
+                        onClick = { currentPage?.let { onNavigateToCrop(it.id) } }
+                    ),
+                    ConnectedAction(
+                        label = "Annotate",
+                        icon = Icons.Outlined.Draw,
+                        onClick = { showMarkup = true }
+                    ),
+                    ConnectedAction(
+                        label = "Rotate",
+                        icon = Icons.Default.RotateRight,
+                        onClick = { rotateCurrentPage() }
+                    ),
+                    // The rare actions live behind this cell's menu instead of a fifth
+                    // button: sign and export apply here, delete does not.
+                    ConnectedAction(
+                        label = "More",
+                        icon = Icons.Default.MoreVert,
+                        // The cell is the menu: no action of its own, no chevron.
+                        menuContent = { dismiss ->
+                            DropdownMenuItem(
+                                text = { Text("Sign this page") },
+                                leadingIcon = {
+                                    Icon(Icons.Outlined.Draw, contentDescription = null)
+                                },
+                                onClick = {
+                                    dismiss()
+                                    showSignPad = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Export PDF") },
+                                leadingIcon = {
+                                    Icon(Icons.Outlined.PictureAsPdf, contentDescription = null)
+                                },
+                                onClick = {
+                                    dismiss()
+                                    showExportSheet = true
+                                }
+                            )
+                        }
+                    )
+                ),
+                containerColor = ViewerPlate,
+                contentColor = Color.White,
+                // No theme accent down here: `primary` is tuned for a light surface and
+                // would flash purple through a translucent bar over a photograph.
+                accentColor = Color.White,
+                modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+            )
         }
     }
 
@@ -587,49 +608,5 @@ private fun ViewerZoomBadge(scaleState: FloatState) {
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(start = 4.dp)
         )
-    }
-}
-
-/**
- * The rare page actions, behind one cell of the bar.
- *
- * The cell is an ordinary [ExpressiveActionItem] — the menu is anchored on a `Box`
- * around it — so "More" is not a differently-shaped control that happens to be last.
- * Signing is the one that used to be impossible from here at all.
- */
-@Composable
-private fun ViewerMoreAction(
-    onSign: () -> Unit,
-    onExport: () -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        ExpressiveActionItem(
-            label = "More",
-            icon = Icons.Default.MoreVert,
-            onClick = { expanded = true },
-            contentColor = Color.White,
-            plateColor = ViewerPlate
-        )
-        // Opaque menu: the backdrop behind it is a dark page, and a translucent menu
-        // over one is unreadable at the bottom of the screen.
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            DropdownMenuItem(
-                text = { Text("Sign this page") },
-                leadingIcon = { Icon(Icons.Outlined.Draw, contentDescription = null) },
-                onClick = {
-                    expanded = false
-                    onSign()
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Export PDF") },
-                leadingIcon = { Icon(Icons.Outlined.PictureAsPdf, contentDescription = null) },
-                onClick = {
-                    expanded = false
-                    onExport()
-                }
-            )
-        }
     }
 }

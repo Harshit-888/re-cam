@@ -59,6 +59,9 @@ import androidx.compose.material.icons.filled.RotateLeft
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -1547,12 +1550,27 @@ private fun StageSwitch(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        SegmentedPill(
-            options = listOf(Stage.BORDERS.label, Stage.FILTERS.label),
-            selectedIndex = if (stage == Stage.BORDERS) 0 else 1,
-            onSelect = { index -> onSelect(if (index == 0) Stage.BORDERS else Stage.FILTERS) },
-            modifier = Modifier.weight(1f)
-        )
+        // Material 3's own segmented button, not the app's hand-rolled pill.
+        //
+        // This is the one place a two-option switch has equal-length labels and no
+        // custom palette, which is exactly the deal `SegmentedButton` makes: it brings
+        // the system's check icon, its border-weight/inner-corner treatment and its own
+        // selection animation, and it stays correct when the theme changes. The
+        // camera's Single/Batch switch keeps `SegmentedPill` because it needs the glass
+        // palette passed in, which a themed component cannot express.
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.weight(1f)) {
+            Stage.entries.forEachIndexed { index, option ->
+                SegmentedButton(
+                    selected = stage == option,
+                    onClick = { onSelect(option) },
+                    shape = SegmentedButtonDefaults.itemShape(
+                        index = index,
+                        count = Stage.entries.size
+                    ),
+                    label = { Text(option.label, maxLines = 1) }
+                )
+            }
+        }
         if (pageCount > 1) {
             Spacer(Modifier.width(10.dp))
             InfoPill(text = "$pageCount pages")

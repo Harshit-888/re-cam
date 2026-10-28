@@ -1414,10 +1414,11 @@ change pages, which is exactly the Round 37 bug.
 **Edited:** `ui/common/Expressive.kt`, `ui/detail/DocumentDetailScreen.kt`,
 `ui/viewer/PageViewerScreen.kt`, `ui/dashboard/DashboardScreen.kt`.
 
-- **Use `ExpressiveActionBar` / `ExpressiveActionItem` / `ExpressivePager` for any new
-  bottom bar.** They are the app's expressive action language: plate that morphs on
-  press, spring pop on tap, tonal container, pager with a progress rail. Do not hand-
-  build a fourth row of icon+label cells.
+- **Use `ExpressiveActionBar` / `ConnectedButtonGroup` / `ExpressivePager` for any new
+  bottom bar.** They are the app's expressive action language: a connected group built to
+  Google's shape tokens inside a tonal container, with a pager that has a progress rail.
+  Do not hand-build another row of icon+label cells. (`ExpressiveActionItem` from this
+  round was **deleted in R51** — see §6an.)
 - **Selection in the document grid is many-page.** `selectedPageIds: Set<String>`.
   Tapping adds/removes; the bar has three states (document / one page / several). If you
   add an action, decide which state it belongs to — `Crop` and `Annotate` are
@@ -1850,3 +1851,53 @@ Before any optimization lands:
 **Recorded by**: GitHub Copilot (Nemotron 3 Ultra)  
 **Date**: 2026-10-27  
 **Status**: Analysis only — awaiting review by Arena.ai and Antigravity before any implementation
+
+## 6an. Round 51: connected button group, real `SegmentedButton` (Arena, 2026-10-28)
+
+**New:** `ui/common/ConnectedButtonGroup.kt`.
+**Edited:** `ui/common/ExpressiveAction.kt`, `ui/detail/DocumentDetailScreen.kt`,
+`ui/viewer/PageViewerScreen.kt`, `ui/editor/CropAndFilterScreen.kt`.
+
+- **Read before touching any bar.** `ConnectedButtonGroup` implements Google's connected
+  group shape rule, quoted from `material-components-android`:
+  `lib/java/com/google/android/material/button/res/values/button_group_tokens.xml` and
+  `res/xml/m3expressive_connected_buttons_inner_corner_size_state_list.xml`.
+
+  | Part | Token | Value |
+  | :--- | :--- | :--- |
+  | outer corners | `ShapeAppearance.M3.Comp.ButtonGroup.Connected.Small.Container.Shape` | Full (pill) |
+  | inner corners, rest | `shapeCornerSizeSmall` | 8 dp |
+  | inner corners, pressed | `shapeCornerSizeExtraSmall` | **4 dp** (tighter, not rounder) |
+  | inner corners, selected | state list | 50 % |
+  | spacing between cells | `m3_comp_button_group_connected_small_between_space` | 2 dp |
+
+  `MaterialButtonGroup.updateChildShapes()` is the Views implementation of the same
+  override — first visible child keeps its outer left corners, last keeps outer right,
+  everything else is overridden, and RTL swaps the left/right bits.
+- **Anatomy deviation, deliberate:** ours stacks icon over label (four labelled actions
+  on a 360 dp bar do not fit side by side); Google's puts them in a row and ships the rest
+  in an overflow menu. If a bar ever grows an overflow menu, un-stack.
+- **Deleted:** `ExpressiveActionItem` (`ui/common/ExpressiveAction.kt`) and
+  `ViewerMoreAction` (`ui/viewer/PageViewerScreen.kt`). Nothing else referenced them.
+  `ExpressiveActionBar`, `ExpressivePager`, `BarHairline` are unchanged.
+- **`ConnectedAction.menuContent`** is the split-button pattern folded into a cell. With
+  `onClick` as well, the body runs the action and a **26 dp chevron** at the trailing edge
+  opens the menu; with `onClick == null` the cell *is* the menu and there is no chevron.
+  Items are `ColumnScope.(dismiss: () -> Unit)` — call `dismiss()` first in each item's
+  `onClick`, because `DropdownMenuItem` does not close its own menu.
+- **`SegmentedPill` in `ui/common/Expressive.kt` is still live** for the camera's
+  Single/Batch toggle (it needs the glass palette injected). The editor's BORDERS/FILTERS
+  switch is now the real `SingleChoiceSegmentedButtonRow` + `SegmentedButton` with
+  `SegmentedButtonDefaults.itemShape(index, count)`.
+- **Do not bump `material3` to `1.5.0-beta01`** to get `ButtonGroup`, `SplitButtonLayout`,
+  `ToggleButton` or `HorizontalFloatingToolbar`. Verified against the `androidx-main` API
+  snapshots: those symbols do not exist in the 1.3/1.4 lines, and this project does not
+  take a beta for a parity build. `LoadingIndicator` at 1.4.0-beta03 is
+  `@ExperimentalMaterial3ExpressiveApi`. Re-check before assuming any of them.
+- **New gallery-import path in the detail screen:** `ActivityResultContracts
+  .PickMultipleVisualMedia` → `ImageStore.importFromUri` (same decoder and quality cap as
+  capture) → `repository.addPageToDocument` → `repository.indexTextInBackground`. A page
+  can now join an existing document without the camera screen.
+- **MCA is the Views library** (`AGENTS.md` §2 forbids View code here). Mine it for
+  anatomy, thresholds and tokens only — never paste its Java.
+- Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.

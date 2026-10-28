@@ -1,7 +1,6 @@
 package com.example.docscanner.ui.common
 
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -13,7 +12,6 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,11 +20,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
@@ -39,7 +34,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,13 +44,11 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.docscanner.theme.DocShapes
 import com.example.docscanner.theme.Motion
 import com.example.docscanner.theme.pressScale
-import kotlinx.coroutines.launch
 
 /**
  * The app's one bottom action bar, in the Material 3 Expressive idiom.
@@ -65,14 +57,11 @@ import kotlinx.coroutines.launch
  *
  * Expressive Material is not a palette, it is a set of behaviours:
  *
- * - **Shape carries state.** The plate behind an icon is a rounded square at rest and
- *   relaxes towards a pill while held — the same "the control answers you" idea as the
- *   expressive shape scale.
  * - **Springs, not curves.** Press and release run on [Motion.press] / [Motion.bouncy];
  *   a linear tween on a 40 dp object reads as a web page, a spring reads as an object.
- * - **The tap has an aftertaste.** [ExpressiveActionItem] pops its icon on click. It is
- *   ~120 ms and it is the difference between "nothing happened" and "it heard me" on an
- *   action that opens a sheet and takes a moment to appear.
+ * - **The cells are a connected group.** [ConnectedButtonGroup] draws them to Google's
+ *   own tokens — pill ends, 8 dp inner corners, 4 dp while held — rather than four
+ *   identical rounded rectangles side by side.
  * - **Containers, not dividers.** The bar is one tonal container with the page counter
  *   inside it, rather than a row of icons floating on the page.
  *
@@ -103,123 +92,6 @@ fun ExpressiveActionBar(
         }
     ) {
         Column(content = content)
-    }
-}
-
-/**
- * One action in [ExpressiveActionBar]: an icon on a plate, with its label under it.
- *
- * The plate is what the finger hits, and it is 44 dp tall — the label below is inside
- * the same clickable, so the whole cell is the target, not just the glyph.
- *
- * @param emphasized fills the plate with the accent colour (one per bar, at most —
- *   two emphasised actions is a bar with no primary action).
- */
-@Composable
-fun ExpressiveActionItem(
-    label: String,
-    icon: ImageVector,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    contentColor: Color = MaterialTheme.colorScheme.onSurface,
-    plateColor: Color = MaterialTheme.colorScheme.surfaceContainerHigh,
-    accentColor: Color = MaterialTheme.colorScheme.primary,
-    onAccentColor: Color = MaterialTheme.colorScheme.onPrimary,
-    emphasized: Boolean = false,
-    enabled: Boolean = true
-) {
-    val interactions = remember { MutableInteractionSource() }
-    val pressed by interactions.collectIsPressedAsState()
-    val scope = rememberCoroutineScope()
-
-    // The plate's corners tighten toward a pill while the finger is down. 14 → 22 dp
-    // is small in absolute terms and unmistakable in feel: the object visibly reacts
-    // instead of just dimming.
-    val corner by animateFloatAsState(
-        targetValue = if (pressed) PLATE_CORNER_PRESSED_DP else PLATE_CORNER_DP,
-        animationSpec = Motion.press,
-        label = "actionPlateCorner"
-    )
-    // The pop. Snapped on the frame of the tap so it is felt immediately, then
-    // settled with an overshoot — never a `tween`, which would land flat.
-    val pop = remember { Animatable(1f) }
-
-    // Disabled actions stay in place (a bar that re-flows when a page is rotated is a
-    // bar you have to re-learn) but fade and stop responding.
-    val alpha by animateFloatAsState(
-        targetValue = if (enabled) 1f else 0.38f,
-        animationSpec = Motion.fade,
-        label = "actionAlpha"
-    )
-
-    val plate by animateColorAsState(
-        targetValue = when {
-            emphasized -> accentColor
-            pressed -> accentColor.copy(alpha = 0.18f)
-            else -> plateColor
-        },
-        animationSpec = tween(durationMillis = 120),
-        label = "actionPlate"
-    )
-    val tint by animateColorAsState(
-        targetValue = if (emphasized) onAccentColor else contentColor,
-        animationSpec = tween(durationMillis = 120),
-        label = "actionTint"
-    )
-
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-        modifier = modifier
-            .heightIn(min = 56.dp)
-            .graphicsLayer { this.alpha = alpha }
-            .clip(DocShapes.cardSmall)
-            .pressScale(interactions, pressedScale = 0.93f)
-            .clickable(
-                interactionSource = interactions,
-                indication = ripple(bounded = true),
-                enabled = enabled,
-                role = Role.Button,
-                onClick = {
-                    scope.launch {
-                        pop.snapTo(0.78f)
-                        pop.animateTo(1f, Motion.bouncy)
-                    }
-                    onClick()
-                }
-            )
-            .padding(horizontal = 8.dp, vertical = 6.dp)
-    ) {
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .size(width = 46.dp, height = 34.dp)
-                .clip(RoundedCornerShape(corner.dp))
-                .background(plate)
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = tint,
-                modifier = Modifier
-                    .size(19.dp)
-                    .graphicsLayer {
-                        val p = pop.value
-                        scaleX = p
-                        scaleY = p
-                    }
-            )
-        }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = if (emphasized) FontWeight.SemiBold else FontWeight.Medium,
-            color = if (enabled) contentColor else contentColor.copy(alpha = 0.7f),
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Ellipsis
-        )
     }
 }
 

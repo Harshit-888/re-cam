@@ -1,6 +1,9 @@
 package com.example.docscanner.ui.detail
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
@@ -23,8 +26,9 @@ import androidx.compose.material3.ripple
 import com.example.docscanner.theme.DocShapes
 import com.example.docscanner.theme.Motion
 import com.example.docscanner.theme.pressScale
+import com.example.docscanner.ui.common.ConnectedAction
+import com.example.docscanner.ui.common.ConnectedButtonGroup
 import com.example.docscanner.ui.common.ExpressiveActionBar
-import com.example.docscanner.ui.common.ExpressiveActionItem
 import com.example.docscanner.ui.common.InfoPill
 import com.example.docscanner.ui.common.PillButton
 import androidx.compose.foundation.layout.Box
@@ -56,6 +60,7 @@ import androidx.compose.material.icons.filled.ArrowRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInFull
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.outlined.BrandingWatermark
@@ -98,11 +103,15 @@ import com.example.docscanner.ui.common.PageThumbnail
 import com.example.docscanner.ui.pdf.PdfExportSheet
 import com.example.docscanner.ui.signature.SignaturePadDialog
 import com.example.docscanner.ui.editor.MarkupDialog
+import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.PageRenderer
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -184,6 +193,48 @@ fun DocumentDetailScreen(
 
     // Back leaves selection, not the screen — the same rule as the library grid.
     BackHandler(enabled = selectedPageIds.isNotEmpty()) { selectedPageIds = emptySet() }
+
+    // Gallery import into *this* document. Until now the picker only existed inside
+    // the camera screen, so adding a page from the album meant starting a new scan and
+    // hoping the app knew where to put it. The decoder is the same one the camera uses
+    // (`ImageStore.importFromUri`), so the page lands with the same cap and quality as
+    // a capture.
+    val galleryImport = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            val quality = repository.currentSettings().imageQuality
+            uris.forEach { uri ->
+                val pageId = UUID.randomUUID().toString()
+                val savedPath = withContext(Dispatchers.IO) {
+                    runCatching {
+                        ImageStore.importFromUri(
+                            context = context,
+                            uri = uri,
+                            pageId = pageId,
+                            maxDimension = quality.maxDimension,
+                            quality = quality.jpegQuality
+                        )
+                    }.getOrNull()
+                }
+                if (savedPath != null) {
+                    repository.addPageToDocument(
+                        docId,
+                        ScannedPage(
+                            id = pageId,
+                            documentId = docId,
+                            pageIndex = 0,
+                            imageUri = savedPath
+                        )
+                    )
+                }
+            }
+            // Search only finds pages whose words have been read, and an imported page
+            // is no different from a captured one.
+            repository.indexTextInBackground(docId)
+        }
+    }
 
     /** Adds or removes one page. Tapping a ticked page un-ticks it. */
     fun toggleSelection(pageId: String) {
@@ -410,162 +461,161 @@ fun DocumentDetailScreen(
                                 // several pages. Crop and annotate are per-page
                                 // decisions and quietly applying one page's crop to a
                                 // set would be the worst kind of batch action.
-                                ExpressiveActionItem(
-                                    label = "Rotate",
-                                    icon = Icons.Default.RotateRight,
-                                    onClick = { rotatePages(batch) },
-                                    modifier = Modifier.weight(1f)
-                                )
-                                ExpressiveActionItem(
-                                    label = "Export",
-                                    icon = Icons.Outlined.PictureAsPdf,
-                                    onClick = { exportOnly = batch },
-                                    modifier = Modifier.weight(1f)
-                                )
-                                ExpressiveActionItem(
-                                    label = "Delete",
-                                    icon = Icons.Default.Delete,
-                                    contentColor = MaterialTheme.colorScheme.error,
-                                    onClick = { pagesPendingDelete = batch },
-                                    modifier = Modifier.weight(1f)
+                                ConnectedButtonGroup(
+                                    actions = listOf(
+                                        ConnectedAction(
+                                            label = "Rotate",
+                                            icon = Icons.Default.RotateRight,
+                                            onClick = { rotatePages(batch) }
+                                        ),
+                                        ConnectedAction(
+                                            label = "Export",
+                                            icon = Icons.Outlined.PictureAsPdf,
+                                            onClick = { exportOnly = batch }
+                                        ),
+                                        ConnectedAction(
+                                            label = "Delete",
+                                            icon = Icons.Default.Delete,
+                                            onClick = { pagesPendingDelete = batch },
+                                            tintColor = MaterialTheme.colorScheme.error
+                                        )
+                                    )
                                 )
                             }
 
                             page != null -> {
                                 // The page's own verbs, in the order a scan needs
                                 // them: fix the crop and the look, add ink, sign it —
-                                // then everything rare in More.
-                                ExpressiveActionItem(
-                                    label = "Crop",
-                                    icon = Icons.Outlined.Crop,
-                                    onClick = {
-                                        selectedPageIds = emptySet()
-                                        onNavigateToCrop(page.id)
-                                    },
-                                    modifier = Modifier.weight(1f)
-                                )
-                                ExpressiveActionItem(
-                                    label = "Annotate",
-                                    icon = Icons.Outlined.Draw,
-                                    onClick = { markupTarget = page },
-                                    modifier = Modifier.weight(1f)
-                                )
-                                ExpressiveActionItem(
-                                    label = "Sign",
-                                    icon = Icons.Default.Create,
-                                    onClick = { signatureTargetId = page.id },
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Box(modifier = Modifier.weight(1f)) {
-                                    var showPageMenu by remember(page.id) { mutableStateOf(false) }
-                                    ExpressiveActionItem(
-                                        label = "More",
-                                        icon = Icons.Default.MoreVert,
-                                        onClick = { showPageMenu = true },
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                    DropdownMenu(
-                                        expanded = showPageMenu,
-                                        onDismissRequest = { showPageMenu = false }
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = { Text("Open full screen") },
-                                            leadingIcon = {
-                                                Icon(
-                                                    Icons.Default.OpenInFull,
-                                                    contentDescription = null
-                                                )
-                                            },
+                                // then everything rare in More. One connected group,
+                                // so the four cells read as one object with four
+                                // ends rather than four separate buttons.
+                                ConnectedButtonGroup(
+                                    actions = listOf(
+                                        ConnectedAction(
+                                            label = "Crop",
+                                            icon = Icons.Outlined.Crop,
                                             onClick = {
-                                                showPageMenu = false
-                                                val id = page.id
                                                 selectedPageIds = emptySet()
-                                                onNavigateToViewer(id)
+                                                onNavigateToCrop(page.id)
+                                            }
+                                        ),
+                                        ConnectedAction(
+                                            label = "Annotate",
+                                            icon = Icons.Outlined.Draw,
+                                            onClick = { markupTarget = page }
+                                        ),
+                                        ConnectedAction(
+                                            label = "Sign",
+                                            icon = Icons.Default.Create,
+                                            onClick = { signatureTargetId = page.id }
+                                        ),
+                                        ConnectedAction(
+                                            label = "More",
+                                            icon = Icons.Default.MoreVert,
+                                            // No `onClick`: this cell *is* the menu, so
+                                            // there is no chevron and no second tap.
+                                            menuContent = { dismiss ->
+                                                DropdownMenuItem(
+                                                    text = { Text("Open full screen") },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            Icons.Default.OpenInFull,
+                                                            contentDescription = null
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        dismiss()
+                                                        val id = page.id
+                                                        selectedPageIds = emptySet()
+                                                        onNavigateToViewer(id)
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("Rotate 90°") },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            Icons.Default.RotateRight,
+                                                            contentDescription = null
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        dismiss()
+                                                        rotatePages(listOf(page))
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("Move earlier") },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            Icons.Default.ArrowLeft,
+                                                            contentDescription = null
+                                                        )
+                                                    },
+                                                    enabled = page.pageIndex > 0,
+                                                    onClick = {
+                                                        dismiss()
+                                                        repository.movePage(
+                                                            docId,
+                                                            page.pageIndex,
+                                                            page.pageIndex - 1
+                                                        )
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("Move later") },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            Icons.Default.ArrowRight,
+                                                            contentDescription = null
+                                                        )
+                                                    },
+                                                    enabled = page.pageIndex <
+                                                        document.pages.lastIndex,
+                                                    onClick = {
+                                                        dismiss()
+                                                        repository.movePage(
+                                                            docId,
+                                                            page.pageIndex,
+                                                            page.pageIndex + 1
+                                                        )
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("Watermark all pages") },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            Icons.Outlined.BrandingWatermark,
+                                                            contentDescription = null
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        dismiss()
+                                                        showWatermarkDialog = true
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Text(
+                                                            "Delete page",
+                                                            color = MaterialTheme.colorScheme.error
+                                                        )
+                                                    },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            Icons.Default.Delete,
+                                                            contentDescription = null,
+                                                            tint = MaterialTheme.colorScheme.error
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        dismiss()
+                                                        pagesPendingDelete = listOf(page)
+                                                    }
+                                                )
                                             }
                                         )
-                                        DropdownMenuItem(
-                                            text = { Text("Rotate 90°") },
-                                            leadingIcon = {
-                                                Icon(
-                                                    Icons.Default.RotateRight,
-                                                    contentDescription = null
-                                                )
-                                            },
-                                            onClick = {
-                                                showPageMenu = false
-                                                rotatePages(listOf(page))
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Move earlier") },
-                                            leadingIcon = {
-                                                Icon(
-                                                    Icons.Default.ArrowLeft,
-                                                    contentDescription = null
-                                                )
-                                            },
-                                            enabled = page.pageIndex > 0,
-                                            onClick = {
-                                                showPageMenu = false
-                                                repository.movePage(
-                                                    docId,
-                                                    page.pageIndex,
-                                                    page.pageIndex - 1
-                                                )
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Move later") },
-                                            leadingIcon = {
-                                                Icon(
-                                                    Icons.Default.ArrowRight,
-                                                    contentDescription = null
-                                                )
-                                            },
-                                            enabled = page.pageIndex < document.pages.lastIndex,
-                                            onClick = {
-                                                showPageMenu = false
-                                                repository.movePage(
-                                                    docId,
-                                                    page.pageIndex,
-                                                    page.pageIndex + 1
-                                                )
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Watermark all pages") },
-                                            leadingIcon = {
-                                                Icon(
-                                                    Icons.Outlined.BrandingWatermark,
-                                                    contentDescription = null
-                                                )
-                                            },
-                                            onClick = {
-                                                showPageMenu = false
-                                                showWatermarkDialog = true
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = {
-                                                Text(
-                                                    "Delete page",
-                                                    color = MaterialTheme.colorScheme.error
-                                                )
-                                            },
-                                            leadingIcon = {
-                                                Icon(
-                                                    Icons.Default.Delete,
-                                                    contentDescription = null,
-                                                    tint = MaterialTheme.colorScheme.error
-                                                )
-                                            },
-                                            onClick = {
-                                                showPageMenu = false
-                                                pagesPendingDelete = listOf(page)
-                                            }
-                                        )
-                                    }
-                                }
+                                    )
+                                )
                             }
 
                             else -> {
@@ -574,18 +624,60 @@ fun DocumentDetailScreen(
                                 // Sign and Mark used to sit here and both were lies at
                                 // this level — Mark stamps every page, and Sign stamped
                                 // page 1 regardless of which page you were reading.
-                                ExpressiveActionItem(
-                                    label = "Add page",
-                                    icon = Icons.Default.AddAPhoto,
-                                    onClick = { onAddPageCamera(docId) },
-                                    modifier = Modifier.weight(1f)
-                                )
-                                ExpressiveActionItem(
-                                    label = "Export PDF",
-                                    icon = Icons.Outlined.PictureAsPdf,
-                                    onClick = { showPdfExportSheet = true },
-                                    emphasized = true,
-                                    modifier = Modifier.weight(1f)
+                                ConnectedButtonGroup(
+                                    actions = listOf(
+                                        ConnectedAction(
+                                            label = "Add page",
+                                            icon = Icons.Default.AddAPhoto,
+                                            onClick = { onAddPageCamera(docId) },
+                                            // Tapping the cell still goes straight to
+                                            // the camera — the common case stays one
+                                            // tap. The chevron on its trailing edge is a
+                                            // split button: the gallery used to be
+                                            // reachable only by starting a *new* scan
+                                            // from the camera screen, never into the
+                                            // document already open.
+                                            menuContent = { dismiss ->
+                                                DropdownMenuItem(
+                                                    text = { Text("Take a photo") },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            Icons.Default.AddAPhoto,
+                                                            contentDescription = null
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        dismiss()
+                                                        onAddPageCamera(docId)
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("Import from gallery") },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            Icons.Default.PhotoLibrary,
+                                                            contentDescription = null
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        dismiss()
+                                                        galleryImport.launch(
+                                                            PickVisualMediaRequest(
+                                                                ActivityResultContracts
+                                                                    .PickVisualMedia.ImageOnly
+                                                            )
+                                                        )
+                                                    }
+                                                )
+                                            }
+                                        ),
+                                        ConnectedAction(
+                                            label = "Export PDF",
+                                            icon = Icons.Outlined.PictureAsPdf,
+                                            onClick = { showPdfExportSheet = true },
+                                            emphasized = true
+                                        )
+                                    )
                                 )
                             }
                         }

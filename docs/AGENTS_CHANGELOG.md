@@ -4,6 +4,51 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-28 — Arena.ai — Round 51: Google's connected button group, real `SegmentedButton`
+
+Mined `material-components-android` for the Expressive component set and adopted the
+parts that Compose can actually express at our version. **No dependency bumped** — our
+`material3` line (BOM `2026.03.01`) has `SegmentedButton` but not `ButtonGroup`,
+`SplitButtonLayout`, `ToggleButton` or `HorizontalFloatingToolbar`; those first appear in
+`material3` **1.5.0-beta01** and are deliberately *not* pulled in here.
+
+- **New `ui/common/ConnectedButtonGroup.kt`**
+  - `ConnectedButtonGroup(actions, modifier, containerColor, contentColor, accentColor, onAccentColor, cellHeight)` and
+    `ConnectedAction(label, icon, onClick, contentDescription, enabled, emphasized, selected, menuContent)`.
+  - Shape is Google's, quoted from `button_group_tokens.xml` /
+    `m3expressive_connected_buttons_inner_corner_size_state_list.xml`: pill ends,
+    **inner corners 8 dp at rest, 4 dp while pressed, 50 % when selected**, **2 dp**
+    between cells. `MaterialButtonGroup.updateChildShapes()` is the same rule in Views.
+  - `menuContent` folds the split-button idea (`MaterialSplitButton`) into a cell. With an
+    `onClick` too, the cell body still runs the action and a **chevron on its trailing
+    edge** (26 dp, its own hit area) opens the menu; without an `onClick` the whole cell is
+    the menu opener and there is no chevron. Items receive a `dismiss` lambda because a
+    `DropdownMenuItem` does not close its own menu.
+  - Anatomy deviation, written down in the file: cells stack icon over label. Google's
+    group puts them side by side because it ships an overflow menu for the rest; our bars
+    carry four labelled actions on a phone.
+- **`ui/common/ExpressiveAction.kt`** — **`ExpressiveActionItem` is deleted.** Nothing
+  else in the app used it; the connected group owns cell rendering now.
+  `ExpressiveActionBar` / `ExpressivePager` / `BarHairline` are unchanged.
+- **`ui/detail/DocumentDetailScreen.kt`** — all three bar states are one connected group
+  (document / one page / several pages). Single-page **More** is a menu cell holding
+  Open full screen, Rotate 90°, Move earlier/later, Watermark all pages, Delete page.
+  The document state's **Add page** cell gained a menu with *Take a photo* / *Import
+  from gallery*; the gallery path is new here (`ActivityResultContracts.PickMultipleVisualMedia`
+  → `ImageStore.importFromUri` → `repository.addPageToDocument` → `indexTextInBackground`),
+  so a page can be added to an **existing** document without going through the camera.
+- **`ui/viewer/PageViewerScreen.kt`** — the shelf's four cells are a connected group;
+  `ViewerMoreAction` (a `Box`-wrapped `ExpressiveActionItem` plus its own menu) is
+  **deleted** and its two entries live in the group's More menu. Glass palette passed
+  through `containerColor`/`accentColor`.
+- **`ui/editor/CropAndFilterScreen.kt`** — `StageSwitch` now uses the real
+  `SingleChoiceSegmentedButtonRow` + `SegmentedButton` with
+  `SegmentedButtonDefaults.itemShape(index, count)` instead of the hand-rolled
+  `SegmentedPill`. `SegmentedPill` is **not** deleted: the camera's Single/Batch toggle
+  still needs to pass the glass palette in, which a themed component cannot express.
+- Nothing that affects pixels: no filter, geometry, colour scheme, typography or
+  `PdfGenerator`/`PdfWriter` change.
+
 ## 2026-10-28 — Antigravity — IndyMobile Reverse Engineering Evidence & Decompiled Blueprints
 
 - **New indymobile/ directory**: Complete reverse-engineering package for Indiana Mobile Document Scanner (com.indymobileapp.document.scanner), mirroring dobe-scan/ for Target 1.
