@@ -413,23 +413,25 @@ fun PageViewerScreen(
                         label = "pageSwap",
                         modifier = Modifier.fillMaxSize()
                     ) { bitmap ->
-                        Image(
-                            bitmap = bitmap,
-                            contentDescription = "Page ${safeIndex + 1}",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                // Asymmetric on purpose: the action bar at the bottom
-                                // is taller than the glass strip at the top, and a
-                                // page whose last line sits under it is a page you
-                                // cannot read.
-                                .padding(
-                                    start = 6.dp,
-                                    end = 6.dp,
-                                    top = 68.dp,
-                                    bottom = pageBottomInset
-                                )
-                        )
+                        if (bitmap != null) {
+                            Image(
+                                bitmap = bitmap,
+                                contentDescription = "Page ${safeIndex + 1}",
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    // Asymmetric on purpose: the action bar at the bottom
+                                    // is taller than the glass strip at the top, and a
+                                    // page whose last line sits under it is a page you
+                                    // cannot read.
+                                    .padding(
+                                        start = 6.dp,
+                                        end = 6.dp,
+                                        top = 68.dp,
+                                        bottom = pageBottomInset
+                                    )
+                            )
+                        }
                     }
                 }
             }

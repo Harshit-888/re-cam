@@ -4,6 +4,13 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-28 — Antigravity — Round 53 compilation fix & build verification
+
+Resolved compilation errors from Arena Round 53 integration and verified clean build:
+- **`ui/detail/DocumentDetailScreen.kt`**: Added missing `import androidx.compose.foundation.clickable` for destination selection rows in the move bottom sheet.
+- **`ui/viewer/PageViewerScreen.kt`**: Added null safety check (`if (bitmap != null)`) within `Crossfade` for nullable `ImageBitmap?` (`shownPage`).
+- **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.5 MB), and `testDebugUnitTest` passed 100%.
+
 ## 2026-10-28 — Arena.ai — Round 53: connected page verbs, in-place annotate, quick rotate, share a selection
 
 Seven reported defects. Layout, chrome and motion only: no filter, geometry, colour,
