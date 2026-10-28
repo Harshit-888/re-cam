@@ -133,6 +133,7 @@ import com.example.docscanner.theme.DocShapes
 import com.example.docscanner.theme.Motion
 import com.example.docscanner.theme.entrance
 import com.example.docscanner.theme.pressScale
+import com.example.docscanner.theme.raisedCardColor
 import com.example.docscanner.ui.common.InfoPill
 import com.example.docscanner.ui.common.PageThumbnail
 import com.example.docscanner.ui.common.PillButton
@@ -220,7 +221,20 @@ fun DashboardScreen(
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var selectedFolderId by rememberSaveable { mutableStateOf<String?>(null) }
     var sortOption by rememberSaveable { mutableStateOf(DocumentSortOption.MODIFIED_NEWEST) }
-    var isGridView by rememberSaveable { mutableStateOf(true) }
+
+    // ## The list/grid choice is a setting, not screen state
+    //
+    // It used to be `rememberSaveable`, which survives a rotation and a system-killed
+    // process — and *not* the thing users actually do, which is close the app and open it
+    // again. Every launch therefore snapped back to the grid. "Keep whatever the user
+    // leaves" means persisted: the flag lives in `AppSettings.libraryGridView`
+    // (`settings.json`), is written the moment the toggle is pressed, and the screen has
+    // no local copy of it at all. One source of truth also means the icon, the list and
+    // the saved preference cannot disagree.
+    val isGridView = settings.libraryGridView
+    val setIsGridView: (Boolean) -> Unit = { grid ->
+        repository.updateSettings { it.copy(libraryGridView = grid) }
+    }
     var showFolderDialog by remember { mutableStateOf(false) }
     var showSortMenu by remember { mutableStateOf(false) }
     var moveDocId by remember { mutableStateOf<String?>(null) }
@@ -716,7 +730,7 @@ fun DashboardScreen(
                             }
                         },
                         actions = {
-                            IconButton(onClick = { isGridView = !isGridView }) {
+                            IconButton(onClick = { setIsGridView(!isGridView) }) {
                                 Icon(
                                     if (isGridView) Icons.Outlined.ViewList else Icons.Outlined.GridView,
                                     contentDescription = if (isGridView) "Show as list" else "Show as grid"
@@ -1738,9 +1752,19 @@ fun DocumentGridCard(
                 }
             }
 
+            // The card's own tone.
+            //
+            // This band used to be `surfaceContainerLow` — the exact colour of the shelf
+            // it sits on — so a grid tile had *no* container: a photo, a caption, then
+            // nothing. Each document is now its own card (Gmail's list, in tile form):
+            // the footer is [raisedCardColor], one tonal step away from the shelf, and
+            // the 14 dp gap between tiles does the rest. The fill is still painted only
+            // where the photo does not cover it, which is the property the perf rounds
+            // bought — a card costs one fill, not a full-tile background under a
+            // half-megapixel thumbnail.
             Column(
                 Modifier
-                    .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                    .background(MaterialTheme.colorScheme.raisedCardColor())
                     .padding(start = 14.dp, end = 8.dp, top = 10.dp, bottom = 12.dp)
             ) {
                 Text(
@@ -1796,13 +1820,26 @@ fun DocumentListCard(
     val interactions = remember { MutableInteractionSource() }
     val listCoverSize = rememberListCoverSize()
 
-    // Same reasoning as `DocumentGridCard`: a list row that scrolls should cost a
+    // ## Each document is its own card
+    //
+    // The row used to be filled with `surfaceContainerLow` — the *same* colour as the
+    // shelf behind it — so a list of documents was a column of text with 10 dp of nothing
+    // between the rows. No boundary at all: the thumbnail and the title floated on one
+    // continuous surface, and "which row am I pressing" was answered only by the ripple.
+    // Now the row carries [raisedCardColor], one tonal step up from the shelf, so every
+    // document reads as its own object with its own rounded edge — the Gmail list, which
+    // is what was asked for — and the 10 dp gap becomes the space *between* cards rather
+    // than an arbitrary gap in a paragraph.
+    //
+    // No shadow and no border with it: tone plus the gap is enough at these two values,
+    // and a shadow per row would be real per-frame work in the one list that exists to
+    // scroll. Same reasoning as `DocumentGridCard`: a list row that scrolls should cost a
     // list row, not a Surface plus a composed modifier plus two clips.
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .clip(DocShapes.cardSmall)
-            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .background(MaterialTheme.colorScheme.raisedCardColor())
             .combinedClickable(
                 interactionSource = interactions,
                 indication = ripple(),
@@ -1811,9 +1848,13 @@ fun DocumentListCard(
             )
     ) {
         Row(
+            // A card needs an inside. 12 dp on three sides and 6 dp at the trailing
+            // edge, where the overflow button supplies its own inner margin — close to the
+            // grid card's footer inset, so a document looks like the same object whichever
+            // view it is in.
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 10.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
+                .padding(start = 12.dp, end = 6.dp, top = 12.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(

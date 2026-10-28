@@ -78,7 +78,8 @@ Keep this table short. Delete your row when the change lands.
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 53) | `ui/common/ConnectedButtonGroup.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/editor/MarkupStudio.kt` (new), `ui/editor/MarkupScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/pdf/PdfExportSheet.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/DocumentShare.kt` (new), `util/ImageStore.kt`, `data/ScannerRepository.kt`, `Navigation.kt`, docs | Seven reported defects: connected page-tile verbs + hold-to-collapse, Copy/Move on hold, dashboard multi-select **Share**, in-place annotate shelf in the reader, instant rotate, collapsing dashboard header, export-sheet microinteractions, camera preview lifted 32 dp. Chrome/layout/motion only. See §6ap. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 55) | `ui/common/ConnectedButtonGroup.kt`, `ui/common/ExpressiveAction.kt`, `ui/viewer/PageViewerScreen.kt`, docs | Annotate shelf control visibility fix (pen/erase/thin/bold): removed label-bounded ripple, dimmed ink only when disabled, translate-only entrance for action bar. **Its `SegmentedButton` swap was reverted in Round 56 — see the row below.** Tested and verified. See §6ar. |
-| Arena.ai | 🚧 in flight (Round 56) | `ui/viewer/PageViewerScreen.kt`, docs | Style revert only: the annotate shelf's tool and weight rows are `ConnectedButtonGroup`s again (original plate/ink/cell heights/layout/swatch ripple). Every Round-55 behaviour fix is kept — none of them is visible at rest. See §6as. |
+| Arena.ai | 🚧 in flight (Round 57) | `ui/dashboard/DashboardScreen.kt`, `theme/Theme.kt`, `model/AppSettings.kt`, tests + docs | Library: every document is its own card in **both** views via the new `raisedCardColor()`, and the list/grid choice is persisted as `AppSettings.libraryGridView` instead of `rememberSaveable`. UI only. See §6at. |
+| Arena.ai | ✅ merged (Round 56) | `ui/viewer/PageViewerScreen.kt`, docs | Style revert only: the annotate shelf's tool and weight rows are `ConnectedButtonGroup`s again (original plate/ink/cell heights/layout/swatch ripple). Every Round-55 behaviour fix is kept — none of them is visible at rest. See §6as. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 54) | `ui/common/ConnectedButtonGroup.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/common/PageThumbnail.kt`, `theme/Shape.kt`, `util/ImageStore.kt`, `Navigation.kt`, docs | Second pass on the seven Round-53 reports: even shelf spacing, no crossfade on a filled cell, measured page inset, id-tracked page in the reader, capture button out of the FAB slot, outward seam under the search field, disabled (not hidden) tile verbs, half-screen move sheet, copied pages keeping their pixels. Chrome/layout/motion only. See §6aq. |
 | Antigravity | ✅ committed | indymobile/*, docs/AGENTS_CHANGELOG.md, docs/AGENT_COORDINATION.md | Complete Indiana Mobile (Target 1) RE artifacts: base APK, native libs, Ghidra C sources, JADX Java sources, pipeline smali/java, and REA inspection report for Arena context. |
 | Antigravity | ✅ committed    | `docs/ORIGINAL_APP_FILTER_SPEC.md`, `docs/AGENTS_CHANGELOG.md`                                                                                                                                                                                                                  | Reverse-engineered native filter spec & decompiled algorithms                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -2149,3 +2150,41 @@ change nobody asked for. It is reverted.
 
 Build/tests: Antigravity verified Round 55 clean; this round is a same-file revert plus
 docs, and `./gradlew testDebugUnitTest assembleDebug` is still owed for it.
+
+## 6at. Round 57: cards in the library, and a view mode that survives a cold start (Arena, 2026-10-28)
+
+**A card needs to differ from what is behind it.** That was the whole defect: the library
+shelf is `surfaceContainerLow`, and both the list row and the grid tile's footer were
+*also* `surfaceContainerLow`. A list of documents was therefore a column of text with
+10 dp of nothing between the rows, and a grid tile was a photo sitting on the same tone as
+everything else. Both now use **`ColorScheme.raisedCardColor()`** (`theme/Theme.kt`),
+which steps one tone *away* from the shelf in the direction that reads as raised:
+`surfaceContainerLowest` in the light palette (white on near-white — Gmail's exact
+relationship) and `surfaceContainerHigh` in the dark one (lighter than the page, because
+"white" is not on offer).
+
+Two rules that came out of it:
+
+- **Derive "raised" from the palette, not from `isSystemInDarkTheme()`.** Settings can
+  force light or dark regardless of the system, so the system is not the source of truth
+  for the theme in force. `raisedCardColor()` tests the luminance of
+  `surfaceContainerLow` instead — the same test works for any palette, including a future
+  dynamic/dark-mix.
+- **Separation is tone and gap, never a shadow.** A render-node shadow per row is
+  per-frame work in the list that exists to scroll; at these two tones none is needed.
+  This keeps the property the earlier perf rounds bought: a card costs **one fill** and
+  nothing else. In the grid, that fill is still painted only where the photo does not
+  cover it (the footer band), not under the thumbnail.
+
+**The view mode is a preference, not screen state.** `isGridView` was a
+`rememberSaveable`; that survives rotation and a system-killed process but *not* the thing
+users do — close the app and open it again — so it silently reverted to grid on every
+launch. It is now `AppSettings.libraryGridView` (serialised with a default, so old
+`settings.json` files decode unchanged), written straight through
+`repository.updateSettings`, with no local copy in the screen. Add field defaults here if
+you add another view preference; `AppSettingsTest` asserts both the default and the round
+trip.
+
+`SettingsScreen` has no row for this yet — the library's own toolbar toggle is the one
+control, which is where the user changes it. If a settings row is added, it must write the
+same field, never a second copy.

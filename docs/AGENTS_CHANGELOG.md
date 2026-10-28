@@ -17,6 +17,40 @@ Resolved compilation errors from Arena Round 54 integration and verified clean b
 - **`ui/detail/DocumentDetailScreen.kt`**: Qualified `androidx.compose.animation.AnimatedVisibility` for tile selection check overlay, and added missing `import androidx.compose.foundation.layout.imePadding` for `MovePagesSheet`.
 - **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.9 MB), and `testDebugUnitTest` passed 100% (25 tasks, 0 failures).
 
+## 2026-10-28 — Arena.ai — Round 57: each document is its own card, and the view mode is saved
+
+Two requests, both on the library: documents should read as **separate cards** (Gmail's
+list, applied to the list *and* the grid), and the list/grid choice should be
+**remembered**.
+
+**Signature/additive changes:**
+
+- **`AppSettings.libraryGridView: Boolean = true`** (new field, `model/AppSettings.kt`).
+  Serialises with a default, so an existing `settings.json` decodes unchanged.
+  `AppSettingsTest` covers the default and the round trip.
+- **`ColorScheme.raisedCardColor()`** (new, `@Composable @ReadOnlyComposable`,
+  `theme/Theme.kt`) — the card container tone. Derives from the palette, not from
+  `isSystemInDarkTheme()`, because the app can force light/dark from Settings:
+  `surfaceContainerHigh` when `surfaceContainerLow` is dark, else
+  `surfaceContainerLowest`.
+
+**`ui/dashboard/DashboardScreen.kt`:**
+
+- `DocumentListCard` and `DocumentGridCard` are filled with **`raisedCardColor()`**
+  instead of `surfaceContainerLow`. That was the whole bug: the rows/tiles were painted
+  the *same colour as the shelf underneath them*, so a list was rows of text separated by
+  10 dp of nothing and a grid tile was a photo with no container. The list row's inner
+  padding moved to 12 dp (6 dp at the trailing edge) so a card has an inside.
+  **No shadow and no border** — tone plus the existing gaps, for the reason the perf
+  rounds established: nothing per-row that can be avoided.
+- The list/grid toggle now reads and writes `settings.libraryGridView` through
+  `repository.updateSettings`; the screen keeps **no local copy** of the flag.
+  `rememberSaveable` was the wrong home for it — it survives rotation and a
+  system-killed process, but not the ordinary "close the app, open it again", so the
+  choice reverted to grid on every launch.
+
+UI only: no filter, geometry, capture, typography or PDF output change.
+
 ## 2026-10-28 — Arena.ai — Round 56: same fix, original control (style revert)
 
 Round 55 also changed the annotate shelf's **button style** — the tool and weight rows

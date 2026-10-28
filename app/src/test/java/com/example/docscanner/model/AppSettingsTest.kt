@@ -26,6 +26,8 @@ class AppSettingsTest {
         val settings = AppSettings()
         assertEquals(ThemeMode.DARK, settings.themeMode)
         assertEquals(AccentColor.BLUE, settings.accentColor)
+        // The library opens on the grid, and the choice is persisted from then on.
+        assertTrue(settings.libraryGridView)
         assertTrue(settings.useInAppCamera)
         assertEquals(ImageQuality.HIGH, settings.imageQuality)
         assertEquals(PaperSize.A4, settings.pageSize)
@@ -42,6 +44,7 @@ class AppSettingsTest {
         val original = AppSettings(
             themeMode = ThemeMode.LIGHT,
             accentColor = AccentColor.TEAL,
+            libraryGridView = false,
             useInAppCamera = false,
             shutterSound = true,
             imageQuality = ImageQuality.LOW,

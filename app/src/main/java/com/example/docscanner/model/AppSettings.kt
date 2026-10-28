@@ -16,6 +16,22 @@ import kotlinx.serialization.Serializable
 data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.DARK,
     val accentColor: AccentColor = AccentColor.BLUE,
+    // ---- library
+    /**
+     * Whether the library shows the document grid or the list.
+     *
+     * This lives here rather than in the dashboard's `rememberSaveable` state because it
+     * is a **preference**, not a transient view state: "keep whatever the user leaves"
+     * means it has to survive the process, not just a rotation. `rememberSaveable`
+     * restores it after a configuration change and after the system reclaims the
+     * activity, but a fresh launch — the normal way an app is opened — starts from the
+     * default again, so the user's choice silently reverted to grid every time they
+     * closed the app.
+     *
+     * Default `true` keeps the library opening on the grid, which is what a new install
+     * has always seen.
+     */
+    val libraryGridView: Boolean = true,
     // ---- scan
     val useInAppCamera: Boolean = true,
     val shutterSound: Boolean = false,

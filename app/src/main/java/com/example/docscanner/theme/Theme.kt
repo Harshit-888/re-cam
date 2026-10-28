@@ -10,9 +10,11 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import com.example.docscanner.model.AccentColor
 
@@ -190,3 +192,28 @@ private fun ColorScheme.withAccent(accent: AccentColor, dark: Boolean): ColorSch
     primaryContainer = Color(if (dark) accent.darkPrimaryContainer else accent.lightPrimaryContainer),
     onPrimaryContainer = Color(if (dark) accent.darkOnPrimaryContainer else accent.lightOnPrimaryContainer)
 )
+
+/**
+ * The colour of a **raised card** — a list row or a tile that sits on a scrolling
+ * surface and has to read as its own object.
+ *
+ * There is no `surfaceCard` in Material, so this is derived rather than hard-coded:
+ * take the container the card sits on ([ColorScheme.surfaceContainerLow], the library
+ * shelf's own tone) and step **one level away from it in the direction that reads as
+ * raised**. In the light palette that is `surfaceContainerLowest` — pure white against a
+ * barely-there grey, which is exactly how Gmail draws a mail row. In the dark palette the
+ * same move would be the other way, because "white" is not available: a card has to be
+ * *lighter* than the page behind it, so it is `surfaceContainerHigh`.
+ *
+ * Doing that with a luminance test rather than an `isSystemInDarkTheme()` check is
+ * deliberate: the app lets the user force light or dark from Settings, so the theme in
+ * force is not the system's. The palette itself is the only honest source.
+ *
+ * Cards get their separation from tone and from the gap between them, never from a
+ * shadow: a render-node shadow per row is real per-frame work in a list that exists to
+ * scroll, and at these two tones none is needed.
+ */
+@Composable
+@ReadOnlyComposable
+fun ColorScheme.raisedCardColor(): Color =
+    if (surfaceContainerLow.luminance() < 0.5f) surfaceContainerHigh else surfaceContainerLowest
