@@ -631,13 +631,21 @@ fun DashboardScreen(
     val trashCount = remember(documents) { documents.count { it.isTrash } }
     val pageCount = remember(activeDocs) { activeDocs.sumOf { it.pages.size } }
 
-    // The one line the app bar shows while the library is scrolled: which folder, how
-    // many documents, how many pages. Derived, not stored — it is three counts off the
-    // same lists the grid draws.
+    // The one line the app bar shows while the library is scrolled: how many documents,
+    // how many pages, and — only when one is chosen — which folder.
+    //
+    // There is deliberately **no "All documents" placeholder** for the unfiltered case.
+    // That line has room for one short sentence, and the unfiltered library is the state
+    // the user is already looking at: a label restating it spends the whole row saying
+    // nothing, and it pushed the two counts that actually change further from the title.
+    // A folder's name still leads, because *that* is information — the selection is a
+    // scroll-and-a-tap away, and the counts alone would not say which folder they count.
     val headerSummary = remember(folders, selectedFolderId, activeDocs, pageCount) {
         buildString {
-            append(folders.firstOrNull { it.id == selectedFolderId }?.name ?: "All documents")
-            append(" · ")
+            folders.firstOrNull { it.id == selectedFolderId }?.name?.let { folderName ->
+                append(folderName)
+                append(" · ")
+            }
             append(activeDocs.size)
             append(if (activeDocs.size == 1) " document" else " documents")
             if (pageCount > 0) {
@@ -883,22 +891,23 @@ fun DashboardScreen(
                             .entrance(1)
                     )
 
-                    // A row of facts, not a sentence: documents · pages · current sort.
+                    // Just the sort, right-aligned.
+                    //
+                    // The document and page totals used to sit here as two pills. They
+                    // were the loudest objects in the header — a pill is a shape that
+                    // invites a tap, and these are labels — and they read the same numbers
+                    // the grid is visibly showing. The totals now live only in the app
+                    // bar's condensed line (`headerSummary`), which is where a count
+                    // belongs: quiet, next to the title, and only while the list is
+                    // scrolled. The sort stays, because "why is this order like this" is
+                    // a question the list cannot answer on its own.
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp)
                             .entrance(2),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        InfoPill(
-                            "${activeDocs.size} " +
-                                if (activeDocs.size == 1) "document" else "documents"
-                        )
-                        if (pageCount > 0) {
-                            InfoPill("$pageCount ${if (pageCount == 1) "page" else "pages"}")
-                        }
                         Spacer(Modifier.weight(1f))
                         Text(
                             sortOption.label,

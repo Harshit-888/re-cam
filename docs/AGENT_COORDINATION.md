@@ -78,7 +78,8 @@ Keep this table short. Delete your row when the change lands.
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 53) | `ui/common/ConnectedButtonGroup.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/editor/MarkupStudio.kt` (new), `ui/editor/MarkupScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/pdf/PdfExportSheet.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/DocumentShare.kt` (new), `util/ImageStore.kt`, `data/ScannerRepository.kt`, `Navigation.kt`, docs | Seven reported defects: connected page-tile verbs + hold-to-collapse, Copy/Move on hold, dashboard multi-select **Share**, in-place annotate shelf in the reader, instant rotate, collapsing dashboard header, export-sheet microinteractions, camera preview lifted 32 dp. Chrome/layout/motion only. See §6ap. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 55) | `ui/common/ConnectedButtonGroup.kt`, `ui/common/ExpressiveAction.kt`, `ui/viewer/PageViewerScreen.kt`, docs | Annotate shelf control visibility fix (pen/erase/thin/bold): removed label-bounded ripple, dimmed ink only when disabled, translate-only entrance for action bar. **Its `SegmentedButton` swap was reverted in Round 56 — see the row below.** Tested and verified. See §6ar. |
-| Arena.ai | 🚧 in flight (Round 58) | `ui/common/ConnectedButtonGroup.kt`, docs | Camera Single/Batch flicker: the press state layer was drawn in the ink of the *new* state while still fading out from the *old* press, so a freshly selected cell came up grey. The layer's ink is now captured at press start. See §6au. |
+| Arena.ai | 🚧 in flight (Round 59) | `ui/dashboard/DashboardScreen.kt`, docs | Library header de-cluttered: the "N documents" / "M pages" pills under Magic Search are deleted (only the sort label remains in that row), and the app bar's condensed line no longer opens with "All documents". See §6av. |
+| Arena.ai | ✅ merged (Round 58) | `ui/common/ConnectedButtonGroup.kt`, docs | Camera Single/Batch flicker: the press state layer was drawn in the ink of the *new* state while still fading out from the *old* press, so a freshly selected cell came up grey. The layer's ink is now captured at press start. See §6au. |
 | Arena.ai | ✅ merged (Round 57) | `ui/dashboard/DashboardScreen.kt`, `theme/Theme.kt`, `model/AppSettings.kt`, tests + docs | Library: every document is its own card in **both** views via the new `raisedCardColor()`, and the list/grid choice is persisted as `AppSettings.libraryGridView` instead of `rememberSaveable`. UI only. See §6at. |
 | Arena.ai | ✅ merged (Round 56) | `ui/viewer/PageViewerScreen.kt`, docs | Style revert only: the annotate shelf's tool and weight rows are `ConnectedButtonGroup`s again (original plate/ink/cell heights/layout/swatch ripple). Every Round-55 behaviour fix is kept — none of them is visible at rest. See §6as. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 54) | `ui/common/ConnectedButtonGroup.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/common/PageThumbnail.kt`, `theme/Shape.kt`, `util/ImageStore.kt`, `Navigation.kt`, docs | Second pass on the seven Round-53 reports: even shelf spacing, no crossfade on a filled cell, measured page inset, id-tracked page in the reader, capture button out of the FAB slot, outward seam under the search field, disabled (not hidden) tile verbs, half-screen move sheet, copied pages keeping their pixels. Chrome/layout/motion only. See §6aq. |
@@ -2219,3 +2220,28 @@ over a white pill is nothing, black over dark glass is nothing. Entry 80 ms, exi
 **Rule for the next person:** a state layer's *alpha* may animate; its **colour** must be
 captured at the moment the gesture starts, or any instant state flip turns into a wrong-
 coloured wash. This applies to every press/hover/focus layer, not just this component.
+
+## 6av. Round 59: the library header says less (Arena, 2026-10-28)
+
+Two removals, both about labels that were spending space on information the user already
+had:
+
+1. **The "N documents" / "M pages" pills are gone** from under Magic Search. A pill is a
+   shape that invites a tap; these were labels, and they were the loudest objects in a
+   header whose real controls are the folder row and the search field. The workspaces they
+   wrapped in are gone with them — that row is now just the current **sort**, right-aligned,
+   which stays because "why is this order like this" is a question the list cannot answer
+   on its own.
+2. **The condensed app-bar line no longer opens with "All documents."** It starts with the
+   counts (`12 documents · 40 pages`) and prefixes a folder's *name* only when a folder is
+   selected — a real folder name is information; the unfiltered library is the state the
+   user is already looking at, so naming it said nothing and pushed the two numbers that
+   actually change away from the title.
+
+Where the totals live now: **only** in `headerSummary`, i.e. the app bar line that appears
+while the library is scrolled. If another surface needs them, derive from
+`activeDocs`/`pageCount` the same way — do not add a second pill row back, and do not
+restore a literal "All documents" string.
+
+Note the per-document **"N pages" pill on a grid tile's cover** is a different object (it
+belongs to one document, not to the library) and it stays.

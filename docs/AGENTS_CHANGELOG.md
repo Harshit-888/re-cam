@@ -17,6 +17,21 @@ Resolved compilation errors from Arena Round 54 integration and verified clean b
 - **`ui/detail/DocumentDetailScreen.kt`**: Qualified `androidx.compose.animation.AnimatedVisibility` for tile selection check overlay, and added missing `import androidx.compose.foundation.layout.imePadding` for `MovePagesSheet`.
 - **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.9 MB), and `testDebugUnitTest` passed 100% (25 tasks, 0 failures).
 
+## 2026-10-28 — Arena.ai — Round 59: fewer labels in the library header
+
+- **`DashboardScreen`**: the facts row under Magic Search is gone — the
+  "N documents" and "M pages" `InfoPill`s are deleted. What is left of that row is the
+  current sort, right-aligned and quiet. The totals now live only in the app bar's
+  condensed line.
+- **`DashboardScreen`**: `headerSummary` no longer begins with the literal
+  **"All documents"**. It starts with the counts, and prefixes a folder's *name* only when
+  a folder is actually selected (a real folder name is information; the unfiltered case is
+  the state the user is already looking at).
+- `InfoPill` is still imported and used — the per-document "N pages" pill on a grid tile's
+  cover is a different thing and stays.
+
+UI only: no filter, geometry, capture, typography or PDF output change.
+
 ## 2026-10-28 — Arena.ai — Round 58: camera Single/Batch flicker
 
 `ConnectedButtonGroup`'s press state layer was drawn in `tint`, which flips the instant a
