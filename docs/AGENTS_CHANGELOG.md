@@ -4,6 +4,12 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-28 — Antigravity — Rounds 56–59 build verification
+
+Clean-build and test verification for Arena Rounds 56–59 (viewer shelf revert, document cards & view mode persistence, camera toggle press layer, library header label cleanup):
+- **Zero compiler errors**: Clean build with Kotlin 2.x and Jetpack Compose without requiring any source modifications.
+- **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.5 MB), and `testDebugUnitTest` passed 100% (25 tasks, 0 failures).
+
 ## 2026-10-28 — Antigravity — Round 55 build verification
 
 Clean-build and test verification for Arena Round 55:
