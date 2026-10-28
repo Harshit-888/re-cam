@@ -31,6 +31,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -260,9 +261,42 @@ private fun ConnectedCell(
     // light-on-dark when not, so it can never wash the label out).
     val tint = if (filled) onAccentColor else (action.tintColor ?: contentColor)
     val plate = if (filled) accentColor else containerColor
+
+    // ## The state layer keeps the ink it was painted with
+    //
+    // This is the flicker on the camera's Single/Batch switch — the one that survived
+    // every fix to the fill — and it is not a fade problem, it is a *colour* problem.
+    //
+    // The layer fades from 14 % back to 0 after the finger lifts. The colour it was drawn
+    // in used to be `tint`, which flips the instant the tap lands. So on the camera sheet
+    // a tap on "Batch" went like this:
+    //
+    //   1. finger down — plate is the dark glass, `tint` is **white**, layer paints white.
+    //   2. finger up   — `isBatch` flips, so the plate becomes **solid white** and `tint`
+    //                    becomes **black** in the same frame.
+    //   3. the layer is still at ~14 % and is now painted **black over the new white
+    //      pill**, and fades out over the next ~160 ms.
+    //
+    // i.e. the control you just selected comes up grey and bleeds to white, twice per
+    // toggle, right under the shutter — which reads as the button glitching or briefly
+    // disappearing. Nothing about the fill was wrong; the *exit* was painted in the ink
+    // of the state the user had not seen yet.
+    //
+    // So the layer's ink is captured when the finger goes down and held until the next
+    // press. The exit can then only ever be the colour of the state being left: white
+    // over a white pill is nothing, black over the dark glass is nothing. `tint` is still
+    // what drives everything that is *visible at rest*, so the plate, the label and the
+    // selected state are unchanged.
+    var layerInk by remember { mutableStateOf(tint) }
+    LaunchedEffect(pressed) {
+        if (pressed) layerInk = tint
+    }
     val pressLayer by animateFloatAsState(
         targetValue = if (pressed || menuOpen) 0.14f else 0f,
-        animationSpec = tween(durationMillis = if (pressed) 90 else 160),
+        // Faster out than before (120 ms, was 160): the layer exists to acknowledge the
+        // touch, and it has no business lingering over a control that has already
+        // answered.
+        animationSpec = tween(durationMillis = if (pressed) 80 else 120),
         label = "connectedPress"
     )
     // The *ink* dims when the cell is disabled; the plate never does.
@@ -308,7 +342,7 @@ private fun ConnectedCell(
                     // The press state layer: the cell's own ink at 14 %, so it darkens a
                     // light fill and lightens a dark one. Drawn *over* the plate and
                     // *under* the content, and independent of the selected state.
-                    .background(tint.copy(alpha = pressLayer))
+                    .background(layerInk.copy(alpha = pressLayer))
             ) {
                 val cellIcon = action.icon
                 Column(

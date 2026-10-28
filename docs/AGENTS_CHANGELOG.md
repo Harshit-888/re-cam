@@ -17,6 +17,25 @@ Resolved compilation errors from Arena Round 54 integration and verified clean b
 - **`ui/detail/DocumentDetailScreen.kt`**: Qualified `androidx.compose.animation.AnimatedVisibility` for tile selection check overlay, and added missing `import androidx.compose.foundation.layout.imePadding` for `MovePagesSheet`.
 - **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.9 MB), and `testDebugUnitTest` passed 100% (25 tasks, 0 failures).
 
+## 2026-10-28 — Arena.ai — Round 58: camera Single/Batch flicker
+
+`ConnectedButtonGroup`'s press state layer was drawn in `tint`, which flips the instant a
+tap changes the selection. A tap therefore painted the **new** state's ink over the
+**new** plate while the layer was still fading out from the press — on the camera's
+Single/Batch switch that is ~14 % black over the just-filled white pill, fading for
+160 ms: the selected cell came up grey and bled to white.
+
+- The layer's ink is captured when the finger goes down (`layerInk`) and held until the
+  next press, so the exit is always painted in the ink of the state being left.
+- Entry/exit retimed 80/120 ms (was 90/160).
+- Nothing visible at rest changed: plate, ink, shapes, cell sizes and the camera sheet
+  are exactly as they were.
+
+**Rule:** a state layer's alpha may animate; its colour must be captured at gesture
+start. An instantly-flipping colour under a fading alpha is always a wrong-coloured wash.
+
+UI only: no filter, geometry, capture, typography or PDF output change.
+
 ## 2026-10-28 — Arena.ai — Round 57: each document is its own card, and the view mode is saved
 
 Two requests, both on the library: documents should read as **separate cards** (Gmail's

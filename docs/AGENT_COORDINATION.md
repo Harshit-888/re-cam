@@ -78,7 +78,8 @@ Keep this table short. Delete your row when the change lands.
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 53) | `ui/common/ConnectedButtonGroup.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/editor/MarkupStudio.kt` (new), `ui/editor/MarkupScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/pdf/PdfExportSheet.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/DocumentShare.kt` (new), `util/ImageStore.kt`, `data/ScannerRepository.kt`, `Navigation.kt`, docs | Seven reported defects: connected page-tile verbs + hold-to-collapse, Copy/Move on hold, dashboard multi-select **Share**, in-place annotate shelf in the reader, instant rotate, collapsing dashboard header, export-sheet microinteractions, camera preview lifted 32 dp. Chrome/layout/motion only. See §6ap. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 55) | `ui/common/ConnectedButtonGroup.kt`, `ui/common/ExpressiveAction.kt`, `ui/viewer/PageViewerScreen.kt`, docs | Annotate shelf control visibility fix (pen/erase/thin/bold): removed label-bounded ripple, dimmed ink only when disabled, translate-only entrance for action bar. **Its `SegmentedButton` swap was reverted in Round 56 — see the row below.** Tested and verified. See §6ar. |
-| Arena.ai | 🚧 in flight (Round 57) | `ui/dashboard/DashboardScreen.kt`, `theme/Theme.kt`, `model/AppSettings.kt`, tests + docs | Library: every document is its own card in **both** views via the new `raisedCardColor()`, and the list/grid choice is persisted as `AppSettings.libraryGridView` instead of `rememberSaveable`. UI only. See §6at. |
+| Arena.ai | 🚧 in flight (Round 58) | `ui/common/ConnectedButtonGroup.kt`, docs | Camera Single/Batch flicker: the press state layer was drawn in the ink of the *new* state while still fading out from the *old* press, so a freshly selected cell came up grey. The layer's ink is now captured at press start. See §6au. |
+| Arena.ai | ✅ merged (Round 57) | `ui/dashboard/DashboardScreen.kt`, `theme/Theme.kt`, `model/AppSettings.kt`, tests + docs | Library: every document is its own card in **both** views via the new `raisedCardColor()`, and the list/grid choice is persisted as `AppSettings.libraryGridView` instead of `rememberSaveable`. UI only. See §6at. |
 | Arena.ai | ✅ merged (Round 56) | `ui/viewer/PageViewerScreen.kt`, docs | Style revert only: the annotate shelf's tool and weight rows are `ConnectedButtonGroup`s again (original plate/ink/cell heights/layout/swatch ripple). Every Round-55 behaviour fix is kept — none of them is visible at rest. See §6as. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 54) | `ui/common/ConnectedButtonGroup.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/common/PageThumbnail.kt`, `theme/Shape.kt`, `util/ImageStore.kt`, `Navigation.kt`, docs | Second pass on the seven Round-53 reports: even shelf spacing, no crossfade on a filled cell, measured page inset, id-tracked page in the reader, capture button out of the FAB slot, outward seam under the search field, disabled (not hidden) tile verbs, half-screen move sheet, copied pages keeping their pixels. Chrome/layout/motion only. See §6aq. |
 | Antigravity | ✅ committed | indymobile/*, docs/AGENTS_CHANGELOG.md, docs/AGENT_COORDINATION.md | Complete Indiana Mobile (Target 1) RE artifacts: base APK, native libs, Ghidra C sources, JADX Java sources, pipeline smali/java, and REA inspection report for Arena context. |
@@ -2188,3 +2189,33 @@ trip.
 `SettingsScreen` has no row for this yet — the library's own toolbar toggle is the one
 control, which is where the user changes it. If a settings row is added, it must write the
 same field, never a second copy.
+
+## 6au. Round 58: the camera's Single/Batch flicker is a *colour*, not a fade (Arena, 2026-10-28)
+
+The switch has been reported as glitching in four rounds. Three of those fixed real
+things (a ripple in the theme's ink, a crossfaded plate, a popup owned by a weighted
+cell). None of them was this one.
+
+**The bug.** `ConnectedCell` draws a press layer — the cell's ink at 14 % — that fades
+back to 0 over ~160 ms after the finger lifts. The colour was `tint`, computed fresh
+every frame. `tint` flips the instant the tap lands (`onAccentColor` when filled,
+`contentColor` when not). So tapping "Batch" on the camera sheet did this:
+
+1. finger down: plate = dark glass, `tint` = white → layer paints **white**;
+2. finger up: `isBatch` flips, plate = **solid white**, `tint` = **black**, same frame;
+3. the layer is still at ~14 % and now paints **black over the new white pill**, fading
+   out for 160 ms.
+
+The selected control therefore came up **grey and bled to white** on every toggle — twice
+per switch — which is what "the buttons glitch / disappear" looks like. The camera is the
+worst place for it because the pill is white on a dark sheet right under the shutter.
+
+**The fix.** `layerInk` is captured when the finger goes *down*
+(`LaunchedEffect(pressed) { if (pressed) layerInk = tint }`) and held until the next
+press, so the exit can only ever be painted in the ink of the state being left — white
+over a white pill is nothing, black over dark glass is nothing. Entry 80 ms, exit 120 ms
+(was 90/160). Everything visible at rest — plate, ink, shape, sizes — is untouched.
+
+**Rule for the next person:** a state layer's *alpha* may animate; its **colour** must be
+captured at the moment the gesture starts, or any instant state flip turns into a wrong-
+coloured wash. This applies to every press/hover/focus layer, not just this component.
