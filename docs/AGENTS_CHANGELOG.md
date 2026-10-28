@@ -4,6 +4,18 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-28 — Antigravity — IndyMobile Reverse Engineering Evidence & Decompiled Blueprints
+
+- **New indymobile/ directory**: Complete reverse-engineering package for Indiana Mobile Document Scanner (com.indymobileapp.document.scanner), mirroring dobe-scan/ for Target 1.
+  - **indymobile/apks/base.apk** (48.2 MB): Original production APK package.
+  - **indymobile/native_libs/**: 64-bit ARM ELF shared objects (libimageproc.so, libnative-filters.so, libnms.so).
+  - **indymobile/decompiled_c/** (262 files): Complete Ghidra C decompilation of libimageproc.so, including Java_com_indymobile_app_PSOpenCV_detectPageBorder.c, Java_com_indymobile_app_PSOpenCV_enhanceDocument.c, Java_com_indymobile_app_PSOpenCV_enhancePhoto.c, Java_com_indymobile_app_PSOpenCV_enhanceSignature.c, Java_com_indymobile_app_PSOpenCV_perspectiveTransformRect.c, pproxPolyDP.c, indContoursRGB.c, calculateIOU.c.
+  - **indymobile/decompiled_java/** (75 files): Complete JADX decompilation of com/indymobile/app, including camera lifecycle, editor crop/filters, markup/annotations, and utilities.
+  - **indymobile/pipeline/**: Unpacked pipeline beans (PSDocumentProcessInfo.java, PSDocumentFilterInfo.java, PSPage.java), smali bytecode, and decoded AndroidManifest.xml.
+  - **indymobile/reports/**: REA APK analysis report (ase_20261024_213011_apk_rea.txt).
+  - **indymobile/README.md**: Guide for Arena mapping C/Java reference functions to Rust NDK and Kotlin implementations.
+- No production application code or integration contracts touched. Purely additive reference documentation and evidence.
+
 ## 2026-10-27 — Arena.ai — Round 48: the filter preview zooms and pages, and the bottom bar follows the page
 
 - **New `ui/common/ZoomablePageView.kt`** — one pinch / pan / swipe gesture for anything that shows a page, with the pan clamped to the *content's* overflow (`contentSize`), not the frame's, so a letterboxed page can never be dragged into its own margins. Exposes `MAX_PAGE_ZOOM = 5f` (matches the editor's `MAX_ZOOM`). Swipe-left/right turns the page **only at 1×** and only for a deliberately horizontal drag (1.4:1 axis bias, 56 dp travel): zoomed in, a horizontal drag is the only way to reach the right-hand edge of the page and hijacking it would make a zoomed page unreadable. `onSwipePrev`/`onSwipeNext` are nullable, so the first and last page simply do nothing.

@@ -1,0 +1,473 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" android:compileSdkVersion="36" android:compileSdkVersionCodename="16" android:requiredSplitTypes="base__abi,base__density" android:splitTypes="" package="com.indymobileapp.document.scanner" platformBuildVersionCode="36" platformBuildVersionName="16">
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-permission android:name="com.android.vending.BILLING"/>
+    <uses-permission android:maxSdkVersion="32" android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-feature android:name="android.hardware.camera" android:required="true"/>
+    <queries>
+        <package android:name="com.dropbox.android"/>
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT_TREE"/>
+        </intent>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND"/>
+            <data android:mimeType="application/pdf"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND"/>
+            <data android:mimeType="image/jpeg"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:mimeType="application/pdf"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:mimeType="image/jpeg"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND_MULTIPLE"/>
+            <data android:mimeType="application/pdf"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND_MULTIPLE"/>
+            <data android:mimeType="image/jpeg"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND_MULTIPLE"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SENDTO"/>
+            <data android:scheme="mailto"/>
+        </intent>
+        <package android:name="com.azure.authenticator"/>
+        <package android:name="com.microsoft.identity.testuserapp"/>
+        <package android:name="com.microsoft.windowsintune.companyportal"/>
+        <package android:name="com.microsoft.mockauthapp"/>
+        <package android:name="com.microsoft.mockcp"/>
+        <package android:name="com.microsoft.mockltw"/>
+        <package android:name="com.microsoft.appmanager"/>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <category android:name="android.intent.category.BROWSABLE"/>
+            <data android:scheme="https"/>
+        </intent>
+        <intent>
+            <action android:name="android.support.customtabs.action.CustomTabsService"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.INSERT"/>
+            <data android:mimeType="vnd.android.cursor.dir/event"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="sms"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.DIAL"/>
+            <data android:path="tel:"/>
+        </intent>
+        <intent>
+            <action android:name="androidx.browser.customtabs.CustomTabsService"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <category android:name="android.intent.category.BROWSABLE"/>
+            <data android:scheme="http"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="market"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN"/>
+        </intent>
+        <package android:name="com.topjohnwu.magisk"/>
+        <package android:name="eu.chainfire.supersu"/>
+        <package android:name="com.noshufou.android.su"/>
+        <package android:name="com.koushikdutta.superuser"/>
+        <package android:name="com.thirdparty.superuser"/>
+        <package android:name="com.android.vending"/>
+        <intent>
+            <action android:name="com.android.vending.billing.InAppBillingService.BIND"/>
+        </intent>
+        <intent>
+            <action android:name="com.google.android.apps.play.billingtestcompanion.BillingOverrideService.BIND"/>
+        </intent>
+        <package android:name="com.facebook.katana"/>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+        </intent>
+    </queries>
+    <uses-permission android:name="android.permission.READ_BASIC_PHONE_STATE"/>
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_TOPICS"/>
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_AD_ID"/>
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_ATTRIBUTION"/>
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="com.google.android.finsky.permission.BIND_GET_INSTALL_REFERRER_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="com.amazon.privacypass.ATTEST"/>
+    <permission android:name="com.indymobileapp.document.scanner.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" android:protectionLevel="signature"/>
+    <uses-permission android:name="com.indymobileapp.document.scanner.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"/>
+    <uses-permission android:name="com.sony.mobile.permission.SYSTEM_UI_VISIBILITY_EXTENSION"/>
+    <uses-permission android:name="android.permission.NFC"/>
+    <uses-feature android:name="android.hardware.usb.host" android:required="false"/>
+    <uses-feature android:name="android.hardware.nfc" android:required="false"/>
+    <application android:allowBackup="false" android:appComponentFactory="androidx.core.app.CoreComponentFactory" android:extractNativeLibs="false" android:hardwareAccelerated="true" android:hasFragileUserData="true" android:icon="@mipmap/ic_launcher" android:label="@string/app_name" android:largeHeap="true" android:name="com.indymobile.app.PSApplication" android:networkSecurityConfig="@xml/network_security_config" android:preserveLegacyExternalStorage="true" android:requestLegacyExternalStorage="true" android:supportsRtl="true" android:theme="@style/AppTheme">
+        <uses-library android:name="org.apache.http.legacy" android:required="false"/>
+        <meta-data android:name="com.google.android.gms.version" android:value="@integer/google_play_services_version"/>
+        <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="@string/APP_ID"/>
+        <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="ocr,ocr_devanagari,ocr_korean,ocr_japanese,ocr_chinese"/>
+        <provider android:authorities="com.indymobileapp.document.scanner.provider" android:exported="false" android:grantUriPermissions="true" android:name="androidx.core.content.FileProvider">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/provider_paths"/>
+        </provider>
+        <provider android:authorities="com.indymobileapp.document.scanner.documents" android:enabled="@bool/ps_document_provider_support" android:exported="true" android:grantUriPermissions="true" android:name="com.indymobile.app.PSDocumentProvider" android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER"/>
+            </intent-filter>
+        </provider>
+        <service android:enabled="false" android:exported="false" android:name="com.google.android.gms.metadata.ModuleDependencies">
+            <intent-filter>
+                <action android:name="com.google.android.gms.metadata.MODULE_DEPENDENCIES"/>
+            </intent-filter>
+            <meta-data android:name="photopicker_activity:0:required" android:value=""/>
+        </service>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:exported="true" android:label="@string/app_name" android:launchMode="singleTop" android:name="com.indymobile.app.activity.SplashScreenActivity" android:screenOrientation="portrait" android:theme="@style/SplashTheme" android:windowSoftInputMode="adjustNothing">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/app_name" android:launchMode="singleTop" android:name="com.indymobile.app.activity.MainActivity" android:screenOrientation="portrait" android:windowSoftInputMode="adjustNothing"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/app_name" android:launchMode="singleTop" android:name="com.indymobile.app.activity.MainActivityTablet" android:windowSoftInputMode="adjustNothing"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:exported="true" android:label="@string/app_name" android:name="com.indymobile.app.activity.ExternalIntentActivity" android:screenOrientation="portrait" android:windowSoftInputMode="adjustNothing">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="image/jpeg"/>
+                <data android:mimeType="image/png"/>
+                <data android:mimeType="application/pdf"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="image/jpeg"/>
+                <data android:mimeType="image/png"/>
+                <data android:mimeType="application/pdf"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="file"/>
+                <data android:scheme="content"/>
+                <data android:scheme="http"/>
+                <data android:scheme="https"/>
+                <data android:mimeType="application/pdf"/>
+            </intent-filter>
+        </activity>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/title_activity_document" android:launchMode="singleTop" android:name="com.indymobile.app.activity.DocumentActivity" android:parentActivityName="com.indymobile.app.activity.MainActivity" android:screenOrientation="portrait" android:windowSoftInputMode="adjustNothing"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/title_activity_document" android:launchMode="singleTop" android:name="com.indymobile.app.activity.DocumentActivityTablet" android:parentActivityName="com.indymobile.app.activity.MainActivity" android:windowSoftInputMode="adjustNothing"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/title_activity_page_adjust" android:launchMode="singleTop" android:name="com.indymobile.app.activity.ImageProcessingActivity" android:parentActivityName="com.indymobile.app.activity.DocumentActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/title_activity_page_adjust" android:launchMode="singleTop" android:name="com.indymobile.app.activity.ImageProcessingActivityTablet" android:parentActivityName="com.indymobile.app.activity.DocumentActivity"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="" android:launchMode="singleTop" android:name="com.indymobile.app.activity.DocumentPickerActivity" android:parentActivityName="com.indymobile.app.activity.DocumentActivity" android:screenOrientation="portrait" android:windowSoftInputMode="adjustNothing"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="" android:launchMode="singleTop" android:name="com.indymobile.app.activity.DocumentPickerActivityTablet" android:parentActivityName="com.indymobile.app.activity.DocumentActivity" android:windowSoftInputMode="adjustNothing"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="" android:launchMode="singleTop" android:name="com.indymobile.app.activity.ViewPagerActivity" android:parentActivityName="com.indymobile.app.activity.DocumentActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="" android:launchMode="singleTop" android:name="com.indymobile.app.activity.ViewPagerActivityTablet" android:parentActivityName="com.indymobile.app.activity.DocumentActivity"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/PDF_SETTINGS" android:launchMode="singleTop" android:name="com.indymobile.app.activity.PdfSettingsActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/PDF_SETTINGS" android:launchMode="singleTop" android:name="com.indymobile.app.activity.PdfSettingsActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/OPEN_PDF" android:launchMode="singleTop" android:name="com.indymobile.app.activity.PdfPreviewActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/OPEN_PDF" android:launchMode="singleTop" android:name="com.indymobile.app.activity.PdfPreviewActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/add_font_from_system" android:launchMode="singleTop" android:name="com.indymobile.app.activity.font.SystemFontSelectionActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/add_font_from_system" android:launchMode="singleTop" android:name="com.indymobile.app.activity.font.SystemFontSelectionActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/TITLE_ACTIVITY_LOVE_THIS_APP" android:launchMode="singleTop" android:name="com.indymobile.app.activity.LoveThisAppActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/TITLE_ACTIVITY_LOVE_THIS_APP" android:launchMode="singleTop" android:name="com.indymobile.app.activity.LoveThisAppActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/TITLE_ACTIVITY_TUTORIAL" android:launchMode="singleTop" android:name="com.indymobile.app.activity.TutorialActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/TITLE_ACTIVITY_TUTORIAL" android:launchMode="singleTop" android:name="com.indymobile.app.activity.TutorialActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/TITLE_ACTIVITY_CONTACT" android:launchMode="singleTop" android:name="com.indymobile.app.activity.ContactActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/TITLE_ACTIVITY_CONTACT" android:launchMode="singleTop" android:name="com.indymobile.app.activity.ContactActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/TITLE_PRINT_ACTIVITY_DIALOG" android:launchMode="singleTop" android:name="com.indymobile.app.activity.PrintDialogActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/TITLE_PRINT_ACTIVITY_DIALOG" android:launchMode="singleTop" android:name="com.indymobile.app.activity.PrintDialogActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/title_activity_copyrights" android:launchMode="singleTop" android:name="com.indymobile.app.activity.CopyrightsActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/title_activity_copyrights" android:launchMode="singleTop" android:name="com.indymobile.app.activity.CopyrightsActivityTablet"/>
+        <activity android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|uiMode|screenSize|smallestScreenSize" android:name="com.google.android.gms.ads.AdActivity" android:theme="@android:style/Theme.Translucent"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:launchMode="singleTop" android:name="com.indymobile.app.imagepicker.ui.PickerActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:launchMode="singleTop" android:name="com.indymobile.app.imagepicker.ui.PickerActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/EXPORT" android:launchMode="singleTop" android:name="com.indymobile.app.activity.ShareActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/EXPORT" android:launchMode="singleTop" android:name="com.indymobile.app.activity.ShareActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/SUPPORT_US" android:launchMode="singleTop" android:name="com.indymobile.app.activity.ProversionActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/SUPPORT_US" android:launchMode="singleTop" android:name="com.indymobile.app.activity.ProversionActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/SUPPORT_US" android:launchMode="singleTop" android:name="com.indymobile.app.activity.ProStatusActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/SUPPORT_US" android:launchMode="singleTop" android:name="com.indymobile.app.activity.ProStatusActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/SETTINGS" android:launchMode="singleTop" android:name="com.indymobile.app.activity.SettingsActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/SETTINGS" android:launchMode="singleTop" android:name="com.indymobile.app.activity.SettingsActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/BACKUP_RESTORE" android:launchMode="singleTop" android:name="com.indymobile.app.activity.MyBackupActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/BACKUP_RESTORE" android:launchMode="singleTop" android:name="com.indymobile.app.activity.MyBackupActivityTablet"/>
+        <activity android:configChanges="orientation" android:launchMode="singleTop" android:name="com.indymobile.app.activity.camera.camera1.CameraActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation" android:launchMode="singleTop" android:name="com.indymobile.app.activity.camera.camerax.CameraXActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/menu_sync_cloud" android:launchMode="singleTop" android:name="com.indymobile.app.activity.sync.SyncAppDataActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/menu_sync_cloud" android:launchMode="singleTop" android:name="com.indymobile.app.activity.sync.SyncAppDataActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/menu_show_trash" android:launchMode="singleTop" android:name="com.indymobile.app.activity.trash.MainTrashActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/menu_show_trash" android:launchMode="singleTop" android:name="com.indymobile.app.activity.trash.MainTrashActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/SETTINGS_GROUP_DOCUMENT_NAME" android:launchMode="singleTop" android:name="com.indymobile.app.activity.DocumentNameSettingActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/SETTINGS_GROUP_DOCUMENT_NAME" android:launchMode="singleTop" android:name="com.indymobile.app.activity.DocumentNameSettingActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/markup_signature_pad" android:launchMode="singleTop" android:name="com.indymobile.app.activity.signaturepad.SignaturePadActivity" android:screenOrientation="landscape"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/markup_signature_pad" android:launchMode="singleTop" android:name="com.indymobile.app.activity.signaturepad.SignaturePadActivityTablet" android:screenOrientation="sensorLandscape"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/markup" android:launchMode="singleTop" android:name="com.indymobile.app.activity.editor.markup.MarkupActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/markup" android:launchMode="singleTop" android:name="com.indymobile.app.activity.editor.markup.MarkupActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:launchMode="singleTop" android:name="com.theartofdev.edmodo.cropper.CropImageActivity" android:screenOrientation="portrait" android:theme="@style/Theme.AppCompat"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="" android:launchMode="singleTop" android:name="com.indymobile.app.activity.editor.markup.PagePickerActivity" android:parentActivityName="com.indymobile.app.activity.editor.markup.MarkupActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="" android:launchMode="singleTop" android:name="com.indymobile.app.activity.editor.markup.PagePickerActivityTablet" android:parentActivityName="com.indymobile.app.activity.editor.markup.MarkupActivity"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/eraser" android:launchMode="singleTop" android:name="com.indymobile.app.activity.editor.cleanupbg.CleanupBgActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/eraser" android:launchMode="singleTop" android:name="com.indymobile.app.activity.editor.cleanupbg.CleanupBgActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/corner_radius" android:launchMode="singleTop" android:name="com.indymobile.app.activity.editor.markup.RoundedCornersActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/corner_radius" android:launchMode="singleTop" android:name="com.indymobile.app.activity.editor.markup.RoundedCornersActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/select_font" android:launchMode="singleTop" android:name="com.indymobile.app.activity.font.FontSelectionActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/select_font" android:launchMode="singleTop" android:name="com.indymobile.app.activity.font.FontSelectionActivityTablet"/>
+        <activity android:configChanges="keyboard|orientation" android:exported="true" android:launchMode="singleTask" android:name="com.dropbox.core.android.AuthActivity">
+            <intent-filter>
+                <data android:scheme="@string/dropbox_scheme"/>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize" android:exported="true" android:name="com.microsoft.identity.client.BrowserTabActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:host="com.indymobileapp.document.scanner" android:path="/Qx6atfhq47An+69v+di2cBJyAJ8=" android:scheme="msauth"/>
+            </intent-filter>
+        </activity>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/menu_sync_cloud" android:launchMode="singleTop" android:name="com.indymobile.app.activity.SyncSettingsActivity" android:screenOrientation="portrait"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:label="@string/menu_sync_cloud" android:launchMode="singleTop" android:name="com.indymobile.app.activity.SyncSettingsActivityTablet"/>
+        <activity android:configChanges="orientation|screenLayout|screenSize|smallestScreenSize" android:exported="true" android:launchMode="singleTop" android:name="com.indymobile.app.activity.ExternalDocumentPickerActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.GET_CONTENT"/>
+                <category android:name="android.intent.category.OPENABLE"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="application/pdf"/>
+            </intent-filter>
+        </activity>
+        <service android:enabled="false" android:exported="false" android:name="androidx.camera.core.impl.MetadataHolderService">
+            <meta-data android:name="androidx.camera.core.impl.MetadataHolderService.DEFAULT_CONFIG_PROVIDER" android:value="androidx.camera.camera2.Camera2Config$DefaultProvider"/>
+        </service>
+        <activity android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize" android:exported="false" android:launchMode="singleTask" android:name="com.microsoft.identity.common.internal.providers.oauth2.AuthorizationActivity"/>
+        <activity android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize" android:exported="false" android:launchMode="standard" android:name="com.microsoft.identity.common.internal.providers.oauth2.CurrentTaskAuthorizationActivity"/>
+        <activity android:exported="false" android:launchMode="standard" android:name="com.microsoft.identity.client.helper.BrokerHelperActivity"/>
+        <activity android:exported="true" android:name="com.microsoft.identity.client.CurrentTaskBrowserTabActivity"/>
+        <activity android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize" android:name="com.microsoft.identity.common.internal.broker.BrokerActivity"/>
+        <activity android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize" android:name="com.microsoft.identity.common.internal.broker.InstallCertActivityLauncher" android:theme="@style/Theme.AppCompat.Light"/>
+        <service android:enabled="true" android:exported="false" android:name="androidx.credentials.playservices.CredentialProviderMetadataHolder">
+            <meta-data android:name="androidx.credentials.CREDENTIAL_PROVIDER_KEY" android:value="androidx.credentials.playservices.CredentialProviderPlayServicesImpl"/>
+        </service>
+        <activity android:configChanges="keyboardHidden|orientation|screenLayout|screenSize" android:enabled="true" android:exported="false" android:fitsSystemWindows="true" android:name="androidx.credentials.playservices.HiddenActivity" android:theme="@style/Theme.Hidden"/>
+        <activity android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|uiMode|screenSize|smallestScreenSize" android:exported="false" android:name="com.google.android.libraries.ads.mobile.sdk.common.AdActivity" android:theme="@style/Theme.GoogleMobileAds"/>
+        <activity android:configChanges="locale|keyboard|keyboardHidden|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|fontScale" android:hardwareAccelerated="true" android:name="com.inmobi.ads.rendering.InMobiAdActivity" android:theme="@android:style/Theme.NoTitleBar"/>
+        <activity android:configChanges="locale|keyboard|keyboardHidden|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|fontScale" android:hardwareAccelerated="true" android:name="com.inmobi.ads.rendering.InMobiInAppBrowserActivity" android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
+        <provider android:authorities="com.indymobileapp.document.scanner.inmobi.sdk.initprovider" android:exported="false" android:name="com.inmobi.sdk.InMobiInitProvider"/>
+        <activity android:name="com.microsoft.aad.adal.AuthenticationActivity"/>
+        <uses-library android:name="androidx.window.extensions" android:required="false"/>
+        <uses-library android:name="androidx.window.sidecar" android:required="false"/>
+        <activity android:exported="false" android:label="" android:name="pub.devrel.easypermissions.AppSettingsDialogHolderActivity" android:theme="@style/EasyPermissions.Transparent"/>
+        <activity android:configChanges="keyboardHidden|orientation|screenLayout|screenSize" android:excludeFromRecents="true" android:exported="false" android:launchMode="singleTop" android:name="com.google.android.play.core.hsdp.service.HsdpShimActivity" android:theme="@style/Theme.HsdpServiceTransparent"/>
+        <service android:directBootAware="true" android:exported="false" android:name="com.google.mlkit.common.internal.MlKitComponentDiscoveryService">
+            <meta-data android:name="com.google.firebase.components:com.google.mlkit.vision.text.internal.TextRegistrar" android:value="com.google.firebase.components.ComponentRegistrar"/>
+            <meta-data android:name="com.google.firebase.components:com.google.mlkit.vision.common.internal.VisionCommonRegistrar" android:value="com.google.firebase.components.ComponentRegistrar"/>
+            <meta-data android:name="com.google.firebase.components:com.google.mlkit.common.internal.CommonComponentRegistrar" android:value="com.google.firebase.components.ComponentRegistrar"/>
+        </service>
+        <provider android:authorities="com.indymobileapp.document.scanner.mlkitinitprovider" android:exported="false" android:initOrder="99" android:name="com.google.mlkit.common.internal.MlKitInitProvider"/>
+        <meta-data android:name="com.google.android.play.billingclient.version" android:value="8.3.0"/>
+        <activity android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize" android:exported="false" android:name="com.android.billingclient.api.ProxyBillingActivity" android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
+        <activity android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize" android:exported="false" android:name="com.android.billingclient.api.ProxyBillingActivityV2" android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
+        <activity android:excludeFromRecents="true" android:exported="false" android:name="com.google.android.gms.auth.api.signin.internal.SignInHubActivity" android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
+        <service android:exported="true" android:name="com.google.android.gms.auth.api.signin.RevocationBoundService" android:permission="com.google.android.gms.auth.api.signin.permission.REVOCATION_NOTIFICATION" android:visibleToInstantApps="true"/>
+        <receiver android:enabled="true" android:exported="false" android:name="com.google.android.gms.measurement.AppMeasurementReceiver"/>
+        <service android:enabled="true" android:exported="false" android:name="com.google.android.gms.measurement.AppMeasurementService"/>
+        <service android:enabled="true" android:exported="false" android:name="com.google.android.gms.measurement.AppMeasurementJobService" android:permission="android.permission.BIND_JOB_SERVICE"/>
+        <activity android:exported="false" android:name="com.google.android.gms.common.api.GoogleApiActivity" android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
+        <service android:directBootAware="true" android:exported="false" android:name="com.google.firebase.components.ComponentDiscoveryService">
+            <meta-data android:name="com.google.firebase.components:com.google.firebase.analytics.connector.internal.AnalyticsConnectorRegistrar" android:value="com.google.firebase.components.ComponentRegistrar"/>
+            <meta-data android:name="com.google.firebase.components:com.google.firebase.crashlytics.FirebaseCrashlyticsKtxRegistrar" android:value="com.google.firebase.components.ComponentRegistrar"/>
+            <meta-data android:name="com.google.firebase.components:com.google.firebase.crashlytics.CrashlyticsRegistrar" android:value="com.google.firebase.components.ComponentRegistrar"/>
+            <meta-data android:name="com.google.firebase.components:com.google.firebase.remoteconfig.FirebaseRemoteConfigKtxRegistrar" android:value="com.google.firebase.components.ComponentRegistrar"/>
+            <meta-data android:name="com.google.firebase.components:com.google.firebase.remoteconfig.RemoteConfigRegistrar" android:value="com.google.firebase.components.ComponentRegistrar"/>
+            <meta-data android:name="com.google.firebase.components:com.google.firebase.sessions.FirebaseSessionsRegistrar" android:value="com.google.firebase.components.ComponentRegistrar"/>
+            <meta-data android:name="com.google.firebase.components:com.google.firebase.installations.FirebaseInstallationsKtxRegistrar" android:value="com.google.firebase.components.ComponentRegistrar"/>
+            <meta-data android:name="com.google.firebase.components:com.google.firebase.installations.FirebaseInstallationsRegistrar" android:value="com.google.firebase.components.ComponentRegistrar"/>
+            <meta-data android:name="com.google.firebase.components:com.google.firebase.ktx.FirebaseCommonLegacyRegistrar" android:value="com.google.firebase.components.ComponentRegistrar"/>
+            <meta-data android:name="com.google.firebase.components:com.google.firebase.FirebaseCommonKtxRegistrar" android:value="com.google.firebase.components.ComponentRegistrar"/>
+            <meta-data android:name="com.google.firebase.components:com.google.firebase.abt.component.AbtRegistrar" android:value="com.google.firebase.components.ComponentRegistrar"/>
+            <meta-data android:name="com.google.firebase.components:com.google.firebase.datatransport.TransportRegistrar" android:value="com.google.firebase.components.ComponentRegistrar"/>
+        </service>
+        <service android:enabled="true" android:exported="false" android:name="com.google.firebase.sessions.SessionLifecycleService"/>
+        <provider android:authorities="com.indymobileapp.document.scanner.firebaseinitprovider" android:directBootAware="true" android:exported="false" android:initOrder="100" android:name="com.google.firebase.provider.FirebaseInitProvider"/>
+        <activity android:configChanges="keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize" android:exported="false" android:name="com.facebook.ads.AudienceNetworkActivity" android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
+        <provider android:authorities="com.indymobileapp.document.scanner.AudienceNetworkContentProvider" android:exported="false" android:name="com.facebook.ads.AudienceNetworkContentProvider"/>
+        <meta-data android:name="com.bytedance.sdk.pangle.version" android:value="8.2.0.4"/>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.TTCeilingLandingPageActivity">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.IABLandingPageActivity" android:theme="@style/tt_landing_page">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.TTLandingPageActivity" android:theme="@style/tt_landing_page">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.TTPlayableLandingPageActivity" android:theme="@style/tt_landing_page">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.TTVideoLandingPageLink2Activity" android:theme="@style/tt_landing_page">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.TTHistoryLandingPageActivity" android:theme="@style/tt_landing_page">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.TTHistoryActivity" android:theme="@style/tt_landing_page">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.TTDelegateActivity" android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.TTWebsiteActivity" android:theme="@style/tt_privacy_landing_page">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.TTAppOpenAdActivity" android:theme="@style/tt_app_open_ad_no_animation">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.TTAppOpenAdTransActivity" android:theme="@style/tt_app_open_ad_no_animation_trans">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.TTRewardVideoActivity" android:theme="@style/tt_full_screen_new">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:name="com.bytedance.sdk.openadsdk.activity.TTRewardWebActivity" android:theme="@style/tt_full_screen_new">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:name="com.bytedance.sdk.openadsdk.activity.TTFullWebActivity" android:theme="@style/tt_full_screen_new">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.TTRewardExpressVideoActivity" android:theme="@style/tt_full_screen_new">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.TTFullScreenVideoActivity" android:theme="@style/tt_full_screen_new">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.TTFullScreenExpressVideoActivity" android:theme="@style/tt_full_screen_new">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:launchMode="standard" android:multiprocess="true" android:name="com.bytedance.sdk.openadsdk.activity.single.TTAdActivity" android:theme="@style/tt_full_screen_new">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true"/>
+        </activity>
+        <provider android:authorities="com.indymobileapp.document.scanner.androidx-startup" android:exported="false" android:name="androidx.startup.InitializationProvider">
+            <meta-data android:name="androidx.work.WorkManagerInitializer" android:value="androidx.startup"/>
+            <meta-data android:name="androidx.emoji2.text.EmojiCompatInitializer" android:value="androidx.startup"/>
+            <meta-data android:name="androidx.lifecycle.ProcessLifecycleInitializer" android:value="androidx.startup"/>
+            <meta-data android:name="androidx.profileinstaller.ProfileInstallerInitializer" android:value="androidx.startup"/>
+        </provider>
+        <service android:directBootAware="false" android:enabled="@bool/enable_system_alarm_service_default" android:exported="false" android:name="androidx.work.impl.background.systemalarm.SystemAlarmService"/>
+        <service android:directBootAware="false" android:enabled="@bool/enable_system_job_service_default" android:exported="true" android:name="androidx.work.impl.background.systemjob.SystemJobService" android:permission="android.permission.BIND_JOB_SERVICE"/>
+        <service android:directBootAware="false" android:enabled="@bool/enable_system_foreground_service_default" android:exported="false" android:name="androidx.work.impl.foreground.SystemForegroundService"/>
+        <receiver android:directBootAware="false" android:enabled="true" android:exported="false" android:name="androidx.work.impl.utils.ForceStopRunnable$BroadcastReceiver"/>
+        <receiver android:directBootAware="false" android:enabled="false" android:exported="false" android:name="androidx.work.impl.background.systemalarm.ConstraintProxy$BatteryChargingProxy">
+            <intent-filter>
+                <action android:name="android.intent.action.ACTION_POWER_CONNECTED"/>
+                <action android:name="android.intent.action.ACTION_POWER_DISCONNECTED"/>
+            </intent-filter>
+        </receiver>
+        <receiver android:directBootAware="false" android:enabled="false" android:exported="false" android:name="androidx.work.impl.background.systemalarm.ConstraintProxy$BatteryNotLowProxy">
+            <intent-filter>
+                <action android:name="android.intent.action.BATTERY_OKAY"/>
+                <action android:name="android.intent.action.BATTERY_LOW"/>
+            </intent-filter>
+        </receiver>
+        <receiver android:directBootAware="false" android:enabled="false" android:exported="false" android:name="androidx.work.impl.background.systemalarm.ConstraintProxy$StorageNotLowProxy">
+            <intent-filter>
+                <action android:name="android.intent.action.DEVICE_STORAGE_LOW"/>
+                <action android:name="android.intent.action.DEVICE_STORAGE_OK"/>
+            </intent-filter>
+        </receiver>
+        <receiver android:directBootAware="false" android:enabled="false" android:exported="false" android:name="androidx.work.impl.background.systemalarm.ConstraintProxy$NetworkStateProxy">
+            <intent-filter>
+                <action android:name="android.net.conn.CONNECTIVITY_CHANGE"/>
+            </intent-filter>
+        </receiver>
+        <receiver android:directBootAware="false" android:enabled="@bool/enable_system_alarm_service_default" android:exported="false" android:name="androidx.work.impl.background.systemalarm.ConstraintProxyUpdateReceiver">
+            <intent-filter>
+                <action android:name="androidx.work.impl.background.systemalarm.UpdateProxies"/>
+            </intent-filter>
+        </receiver>
+        <receiver android:directBootAware="false" android:enabled="true" android:exported="true" android:name="androidx.work.impl.diagnostics.DiagnosticsReceiver" android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="androidx.work.diagnostics.REQUEST_DIAGNOSTICS"/>
+            </intent-filter>
+        </receiver>
+        <activity android:configChanges="keyboardHidden|orientation|screenLayout|uiMode|screenSize|smallestScreenSize" android:hardwareAccelerated="true" android:launchMode="singleTop" android:name="com.vungle.ads.internal.ui.VungleActivity" android:theme="@android:style/Theme.NoTitleBar.Fullscreen"/>
+        <provider android:authorities="com.indymobileapp.document.scanner.vungle-provider" android:exported="false" android:initOrder="102" android:name="com.vungle.ads.VungleProvider"/>
+        <uses-library android:name="com.amazon.privacypass" android:required="false"/>
+        <uses-library android:name="android.ext.adservices" android:required="false"/>
+        <receiver android:directBootAware="false" android:enabled="true" android:exported="true" android:name="androidx.profileinstaller.ProfileInstallReceiver" android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="androidx.profileinstaller.action.SKIP_FILE"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="androidx.profileinstaller.action.SAVE_PROFILE"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="androidx.profileinstaller.action.BENCHMARK_OPERATION"/>
+            </intent-filter>
+        </receiver>
+        <service android:exported="false" android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery">
+            <meta-data android:name="backend:com.google.android.datatransport.cct.CctBackendFactory" android:value="cct"/>
+        </service>
+        <provider android:authorities="com.indymobileapp.document.scanner.com.squareup.picasso" android:exported="false" android:name="com.squareup.picasso.PicassoProvider"/>
+        <activity android:configChanges="orientation|screenSize" android:exported="true" android:name="com.box.androidsdk.content.auth.OAuthActivity"/>
+        <activity android:launchMode="singleInstance" android:name="com.box.androidsdk.content.auth.BlockedIPErrorActivity"/>
+        <service android:exported="false" android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService" android:permission="android.permission.BIND_JOB_SERVICE"/>
+        <receiver android:exported="false" android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver"/>
+        <service android:directBootAware="true" android:exported="false" android:name="androidx.room.MultiInstanceInvalidationService"/>
+        <meta-data android:name="com.facebook.soloader.enabled" android:value="false"/>
+        <activity android:exported="false" android:name="com.google.android.play.core.common.PlayCoreDialogWrapperActivity" android:stateNotNeeded="true" android:theme="@style/Theme.PlayCore.Transparent"/>
+        <provider android:authorities="com.indymobileapp.document.scanner.mbcomponentlifcycleprovider" android:exported="false" android:name="com.mbridge.msdk.config.component.status.MBComponentLifecycleProvider"/>
+        <activity android:configChanges="locale|keyboard|keyboardHidden|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|fontScale" android:exported="false" android:name="com.mbridge.msdk.config.activity.MBRewardVideoActivity" android:theme="@style/mbridge_transparent_activity_style"/>
+        <activity android:configChanges="keyboard|orientation" android:exported="false" android:name="com.mbridge.msdk.activity.MBCommonActivity" android:theme="@style/mbridge_common_activity_style"/>
+        <activity android:name="com.mbridge.msdk.out.LoadingActivity"/>
+        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:name="com.mbridge.msdk.reward.player.MBRewardVideoActivity" android:theme="@style/mbridge_transparent_activity_style"/>
+        <receiver android:exported="true" android:name="com.mbridge.msdk.foundation.same.broadcast.NetWorkChangeReceiver">
+            <intent-filter>
+                <action android:name="android.net.conn.CONNECTIVITY_CHANGE"/>
+            </intent-filter>
+        </receiver>
+        <activity android:excludeFromRecents="true" android:label="@string/yubikit_otp_activity_title" android:name="com.yubico.yubikit.android.ui.OtpActivity" android:theme="@style/YubiKitPromptDialogTheme"/>
+        <activity android:excludeFromRecents="true" android:label="@string/yubikit_prompt_activity_title" android:name="com.yubico.yubikit.android.ui.YubiKeyPromptActivity" android:theme="@style/YubiKitPromptDialogTheme"/>
+        <meta-data android:name="com.android.vending.splits.required" android:value="true"/>
+        <meta-data android:name="com.android.stamp.source" android:value="https://play.google.com/store"/>
+        <meta-data android:name="com.android.stamp.type" android:value="STAMP_TYPE_DISTRIBUTION_APK"/>
+        <meta-data android:name="com.android.vending.splits" android:resource="@xml/splits0"/>
+        <meta-data android:name="com.android.vending.derived.apk.id" android:value="3"/>
+    </application>
+</manifest>
