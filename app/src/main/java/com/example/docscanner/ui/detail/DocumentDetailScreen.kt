@@ -8,10 +8,8 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
@@ -22,7 +20,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material3.TopAppBarDefaults
@@ -44,7 +41,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -88,6 +84,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import com.example.docscanner.model.Document
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -135,7 +139,9 @@ fun DocumentDetailScreen(
     onNavigateToCrop: (pageId: String) -> Unit,
     onNavigateToViewer: (pageId: String) -> Unit,
     onNavigateToMarkup: (pageId: String) -> Unit,
-    onAddPageCamera: (docId: String) -> Unit
+    onAddPageCamera: (docId: String) -> Unit,
+    /** Opens another document's page grid — used after moving pages into it. */
+    onNavigateToDocument: (docId: String) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -922,6 +928,9 @@ fun DocumentDetailScreen(
                         modifier = Modifier.animateItem(),
                         page = page,
                         selected = page.id in selectedPageIds,
+                        // The selection bar owns the verbs while anything is picked;
+                        // the tiles keep their strip and merely stop answering.
+                        verbsEnabled = selectedPageIds.isEmpty(),
                         dragging = dragPageId == page.id,
                         dragOffset = if (dragPageId == page.id) dragOffset else Offset.Zero,
                         dropTarget = dragPageId != null && dropIndex == index &&
@@ -1188,77 +1197,29 @@ fun DocumentDetailScreen(
         )
     }
 
-    // Where should the held pages go? A list of the *other* documents, with a count on
-    // each so the destination is checkable before the move — "Notes" alone could be a
-    // one-page note or the forty-page contract.
+    // Where should the held pages go?
+    //
+    // This was an `AlertDialog`: a centred card, a scrollable list of documents and a
+    // Cancel button, i.e. a modal question. Moving pages is not a question, it is a
+    // *destination picker* — the same job as the library's search, on the same objects.
+    // So it is a half-height sheet rising from the bottom with the app's own search
+    // field at the top and the documents under it, which is where the thumb already is
+    // and which the user can filter in one gesture instead of scrolling a list of
+    // forty contracts.
     pagesPendingMove?.let { pending ->
-        val destinations = documents.filter { it.id != docId && !it.isTrash }
-        AlertDialog(
-            onDismissRequest = { pagesPendingMove = null },
-            shape = DocShapes.dialog,
-            title = {
-                Text(
-                    if (pending.size == 1) "Move page to" else "Move ${pending.size} pages to",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold
-                )
-            },
-            text = {
-                if (destinations.isEmpty()) {
-                    Text(
-                        "There is no other document yet. Scan or import another page " +
-                            "into a new document first, then move these pages into it.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    // A move is a real change to two documents, so the row says how
-                    // many pages the target already has: moving into an empty document
-                    // and moving into a full one are different decisions.
-                    Column(
-                        modifier = Modifier
-                            .heightIn(max = 320.dp)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        destinations.forEach { target ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(DocShapes.pill)
-                                    .clickable {
-                                        pagesPendingMove = null
-                                        movePages(pending, target.id)
-                                    }
-                                    .padding(horizontal = 8.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    Icons.Outlined.PictureAsPdf,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(Modifier.width(12.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        target.title,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        if (target.pages.size == 1) "1 page" else "${target.pages.size} pages",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { pagesPendingMove = null }) { Text("Cancel") }
+        MovePagesSheet(
+            pageCount = pending.size,
+            destinations = documents.filter { it.id != docId && !it.isTrash },
+            onDismiss = { pagesPendingMove = null },
+            onPick = { target ->
+                pagesPendingMove = null
+                movePages(pending, target.id)
+                // A move's whole point is the pages now live *there*. Leaving the user
+                // on the source document, which may have just become empty, and asking
+                // them to navigate to the destination themselves is work the app can do
+                // — and the confirmation toast alone was not enough to tell them where
+                // the pages went.
+                onNavigateToDocument(target.id)
             }
         )
     }
@@ -1338,6 +1299,14 @@ private fun detailBarMode(selected: Set<String>): DetailBarMode = when {
 fun PageGridItem(
     page: ScannedPage,
     selected: Boolean = false,
+    /**
+     * Whether the tile's own verb strip answers taps.
+     *
+     * False while any page in the grid is picked: the strip stays on screen at full
+     * height and dims, because collapsing it changes the tile's height and the grid
+     * reflows under the finger.
+     */
+    verbsEnabled: Boolean = true,
     /** This tile is the one under the finger right now. */
     dragging: Boolean = false,
     /** Draw-only translation of the dragging tile, in pixels. */
@@ -1493,7 +1462,7 @@ fun PageGridItem(
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.primary.copy(alpha = washAlpha))
                 )
-                androidx.compose.animation.AnimatedVisibility(
+                AnimatedVisibility(
                     visible = selected,
                     enter = scaleIn(Motion.bouncy) + fadeIn(Motion.fade),
                     exit = scaleOut(Motion.press) + fadeOut(tween(120)),
@@ -1524,46 +1493,57 @@ fun PageGridItem(
             // as *one* strip of controls belonging to the page. Same component, same
             // shape tokens, one visual language across the app.
             //
-            // The strip collapses when the page is picked up (see `selected`) so a
-            // multi-page selection is about the pages, not about the buttons.
-            AnimatedVisibility(
-                visible = !selected && !dragging,
-                // Height, not just alpha: the point of hiding the row while pages are
-                // selected is to give the grid its space back, and a row that fades in
-                // place would hold that space for nothing.
-                enter = expandVertically(
-                    animationSpec = tween(180, easing = Motion.EaseOut),
-                    expandFrom = Alignment.Top
-                ) + fadeIn(tween(140)),
-                exit = shrinkVertically(
-                    animationSpec = tween(160, easing = Motion.EaseIn),
-                    shrinkTowards = Alignment.Top
-                ) + fadeOut(tween(90))
-            ) {
-                ConnectedButtonGroup(
+            // ## Why this strip dims instead of collapsing
+            //
+            // It used to animate away the moment a page was picked up — height, alpha
+            // and all — on the theory that a selection should be "about the pages". The
+            // effect was that the grid *changed shape under a gesture that was still
+            // happening*: every tile below the held one jumped up by the strip's height,
+            // and clearing the selection dropped them all back down. Users read that as
+            // the buttons disappearing, because that is exactly what it was.
+            //
+            // So the strip stays, at its full height, and its cells go **disabled**
+            // instead: `ConnectedAction.enabled = false` fades the cell to 38 % and
+            // swallows the tap, so the controls are still where the thumb last saw them
+            // and cannot fight the selection bar below. `dragging` dims them one step
+            // further without moving anything either.
+            val verbsAlpha by animateFloatAsState(
+                targetValue = when {
+                    dragging -> 0.32f
+                    !verbsEnabled -> 0.55f
+                    else -> 1f
+                },
+                animationSpec = Motion.fade,
+                label = "tileVerbsAlpha"
+            )
+            ConnectedButtonGroup(
                     actions = listOf(
                         ConnectedAction(
                             label = "",
                             icon = Icons.Outlined.Draw,
                             contentDescription = "Annotate",
+                            enabled = verbsEnabled && !dragging,
                             onClick = onAnnotateClick
                         ),
                         ConnectedAction(
                             label = "",
                             icon = Icons.Default.RotateRight,
                             contentDescription = "Rotate",
+                            enabled = verbsEnabled && !dragging,
                             onClick = onRotateClick
                         ),
                         ConnectedAction(
                             label = "",
                             icon = Icons.Outlined.Crop,
                             contentDescription = "Crop and filter",
+                            enabled = verbsEnabled && !dragging,
                             onClick = onCropClick
                         ),
                         ConnectedAction(
                             label = "",
                             icon = Icons.Default.MoreVert,
                             contentDescription = "More",
+                            enabled = verbsEnabled && !dragging,
                             tintColor = MaterialTheme.colorScheme.onSurfaceVariant,
                             menuContent = { dismiss ->
                                 DropdownMenuItem(
@@ -1602,8 +1582,270 @@ fun PageGridItem(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 6.dp, vertical = 5.dp)
+                        .graphicsLayer { alpha = verbsAlpha }
                 )
+        }
+    }
+}
+
+/**
+ * The destination picker for a page move: half a screen, search first in the *order of
+ * reading* and last in the *order of animation*.
+ *
+ * ## The choreography, and why it is asymmetric
+ *
+ * The sheet's settled layout is: a title, the search field, the list. It does not
+ * animate that way. When the sheet rises, the **list of documents arrives first** —
+ * each row a further [MOVE_ROW_STAGGER_MS] behind the one above — and the **search
+ * field fades in last**, on top of rows that are already there. Two reasons:
+ *
+ * 1. The answer is the list. The search field is a tool for narrowing an answer, and a
+ *    tool that arrives before the thing it acts on reads as a form. The user sees "these
+ *    are the documents" first, then "…and you can filter them".
+ * 2. A field that appears *with* the sheet has to either push the rows down as it is
+ *    measured or reserve a gap that is briefly empty. Reserving the gap and filling it
+ *    late has neither: the rows never move, and nothing is ever blank.
+ *
+ * The same stagger runs in reverse on exit, which is why the rows' reveal is driven by
+ * one `Animatable` progress value rather than per-row `AnimatedVisibility` — the sheet
+ * mechanics (`ModalBottomSheet`) already animate the whole surface's removal, so the
+ * inner contents only need to *hold* their final state and let the surface leave.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MovePagesSheet(
+    pageCount: Int,
+    destinations: List<Document>,
+    onDismiss: () -> Unit,
+    onPick: (Document) -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var query by remember { mutableStateOf("") }
+
+    val results = remember(query, destinations) {
+        val q = query.trim()
+        if (q.isEmpty()) {
+            destinations
+        } else {
+            // Title and the first page's OCR text. A user looking for "invoice" often
+            // remembers the *word inside* the document, not what it was called — and
+            // every page's OCR is already stored, so this costs no work.
+            destinations.filter { doc ->
+                doc.title.contains(q, ignoreCase = true) ||
+                    doc.pages.any { it.ocrText.contains(q, ignoreCase = true) }
             }
         }
     }
+
+    // One clock for the stagger. Rows read it in their `graphicsLayer` block, i.e. in the
+    // *draw* phase — the animation costs no recomposition per frame and cannot re-measure
+    // the list while it is arriving.
+    val reveal = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        reveal.animateTo(1f, tween(durationMillis = 340, easing = Motion.EaseOut))
+    }
+
+    val rowWindowStart = 0.06f
+    val rowWindowSpan = 0.46f
+    val searchWindowStart = 0.62f
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = DocShapes.sheet
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                // Half the screen: enough for six or seven documents at a glance and a
+                // comfortable two-thumb reach, and short enough that the grid it is
+                // acting on stays visible behind it as context.
+                .fillMaxHeight(0.56f)
+                .navigationBarsPadding()
+                .imePadding()
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 20.dp)) {
+                Text(
+                    text = if (pageCount == 1) "Move page" else "Move $pageCount pages",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = if (destinations.isEmpty()) {
+                        "There is no other document yet"
+                    } else {
+                        "Pick where they should go"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+
+                // ---- search, reserved but revealed last -------------------------
+                //
+                // `height` outside the alpha so the rows below never move when it
+                // appears; the field itself owns the fade.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(58.dp)
+                ) {
+                    MoveSearchField(
+                        query = query,
+                        onQueryChange = { query = it },
+                        modifier = Modifier.graphicsLayer {
+                            val p = ((reveal.value - searchWindowStart) / (1f - searchWindowStart))
+                                .coerceIn(0f, 1f)
+                            alpha = p
+                            translationY = (1f - p) * -10.dp.toPx()
+                        }
+                    )
+                }
+
+                Spacer(Modifier.height(4.dp))
+            }
+
+            if (destinations.isEmpty()) {
+                Text(
+                    text = "Scan or import another page into a new document first, then " +
+                        "move these pages into it.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 12.dp)
+                ) {
+                    itemsIndexed(results, key = { _, doc -> doc.id }) { index, target ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .graphicsLayer {
+                                    // Each row's own slice of the one clock: 46 % of it
+                                    // spread across however many rows there are, capped
+                                    // at MOVE_ROW_STAGGER_MS so a long list still settles
+                                    // quickly instead of dribbling in for a second.
+                                    val stagger = minOf(
+                                        index * (MOVE_ROW_STAGGER_MS / 340f),
+                                        0.30f
+                                    )
+                                    val start = rowWindowStart + stagger
+                                    val p = ((reveal.value - start) / rowWindowSpan)
+                                        .coerceIn(0f, 1f)
+                                    alpha = p
+                                    translationY = (1f - p) * 16.dp.toPx()
+                                }
+                                .clip(DocShapes.cardSmall)
+                                .clickable { onPick(target) }
+                                .padding(horizontal = 8.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Outlined.PictureAsPdf,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    target.title,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (target.pages.size == 1) {
+                                        "1 page"
+                                    } else {
+                                        "${target.pages.size} pages"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Icon(
+                                Icons.Default.DriveFileMove,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+
+                    if (results.isEmpty()) {
+                        item {
+                            Text(
+                                text = "No document matches \"$query\"",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** How far behind its neighbour each destination row starts, in milliseconds. */
+private const val MOVE_ROW_STAGGER_MS = 34
+
+/**
+ * The move sheet's search field.
+ *
+ * Deliberately *not* the library's `MagicSearchField`: that one carries a caption row,
+ * a border and a shape tuned for a full-width header. A sheet field is a filter, so it
+ * is shorter, quieter, and in the sheet's own surface colour.
+ */
+@Composable
+private fun MoveSearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        singleLine = true,
+        shape = DocShapes.pill,
+        textStyle = MaterialTheme.typography.bodyMedium,
+        placeholder = {
+            Text(
+                "Search documents",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        leadingIcon = {
+            Icon(
+                Icons.Default.Search,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+        },
+        trailingIcon = if (query.isNotEmpty()) {
+            {
+                IconButton(onClick = { onQueryChange("") }) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Clear search",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        } else {
+            null
+        },
+        modifier = modifier.fillMaxWidth()
+    )
 }

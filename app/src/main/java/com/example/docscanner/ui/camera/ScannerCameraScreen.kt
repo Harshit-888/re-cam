@@ -61,7 +61,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -536,27 +535,37 @@ fun ScannerCameraScreen(
     }
 
     // ---- UI ---------------------------------------------------------------
+    //
+    // ## One column, not one pile of overlays
+    //
+    // The preview used to be a full-screen child of a `Box`, with the control sheet
+    // drawn over it. "Lift the preview up" was then a magic `offset`, and a magic offset
+    // cannot work: a 3:4 frame is taller than the space above the sheet on some phones
+    // and shorter on others, so whatever number was picked was wrong on half of them —
+    // and on the phones where it was wrong the paper still ran under the sheet, which is
+    // the report this fixes.
+    //
+    // The screen is a `Column` now: the sheet takes its natural height at the bottom, and
+    // the preview gets exactly the space above it (`weight(1f)`). The two can no longer
+    // overlap on any device, at any font scale, because it is the layout that separates
+    // them rather than an offset that guesses.
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // The stage: everything above the control sheet.
+            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
 
         if (hasCameraPermission) {
             Box(
                 // A 4:3 sensor shown in portrait is 3:4. The viewfinder is exactly
-                // that shape and centred, with the surrounding area black: showing
-                // the stream edge-to-edge on a 20:9 phone meant the frame the user
-                // composed was not the frame that got captured.
+                // that shape and centred *in the stage*, with the surrounding area
+                // black: showing the stream edge-to-edge on a 20:9 phone meant the
+                // frame the user composed was not the frame that got captured.
+                //
+                // `aspectRatio` alone, with no `fillMaxSize`: it resolves to the largest
+                // 3:4 rectangle the stage allows, so a short phone shrinks the frame
+                // rather than pushing its bottom edge under the sheet.
                 modifier = Modifier
                     .align(Alignment.Center)
-                    // Lifted off the exact centre, and the reason is the sheet below.
-                    //
-                    // A 3:4 viewfinder centred on a 20:9 phone leaves equal black bands
-                    // above and below — but only the top one is empty. The bottom one
-                    // runs straight into the control sheet, so the preview's lower edge
-                    // had no edge: it read as a page floating in a black rectangle that
-                    // happened to have buttons in it. Moving the frame up keeps a band
-                    // of pure black *between* the paper and the sheet, which is what
-                    // makes the two read as separate objects.
-                    .offset(y = -CameraPreviewLift)
-                    .fillMaxWidth()
                     .aspectRatio(3f / 4f)
                     .graphicsLayer {
                         scaleX = viewfinderDip.value
@@ -608,14 +617,18 @@ fun ScannerCameraScreen(
                         )
                     )
             )
+            // Only a hint of a scrim at the bottom of the *stage* now: the sheet is a
+            // sibling below it, so nothing legible sits over the bottom of the paper any
+            // more. 240 dp of gradient here was darkening the very edge of the frame the
+            // user is trying to see.
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .height(240.dp)
+                    .height(96.dp)
                     .background(
                         Brush.verticalGradient(
-                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.74f))
+                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.45f))
                         )
                     )
             )
@@ -728,10 +741,10 @@ fun ScannerCameraScreen(
             exit = fadeOut() + slideOutVertically { it / 2 },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                // Clears the control sheet: a toast that lands *on* the shutter is a
-                // toast that hides the one thing the user is about to press.
-                .padding(start = 28.dp, end = 28.dp, bottom = 306.dp)
+                // The stage ends where the sheet begins now, so the message only needs
+                // its own margin — the old 306 dp was compensating for drawing *under*
+                // the sheet, which is exactly what no longer happens.
+                .padding(start = 28.dp, end = 28.dp, bottom = 14.dp)
         ) {
             Surface(
                 shape = DocShapes.pill,
@@ -776,23 +789,27 @@ fun ScannerCameraScreen(
             )
         }
 
-        // ---- bottom controls --------------------------------------------------
-        //
-        // One sheet, rounded on its top corners, instead of five floating pills.
-        //
-        // This is the shape Files by Google's scanner uses: a single control surface
-        // pinned to the bottom of the display, with the preview running to its edge
-        // above it. It reads as "the camera, with controls attached" rather than "a
-        // camera with a dashboard over it", and it gives every control a guaranteed
-        // background — the old pills each had to invent their own scrim.
-        if (hasCameraPermission && cameraError == null) {
-            Surface(
-                color = Color.Black.copy(alpha = 0.78f),
-                contentColor = Color.White,
-                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
+            }
+
+            // ---- bottom controls ----------------------------------------------
+            //
+            // One sheet, rounded on its top corners, instead of five floating pills.
+            //
+            // This is the shape Files by Google's scanner uses: a single control surface
+            // pinned to the bottom of the display, with the preview above it. It reads as
+            // "the camera, with controls attached" rather than "a camera with a dashboard
+            // over it", and it gives every control a guaranteed background — the old
+            // pills each had to invent their own scrim.
+            //
+            // It is a *sibling* of the stage, not an overlay on it: that is what keeps
+            // the paper out of the sheet's way on every screen shape.
+            if (hasCameraPermission && cameraError == null) {
+                Surface(
+                    color = Color.Black.copy(alpha = 0.78f),
+                    contentColor = Color.White,
+                    shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
                     .graphicsLayer {
                         alpha = chromeIn.value
                         translationY = (1f - chromeIn.value) * 24.dp.toPx()
@@ -1008,18 +1025,9 @@ fun ScannerCameraScreen(
                 }
             )
         }
+        }
     }
 }
-
-/**
- * How far the viewfinder sits above dead centre.
- *
- * Not a magic number: the control sheet is ~200 dp tall, the top chrome ~90 dp, so the
- * frame has to give the *bottom* gap more room than the top one to keep both bands
- * visible. At 32 dp the preview clears the sheet on a 20:9 phone without crowding the
- * close button on a 16:9 one.
- */
-private val CameraPreviewLift = 32.dp
 
 /**
  * Batch / single switch.

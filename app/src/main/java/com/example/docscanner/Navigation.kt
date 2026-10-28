@@ -111,6 +111,12 @@ fun MainNavigation(repository: ScannerRepository) {
                     },
                     onAddPageCamera = { docId ->
                         backStack.add(ScannerCameraNav(docId))
+                    },
+                    onNavigateToDocument = { docId ->
+                        // A move lands the user in the document the pages went to.
+                        // `addDetailIfNeeded` is the same guard a scan finishes
+                        // through, so a document cannot end up stacked twice.
+                        addDetailIfNeeded(backStack, docId)
                     }
                 )
             }

@@ -36,7 +36,6 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -618,6 +617,23 @@ fun DashboardScreen(
     val trashCount = remember(documents) { documents.count { it.isTrash } }
     val pageCount = remember(activeDocs) { activeDocs.sumOf { it.pages.size } }
 
+    // The one line the app bar shows while the library is scrolled: which folder, how
+    // many documents, how many pages. Derived, not stored — it is three counts off the
+    // same lists the grid draws.
+    val headerSummary = remember(folders, selectedFolderId, activeDocs, pageCount) {
+        buildString {
+            append(folders.firstOrNull { it.id == selectedFolderId }?.name ?: "All documents")
+            append(" · ")
+            append(activeDocs.size)
+            append(if (activeDocs.size == 1) " document" else " documents")
+            if (pageCount > 0) {
+                append(" · ")
+                append(pageCount)
+                append(if (pageCount == 1) " page" else " pages")
+            }
+        }
+    }
+
     // A pinned bar, deliberately.
     //
     // This was a `LargeTopAppBar` with `exitUntilCollapsedScrollBehavior`: it
@@ -668,11 +684,36 @@ fun DashboardScreen(
                 } else {
                     TopAppBar(
                         title = {
-                            Text(
-                                "Doc Scanner",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold
-                            )
+                            // The library's facts live **here**, not under the search
+                            // field.
+                            //
+                            // They used to ride along as the search field's caption once
+                            // the header condensed, which put a line of small grey text
+                            // in the one place the eye is not looking — directly under
+                            // the field, on the seam between the fixed chrome and the
+                            // scrolling grid. The app bar is where they belong: it is
+                            // already the permanent part of the screen, it never scrolls,
+                            // and one small line under the name costs no layout at all.
+                            Column {
+                                Text(
+                                    "Doc Scanner",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                AnimatedVisibility(
+                                    visible = headerCondensed,
+                                    enter = fadeIn(tween(160)) + expandVertically(tween(180)),
+                                    exit = fadeOut(tween(110)) + shrinkVertically(tween(140))
+                                ) {
+                                    Text(
+                                        headerSummary,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
                         },
                         actions = {
                             IconButton(onClick = { isGridView = !isGridView }) {
@@ -782,47 +823,17 @@ fun DashboardScreen(
                     }
                 )
             }
-        },
-        floatingActionButton = {
-            // An extended FAB that reads as the app's one primary verb. The pill
-            // shape and the amber-free primary keep it distinct from the cards.
-            // Hidden while selecting so two competing actions never share a corner.
-            AnimatedVisibility(
-                visible = !isSelecting,
-                // The FAB does not add content padding, so scaling it in and out
-                // costs the grid nothing. It used to vanish between frames, which
-                // reads as a flicker in the corner of the eye while the bar above is
-                // still animating.
-                enter = fadeIn(tween(160)) + scaleIn(tween(220), initialScale = 0.8f),
-                exit = fadeOut(tween(120)) + scaleOut(tween(160), targetScale = 0.8f)
-            ) {
-                CaptureFab(onClick = startScan)
-            }
         }
     ) { innerPadding ->
+        Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // What the header is *about*, in the words the pills use.
-            val headerSummary = buildString {
-                append(folders.firstOrNull { it.id == selectedFolderId }?.name ?: "All documents")
-                append(" · ")
-                append(activeDocs.size)
-                append(if (activeDocs.size == 1) " document" else " documents")
-                if (pageCount > 0) {
-                    append(" · ")
-                    append(pageCount)
-                    append(if (pageCount == 1) " page" else " pages")
-                }
-            }
-
             MagicSearchField(
                 query = searchQuery,
                 onQueryChange = { searchQuery = it },
-                // Condensed, the field carries the pills' facts as its caption.
-                caption = headerSummary.takeIf { headerCondensed },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 4.dp)
@@ -886,8 +897,24 @@ fun DashboardScreen(
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
 
+            // The scrolling shelf.
+            //
+            // The seam between the fixed header and the grid used to be a straight cut:
+            // the header's background stopped, the grid's began, and the only thing that
+            // said "these are different layers" was a hard horizontal line. The shelf's
+            // top corners now **flare outward** (`DocShapes.outwardTop`), so the content
+            // reads as a surface tucked under the bar rather than a second screen
+            // starting abruptly — and the one-step tonal difference between the two
+            // (`surface` behind, `surfaceContainerLow` in front) makes the flare legible
+            // instead of invisible.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(DocShapes.outwardTop)
+                    .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            ) {
             when {
                 activeDocs.isEmpty() -> {
                     // A search that has not answered yet has nothing to report.
@@ -971,6 +998,25 @@ fun DashboardScreen(
                     }
                 }
             }
+            }
+        }
+
+        // The capture button, anchored to the content box's corner instead of the
+        // Scaffold's FAB slot — see the note where that slot used to be. The bottom
+        // padding is the selection bar's height, a constant, so the button stays put
+        // whether the bar is on screen or not, and its own exit is pure fade: nothing
+        // moves, so nothing can lag.
+        AnimatedVisibility(
+            visible = !isSelecting,
+            enter = fadeIn(tween(140)) + scaleIn(tween(180), initialScale = 0.9f),
+            exit = fadeOut(tween(90)) + scaleOut(tween(110), targetScale = 0.92f),
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(end = 20.dp, bottom = 24.dp)
+        ) {
+            CaptureFab(onClick = startScan)
+        }
         }
     }
 
@@ -1397,16 +1443,7 @@ private fun CaptureFab(onClick: () -> Unit) {
 fun MagicSearchField(
     query: String,
     onQueryChange: (String) -> Unit,
-    modifier: Modifier = Modifier,
-    /**
-     * The facts the header pills carry — folder, document count, page count — shown as
-     * the field's own caption once those pills have condensed away.
-     *
-     * The alternative was letting them disappear outright, which makes a scrolled
-     * library silently lose the answer to "how many pages is this folder". They move
-     * here instead: same words, one row up, next to the thing that is still on screen.
-     */
-    caption: String? = null
+    modifier: Modifier = Modifier
 ) {
     val scheme = MaterialTheme.colorScheme
     val fieldColors = TextFieldDefaults.colors(
@@ -1448,31 +1485,6 @@ fun MagicSearchField(
                 }
             }
         },
-        supportingText = {
-            AnimatedVisibility(
-                visible = caption != null,
-                // Asymmetric, like every other enter/exit in the app: the caption
-                // arrives a little slower than it leaves, so scrolling up does not
-                // produce a stutter of rows appearing and disappearing.
-                enter = expandVertically(
-                    animationSpec = tween(180, easing = Motion.EaseOut),
-                    expandFrom = Alignment.Top
-                ) + fadeIn(tween(120)),
-                exit = shrinkVertically(
-                    animationSpec = tween(140, easing = Motion.EaseIn),
-                    shrinkTowards = Alignment.Top
-                ) + fadeOut(tween(90))
-            ) {
-                Text(
-                    text = caption.orEmpty(),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(start = 6.dp, end = 6.dp)
-                )
-            }
-        },
         singleLine = true,
         shape = DocShapes.pill,
         textStyle = MaterialTheme.typography.bodyMedium,
@@ -1482,9 +1494,7 @@ fun MagicSearchField(
         // a fresh `TextFieldColors` each time is an allocation per character for
         // a value that only changes with the theme.
         colors = fieldColors,
-        // `heightIn`, not `height`: the caption lives inside this field, so the field
-        // has to be allowed to grow by one line when the header condenses.
-        modifier = modifier.heightIn(min = 54.dp)
+        modifier = modifier.height(54.dp)
     )
 }
 

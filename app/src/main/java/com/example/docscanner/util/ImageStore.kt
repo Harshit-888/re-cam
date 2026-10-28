@@ -248,7 +248,14 @@ object ImageStore {
             }
             // A fresh cover for the fresh page: the source's thumbnail key belongs to
             // the source file's size and mtime, so it cannot be reused.
-            loadBitmap(context, pristineTarget.absolutePath, ThumbnailStore.LONG_EDGE)?.let { bitmap ->
+            //
+            // Read it from [newUri], *not* from the pristine copy. When the page has an
+            // edited bake, `newUri` is that bake — and a cover drawn from the pristine
+            // file would show the unfiltered capture while the page's own record still
+            // said `filterType = MAGIC_COLOR`, i.e. a copied page whose filter looked
+            // like it had been stripped. The thumbnail has to be rebuilt from the same
+            // pixels the page will show.
+            loadBitmap(context, newUri, ThumbnailStore.LONG_EDGE)?.let { bitmap ->
                 ThumbnailStore.writeFor(context, newUri, bitmap)
             }
             source.copy(

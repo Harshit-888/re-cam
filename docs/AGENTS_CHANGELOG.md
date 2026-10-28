@@ -4,6 +4,60 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-28 — Arena.ai — Round 54: second pass on the Round-53 reports
+
+Five of the seven Round-53 items were re-opened as still broken. All were layout bugs
+that had been treated as animation bugs. Layout/chrome/motion only — no filter, geometry,
+*pixel*, typography or `PdfGenerator`/`PdfWriter` change, and camera capture semantics are
+untouched.
+
+**Signature changes — compile these call sites:**
+
+- `DocumentDetailScreen(...)` gained **`onNavigateToDocument: (docId: String) -> Unit`**
+  (used after moving pages into a document). `Navigation.kt` passes `addDetailIfNeeded`.
+- `PageGridItem(...)` gained **`verbsEnabled: Boolean = true`**. The tile's verb strip is
+  no longer inside `AnimatedVisibility`; it stays at full height and goes disabled.
+- `MagicSearchField(...)` **lost its `caption` parameter** and is now a fixed 54 dp. The
+  library's facts live in the app bar's title `Column` (`headerSummary`, hoisted above
+  `Scaffold`) and appear only while the header is condensed.
+- `ConnectedCell` is internal to `ConnectedButtonGroup` and now takes `menuOpen` /
+  `onOpenMenu`; the group owns the single `DropdownMenu`.
+
+**New types:**
+
+- `DocShapes.outwardTop: Shape` (`theme/Shape.kt`) — concave top corners, implemented by
+  a private `OutwardTopShape` with two `quadraticTo` shoulders. Used for the library's
+  scrolling shelf only.
+- `MovePagesSheet` / `MoveSearchField` (private, `ui/detail/DocumentDetailScreen.kt`) —
+  the half-height destination picker that replaced the move `AlertDialog`.
+
+**Fixes:**
+
+- `ConnectedButtonGroup`: plate and ink are computed, never crossfaded, across the
+  filled boundary; the press is an ink-coloured state layer. A single group-owned
+  `DropdownMenu` (`openMenuIndex`) replaces the per-cell popup. `spacing` parameter added.
+- `PageViewerScreen`: page is tracked by **id** (`currentPageId` + `goToPage`), not by an
+  index keyed on `pages.size` (that is the "tap page 4, get page 1" bug); the shelf's
+  height is **measured** (`onSizeChanged`) and feeds the page's bottom inset;
+  `ShelfPadding = 8.dp` is the single margin; the annotate shelf's handle is a 12 dp band
+  with the drag on the whole shelf; rotate is a queue with an optimistic frame and
+  `AnimatedContent` keyed on `PageFrame(bitmap, pageId)` (no transition on a same-page
+  pixel swap).
+- `PageThumbnail.kt` / `rememberPageImage`: retains the last bitmap per `imageUri` so a
+  re-bake (rotate/filter/ink) cannot blank the frame while the new revision decodes.
+- `ImageStore.copyPageFiles`: the copy's thumbnail is built from the **copied** file, not
+  the pristine capture — a copied filtered page used to render unfiltered.
+- `ScannerCameraScreen`: stage and control sheet are siblings in a `Column`
+  (`weight(1f)` stage, 3:4 preview, no magic offset); the status toast sits 14 dp above
+  the sheet's inside edge; `CameraPreviewLift` deleted.
+- `DashboardScreen`: the capture button left `Scaffold.floatingActionButton` for the
+  content `Box` (the FAB slot is positioned relative to the bottom bar, which is why it
+  lagged when the selection bar appeared).
+- `DocumentDetailScreen`: the move picker is a half-height sheet — search first in
+  reading order, **last** in the animation — and picking a target opens it.
+
+Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed by Antigravity.
+
 ## 2026-10-28 — Antigravity — Round 53 compilation fix & build verification
 
 Resolved compilation errors from Arena Round 53 integration and verified clean build:

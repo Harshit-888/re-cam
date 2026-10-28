@@ -10,6 +10,8 @@ import androidx.compose.material.icons.filled.Article
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -64,7 +66,26 @@ fun rememberPageImage(
     ) {
         value = PageImageLoader.load(context, imageUri, reqWidth, reqHeight)?.asImageBitmap()
     }
-    return image
+
+    // **Never go blank to show a newer frame of the same page.**
+    //
+    // A re-bake (rotate, filter, ink) rewrites the file the page already points at and
+    // bumps `revision`. That invalidates the thumbnail memo — correctly, the new bytes
+    // need a new key — which means `peek` suddenly has nothing to answer with, and
+    // `produceState` restarts from `cached = null` while the fresh decode runs. The
+    // page therefore blinked to its fallback for a frame or two *after every rotate*.
+    // That is the "loading jitter in the image" report, and it is not a decode-speed
+    // problem: it is a frame that was available and was thrown away.
+    //
+    // So the last frame for this path is retained and stands in until the new one
+    // arrives. Keyed on `imageUri`, never on `revision`, so this can only ever hold the
+    // *same page* — a different page starts from its own `cached` value and can never
+    // inherit the previous page's pixels.
+    val retained = remember(imageUri) { mutableStateOf(cached) }
+    LaunchedEffect(image) {
+        if (image != null) retained.value = image
+    }
+    return image ?: retained.value
 }
 
 /**

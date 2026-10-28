@@ -1,6 +1,5 @@
 package com.example.docscanner.ui.common
 
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -131,28 +130,61 @@ fun ConnectedButtonGroup(
     contentColor: Color = MaterialTheme.colorScheme.onSurface,
     accentColor: Color = MaterialTheme.colorScheme.primary,
     onAccentColor: Color = MaterialTheme.colorScheme.onPrimary,
-    cellHeight: Dp = ConnectedCellHeight
+    cellHeight: Dp = ConnectedCellHeight,
+    /**
+     * Gap between two cells. The M3 token is 2 dp; a bar that floats over a page can
+     * afford a touch more, and the inset below has to match it or the group reads as
+     * off-centre inside its card.
+     */
+    spacing: Dp = ConnectedSpacing
 ) {
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        // 2 dp, the `m3_comp_button_group_connected_small_between_space` token. The
-        // gap is what lets each cell keep its own shape; at 0 the group would need a
-        // single background and the pressed cell could not change shape at all.
-        horizontalArrangement = Arrangement.spacedBy(ConnectedSpacing),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        actions.forEachIndexed { index, action ->
-            ConnectedCell(
-                action = action,
-                first = index == 0,
-                last = index == actions.lastIndex,
-                containerColor = containerColor,
-                contentColor = contentColor,
-                accentColor = accentColor,
-                onAccentColor = onAccentColor,
-                cellHeight = cellHeight,
-                modifier = Modifier.weight(1f)
-            )
+    // One popup for the whole group, not one per cell.
+    //
+    // A `DropdownMenu` is a `Popup` in its own window, anchored to the bounds of the
+    // composable that declares it. Declaring it inside a *weighted cell* of a bottom
+    // bar means the popup is anchored to a box whose position is re-resolved every time
+    // the bar's contents change — and in the reader that bar swaps shelves. The visible
+    // symptom was the More cell appearing to blink out the instant it was tapped. One
+    // menu owned by the group, anchored to the group, cannot do that.
+    var openMenuIndex by remember { mutableStateOf<Int?>(null) }
+
+    Box(modifier = modifier) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            // 2 dp, the `m3_comp_button_group_connected_small_between_space` token. The
+            // gap is what lets each cell keep its own shape; at 0 the group would need a
+            // single background and the pressed cell could not change shape at all.
+            horizontalArrangement = Arrangement.spacedBy(spacing),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            actions.forEachIndexed { index, action ->
+                ConnectedCell(
+                    action = action,
+                    first = index == 0,
+                    last = index == actions.lastIndex,
+                    containerColor = containerColor,
+                    contentColor = contentColor,
+                    accentColor = accentColor,
+                    onAccentColor = onAccentColor,
+                    cellHeight = cellHeight,
+                    // The cell whose menu is open keeps its state layer, so the control
+                    // that opened the menu still looks like the control that is open.
+                    menuOpen = openMenuIndex == index,
+                    onOpenMenu = { openMenuIndex = index },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        val openAction = openMenuIndex?.let { actions.getOrNull(it) }
+        val menu = openAction?.menuContent
+        if (menu != null) {
+            DropdownMenu(
+                expanded = true,
+                onDismissRequest = { openMenuIndex = null }
+            ) {
+                menu { openMenuIndex = null }
+            }
         }
     }
 }
@@ -167,11 +199,13 @@ private fun ConnectedCell(
     accentColor: Color,
     onAccentColor: Color,
     cellHeight: Dp,
+    /** This cell's menu is the one currently open. */
+    menuOpen: Boolean,
+    onOpenMenu: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val interactions = remember { MutableInteractionSource() }
     val pressed by interactions.collectIsPressedAsState()
-    var menuOpen by remember { mutableStateOf(false) }
 
     // The whole expressive trick, in one value: 8 dp at rest, 4 dp under the finger,
     // the full cell radius when it is the chosen one. `animateDpAsState` because the
@@ -207,30 +241,32 @@ private fun ConnectedCell(
     // button group fills its checked item. `emphasized` is the same fill for an action
     // that is the primary one without being a selection.
     val filled = action.emphasized || action.selected
-    val plate by animateColorAsState(
-        targetValue = when {
-            filled -> accentColor
-            pressed -> accentColor.copy(alpha = 0.16f)
-            else -> containerColor
-        },
-        animationSpec = tween(durationMillis = if (pressed) 90 else 160),
-        label = "connectedPlate"
-    )
-    // The label colour **snaps** when a cell becomes filled and only animates between
-    // unfilled tones.
+
+    // ## Why neither the fill nor the label is animated between states
     //
-    // Animating it was the "the button disappears when I toggle it" report: the fill
-    // crossfades from the container to white over 160 ms while the label is still
-    // fading from white to black over 120 ms — and for most of that window the label is
-    // white-on-near-white on a dark camera sheet. Google switches the checked item's
-    // content colour immediately for the same reason.
-    val restingTint = action.tintColor ?: contentColor
-    val animatedRestingTint by animateColorAsState(
-        targetValue = restingTint,
-        animationSpec = tween(durationMillis = 120),
-        label = "connectedTint"
+    // This is the whole of the "the buttons disappear when I toggle them" report, and
+    // it survived one wrong fix, so it is written down exactly.
+    //
+    // Toggling a cell changes *two* things at once: the plate (dark container -> solid
+    // accent) and the ink (light -> dark on a light accent). Compose animations do not
+    // know they are coupled, so any duration at all produces frames in the middle where
+    // the plate is half-way between a black sheet and a white fill — i.e. mid grey —
+    // and the ink has already become black. Black on mid grey, for 100-160 ms, twice per
+    // toggle. On the camera's Single/Batch switch it reads as the label blinking out; on
+    // the reader's annotate shelf it reads as the button vanishing.
+    //
+    // Material 3 does not animate a selected item's container either: the checked item
+    // switches. So both values are now computed directly — no crossfade across the
+    // filled boundary, no window of low contrast — and the *press* is what animates,
+    // as a state layer in the ink's own colour (which is dark-on-light when filled and
+    // light-on-dark when not, so it can never wash the label out).
+    val tint = if (filled) onAccentColor else (action.tintColor ?: contentColor)
+    val plate = if (filled) accentColor else containerColor
+    val pressLayer by animateFloatAsState(
+        targetValue = if (pressed || menuOpen) 0.14f else 0f,
+        animationSpec = tween(durationMillis = if (pressed) 90 else 160),
+        label = "connectedPress"
     )
-    val tint = if (filled) onAccentColor else animatedRestingTint
     val alpha by animateFloatAsState(
         targetValue = if (action.enabled) 1f else 0.38f,
         animationSpec = Motion.fade,
@@ -263,6 +299,10 @@ private fun ConnectedCell(
                     .graphicsLayer { this.alpha = alpha }
                     .clip(shape)
                     .background(plate)
+                    // The press state layer: the cell's own ink at 14 %, so it darkens a
+                    // light fill and lightens a dark one. Drawn *over* the plate and
+                    // *under* the content, and independent of the selected state.
+                    .background(tint.copy(alpha = pressLayer))
             ) {
                 val cellIcon = action.icon
                 Column(
@@ -281,7 +321,7 @@ private fun ConnectedCell(
                             role = if (action.selected) Role.Checkbox else Role.Button,
                             onClick = {
                                 val action0 = action.onClick
-                                if (action0 != null) action0() else menuOpen = true
+                                if (action0 != null) action0() else onOpenMenu()
                             }
                         )
                         .padding(
@@ -329,7 +369,7 @@ private fun ConnectedCell(
                                 enabled = action.enabled,
                                 role = Role.Button,
                                 onClickLabel = "More ${action.label} options",
-                                onClick = { menuOpen = true }
+                                onClick = onOpenMenu
                             )
                     ) {
                         Icon(
@@ -343,16 +383,5 @@ private fun ConnectedCell(
             }
         }
 
-        val menu = action.menuContent
-        if (menu != null) {
-            DropdownMenu(
-                expanded = menuOpen,
-                onDismissRequest = { menuOpen = false },
-                // Anchored to the cell. A cell in a bottom bar has nowhere to open
-                // downward without leaving the screen, so it opens upward.
-            ) {
-                menu { menuOpen = false }
-            }
-        }
     }
 }

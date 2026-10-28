@@ -77,6 +77,7 @@ Keep this table short. Delete your row when the change lands.
 | Agent       | Status          | Files                                                                                                                                                                                                                                                                           | Intent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 53) | `ui/common/ConnectedButtonGroup.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/editor/MarkupStudio.kt` (new), `ui/editor/MarkupScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/pdf/PdfExportSheet.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/DocumentShare.kt` (new), `util/ImageStore.kt`, `data/ScannerRepository.kt`, `Navigation.kt`, docs | Seven reported defects: connected page-tile verbs + hold-to-collapse, Copy/Move on hold, dashboard multi-select **Share**, in-place annotate shelf in the reader, instant rotate, collapsing dashboard header, export-sheet microinteractions, camera preview lifted 32 dp. Chrome/layout/motion only. See §6ap. |
+| Arena.ai | 🚧 in flight (Round 54) | `ui/common/ConnectedButtonGroup.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/common/PageThumbnail.kt`, `theme/Shape.kt`, `util/ImageStore.kt`, `Navigation.kt`, docs | Second pass on the seven Round-53 reports: even shelf spacing, no crossfade on a filled cell, measured page inset, id-tracked page in the reader, capture button out of the FAB slot, outward seam under the search field, disabled (not hidden) tile verbs, half-screen move sheet, copied pages keeping their pixels. Chrome/layout/motion only. See §6aq. |
 | Antigravity | ✅ committed | indymobile/*, docs/AGENTS_CHANGELOG.md, docs/AGENT_COORDINATION.md | Complete Indiana Mobile (Target 1) RE artifacts: base APK, native libs, Ghidra C sources, JADX Java sources, pipeline smali/java, and REA inspection report for Arena context. |
 | Antigravity | ✅ committed    | `docs/ORIGINAL_APP_FILTER_SPEC.md`, `docs/AGENTS_CHANGELOG.md`                                                                                                                                                                                                                  | Reverse-engineered native filter spec & decompiled algorithms                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Arena.ai    | ✅ committed    | `util/DocumentNaming.kt`, `ui/editor/CropAndFilterScreen.kt`, `Navigation.kt`, `NavigationKeys.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/PerspectiveWarp.kt`, `app/build.gradle.kts`, tests + docs | Done-button crash fix, post-capture review flow, folder move, note editing                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -1968,9 +1969,83 @@ Before any optimization lands:
   when the re-decoded page arrives (identity of the new `ImageBitmap`). Never shorten the
   bake itself — the pixels are the contract.
 - **The library header condenses on scroll-up** (`snapshotFlow` + two thresholds, so it
-  cannot flicker against its own layout change). Its facts move into
-  `MagicSearchField(caption = …)`, which is why that field is `heightIn(min = 54.dp)`.
+  cannot flicker against its own layout change). ~~Its facts move into
+  `MagicSearchField(caption = …)`~~ — **superseded in Round 54**: the caption was removed
+  from the field and the facts became one line in the app bar's title column. See §6aq.
+  Do not add a `caption` parameter back to `MagicSearchField`.
 - **Sharing a selection does not merge it.** `DocumentShare.shareDocuments` writes one
   PDF per document at the Settings → PDF defaults and sends them with
   `ACTION_SEND_MULTIPLE`. The merge cell is unchanged.
 - Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed.
+
+## 6aq. Round 54: the second pass on the same seven reports (Arena, 2026-10-28)
+
+Round 53 shipped and the user re-opened five of the seven items as "still broken". Every
+one of them had the same shape: the *animation* was blamed and the *layout* was guilty.
+Read this section before touching any of these files again.
+
+**New file:** none. **New type:** `DocShapes.outwardTop` (`theme/Shape.kt`).
+
+### The rules this round established
+
+- **A filled cell must never crossfade its plate or its ink.** `ConnectedButtonGroup`
+  now computes `plate`/`tint` directly for the filled/discrete states and animates a
+  separate ink-coloured press layer on top. This is the root cause of every
+  "the buttons disappear when I toggle" report (camera Single/Batch, reader More,
+  annotate tool switch) — a mid-grey frame with black ink on it. Do not reintroduce
+  `animateColorAsState` across the `emphasized || selected` boundary.
+- **A menu must be owned by the group, never by a cell.** `openMenuIndex` +
+  one `DropdownMenu` anchored to the group's own `Box`. A popup declared inside a
+  weighted cell is anchored to a box whose position is re-resolved whenever the bar's
+  contents change, which is what made the More cell blink out for the instant it was
+  tapped.
+- **Measure the shelf, do not guess its height.** `ExpressiveActionBar` reports its own
+  height through `onSizeChanged`; the page's bottom inset is
+  `animateDpAsState(measured + ShelfGap)`. `ReaderShelfInset = 132.dp` survives only as
+  the first-frame guess. This is what makes the card's edge spacing even on every
+  screen shape.
+- **One margin: `ShelfPadding = 8.dp`** is the bar's outer padding, the inner frame and
+  the gap between rows. The annotate shelf's grab handle is a **12 dp band** with the
+  4 dp dash at its top, so the card edge → dash and dash → first control gaps are both
+  8 dp. A 28 dp strip with a centred dash leaves ~18 dp of unexplained air at the top.
+- **The drag to dismiss the annotate shelf lives on the whole shelf**, not on the handle
+  strip. `detectVerticalDragGestures` claims the gesture after slop, so swatch taps are
+  unaffected.
+- **Never animate away a control that sits inside the item under the finger.** The page
+  tile's verb strip keeps its height and goes `enabled = false` (38 % via the cell's own
+  alpha) while anything is selected; `PageGridItem` takes `verbsEnabled`. Collapsing it
+  reflowed every tile below the held one.
+- **`Scaffold`'s `floatingActionButton` slot is positioned relative to the bottom bar.**
+  The capture button therefore moved into the content `Box` with `Alignment.BottomEnd`
+  and `navigationBarsPadding()`; a bottom bar appearing under it cannot make it lag.
+- **A page is tracked by id in the reader, never by index.** `currentPageId` +
+  `goToPage(index)`; the index is resolved against the live list every frame. Keying the
+  seed state on `pages.size` threw the resolved page away whenever a copy/move changed
+  the length.
+- **A re-bake must not blank the frame.** `rememberPageImage` retains the last bitmap for
+  the same `imageUri` and stands it in while the new revision decodes. Without it every
+  rotate flashed the fallback for a frame; the reader's optimistic preview only hid it
+  in the reader, not in the grid behind.
+- **`ImageStore.copyPageFiles` builds the copy's thumbnail from the copied file**
+  (`newUri`), not from the pristine capture — otherwise a copied page showed its
+  unfiltered pixels while its record still said `MAGIC_COLOR`, i.e. "Copy loses the
+  filter".
+- **`DocShapes.outwardTop`** is the concave-cornered shape under the library's search
+  field (twin `quadraticTo` shoulders). Use it only for a surface that *continues* the
+  screen under a fixed header.
+
+### Behaviour changes a reviewer should check
+
+- Library: the app bar title is `Column { "Doc Scanner"; AnimatedVisibility(condensed)
+  { summary } }`; `MagicSearchField` no longer takes `caption`, is a fixed 54 dp and no
+  longer animates its height. The `headerSummary` string is hoisted **above** `Scaffold`.
+- Library: the grid sits in a `Box` clipped with `DocShapes.outwardTop` on
+  `surfaceContainerLow`.
+- Detail: the move picker is `MovePagesSheet` (half height, search last in the animation),
+  and picking a target now navigates into it via the new
+  `DocumentDetailScreen(onNavigateToDocument = …)` parameter — `Navigation.kt` wires it to
+  `addDetailIfNeeded`.
+- Reader: `AnnotateShelf` is draggable anywhere, its handle is a 12 dp band, its three
+  groups are all `surfaceContainerLowest` on `primary` with `onPrimary` ink.
+
+Uncompiled here: `./gradlew testDebugUnitTest assembleDebug` is still owed by Antigravity.

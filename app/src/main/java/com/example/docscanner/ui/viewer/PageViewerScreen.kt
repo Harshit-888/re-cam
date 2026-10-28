@@ -7,7 +7,8 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
@@ -87,8 +88,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -156,11 +159,35 @@ fun PageViewerScreen(
     val document = remember(documents, docId) { documents.find { it.id == docId } }
     val pages = remember(document) { document?.pages ?: emptyList() }
 
-    var currentPageIndex by remember(pages.size) {
-        mutableIntStateOf(pages.indexOfFirst { it.id == pageId }.coerceAtLeast(0))
-    }
-    val safeIndex = currentPageIndex.coerceIn(0, (pages.size - 1).coerceAtLeast(0))
+    // ## Which page is on screen, tracked by *id*
+    //
+    // This was an index in a `remember(pages.size)` block, and that key is the whole
+    // "I tap page 4 and it opens page 1" bug. Copy or move a page and the list length
+    // changes; `pages.size` is then a *different* number, the remembered index is
+    // discarded, and the screen re-seeds from `pageId` — the id the navigation passed
+    // in when the document was opened, which points at page 1. So the page the finger
+    // landed on was resolved correctly for one frame and then thrown away.
+    //
+    // Worse, keying on the *size* also means a reorder that keeps the length (drag one
+    // page past another) never re-seeds and never notices the page under the viewer
+    // changed. An id cannot go stale that way: it is resolved against the live list on
+    // every recomposition, and a missing id (page moved out) falls back to the page the
+    // caller asked for rather than to a far-away index.
+    var currentPageId by remember(pageId) { mutableStateOf(pageId) }
+    val trackedIndex = pages.indexOfFirst { it.id == currentPageId }
+    val safeIndex = (
+        if (trackedIndex >= 0) {
+            trackedIndex
+        } else {
+            pages.indexOfFirst { it.id == pageId }
+        }
+        ).coerceIn(0, (pages.size - 1).coerceAtLeast(0))
     val currentPage = pages.getOrNull(safeIndex)
+    // One way to turn a page, used by the swipe handlers, the pager and the shelf, so
+    // the three cannot disagree about what "next" means.
+    fun goToPage(index: Int) {
+        pages.getOrNull(index)?.let { currentPageId = it.id }
+    }
 
     // Held as the state object as well as the delegated value: the zoom badge needs
     // to observe it *by reference* so it can subscribe on its own without the parent
@@ -206,11 +233,24 @@ fun PageViewerScreen(
     }
     var isSavingMarkup by remember(currentPage?.id) { mutableStateOf(false) }
 
-    // The page shrinks a little while the taller annotate shelf is up, animated so the
-    // reader does not jump: the shelf grows from the bottom and the paper makes room
-    // for it in the same 220 ms.
+    // The page's bottom inset is **measured**, not guessed.
+    //
+    // It used to be two hard-coded numbers (132 dp for the reader's shelf, 214 dp for
+    // the annotate one). Both were wrong on a real phone for two reasons: the shelf's
+    // height depends on the font scale, and `navigationBarsPadding` adds an inset that
+    // is 0, 24 or 48 dp depending on the device. The result was a bar floating with a
+    // hand's width of dead black under it on one phone and clipping the page's last line
+    // on another — the "empty space below the page" report. Measuring the bar and
+    // feeding its height back as the page's inset makes the two agree on every device,
+    // and the *animation* between sizes is what keeps the page from jumping when the
+    // shelf swaps.
+    var shelfHeightPx by remember { mutableIntStateOf(0) }
+    val density = LocalDensity.current
+    val shelfHeight = with(density) { shelfHeightPx.toDp() }
+    // A little air between the paper and the bar, the same 8 dp the bar keeps from the
+    // screen edges.
     val pageBottomInset by animateDpAsState(
-        targetValue = if (annotating) AnnotateShelfInset else ReaderShelfInset,
+        targetValue = if (shelfHeightPx == 0) ReaderShelfInset else shelfHeight + ShelfGap,
         animationSpec = tween(220, easing = Motion.EaseOut),
         label = "viewerPageBottomInset"
     )
@@ -245,26 +285,42 @@ fun PageViewerScreen(
 
     // ---- rotate --------------------------------------------------------------
     //
-    // A rotate is a *bake*: decode the pristine page, warp, filter, encode, write. That
-    // is hundreds of milliseconds on a real page, and until it finished the page sat
-    // there unchanged — which is the whole of the "rotate is slow" report. It is not
-    // made faster by cheating on the bake (the pixels must stay exactly what the
-    // pipeline produces); it is made to *feel* instant, by turning the page already
-    // decoded on screen the moment the finger lifts and letting the bake replace it
-    // when it lands.
-    var isRotating by remember(currentPage?.id) { mutableStateOf(false) }
-    // The turned preview, and the bitmap it was turned from — the bake's arrival is
-    // detected by the *identity* of the newly loaded page, which is exactly when the
-    // preview stops being needed.
+    // A rotate is a *bake*: decode the pristine page, warp, filter, encode, write — a
+    // few hundred milliseconds of real work on a real page. It is not made faster by
+    // cheating on the bake (the pixels are the contract); it is made to *feel* instant,
+    // and then made to stop *twitching* while it lands.
+    //
+    // Three separate defects, three separate causes:
+    //
+    // 1. **The delay.** The page used to sit unchanged until the bake finished. It now
+    //    turns in memory the moment the finger lifts, and the bake replaces it later.
+    // 2. **The button's jitter.** The cell was disabled and relabelled while the bake
+    //    ran — the label, the glyph and the whole plate faded to 38 % and back, twice
+    //    per tap. The cell is now never disabled: a tap during a bake queues one more
+    //    turn, which is what a user pressing it twice actually meant.
+    // 3. **The image's jitter.** Two things happened after the bake landed: the decode
+    //    of the new file reset `pageImage` to null (a spinner over the page), and the
+    //    crossfade then animated *between two copies of the same page*, which reads as
+    //    a blur-and-settle. Both are gone: `shownPage` covers the decode gap, and a
+    //    change that keeps the page id swaps with no animation at all.
+    // One coroutine drains the turn queue; `queued` is at most one, so a second tap
+    // means "one more quarter turn", and a fifth tap during the same bake does not spin
+    // the page a full circle behind the user's back.
+    var baking by remember(currentPage?.id) { mutableStateOf(false) }
+    var queuedTurns by remember(currentPage?.id) { mutableIntStateOf(0) }
+    // The turned pixels, and the frame they were turned from. Held as a pair so the
+    // preview can be dropped the moment the real pixels exist.
     var optimisticPage by remember(currentPage?.id) { mutableStateOf<ImageBitmap?>(null) }
     var rotateBaseline by remember(currentPage?.id) { mutableStateOf<ImageBitmap?>(null) }
 
     LaunchedEffect(pageImage) {
+        // A *different* bitmap means the new pixels are on screen and the preview has
+        // done its job. Identity, not equality — two identical frames of the same page
+        // must not count.
         val baseline = rotateBaseline
         if (baseline != null && pageImage != null && pageImage !== baseline) {
             optimisticPage = null
             rotateBaseline = null
-            isRotating = false
         }
     }
 
@@ -272,49 +328,59 @@ fun PageViewerScreen(
 
     fun rotateCurrentPage() {
         val page = currentPage ?: return
-        if (isRotating) return
-        val source = pageImage ?: return
-        isRotating = true
+        if (queuedTurns < 1) queuedTurns++
+        if (baking) return
+        baking = true
         scale = 1f
         offset = Offset.Zero
         scope.launch {
-            // A 90° turn of the decoded page is a memory copy, not a pipeline pass: it
-            // costs a few milliseconds even at 1600 px, and it happens before the first
-            // frame after the tap.
-            val turned = withContext(Dispatchers.Default) {
-                source.toRotatableBitmap()
-                    ?.let { runCatching { rotateBitmap(it, 90) }.getOrNull() }
-                    ?.asImageBitmap()
-            }
-            if (turned != null) {
-                optimisticPage = turned
-                rotateBaseline = source
-            }
-            withContext(Dispatchers.IO) {
-                val latest = repository.getDocumentById(docId)
-                    ?.pages?.find { it.id == page.id }
-                val baked = latest?.let {
-                    runCatching {
-                        PageRenderer.bake(
-                            context,
-                            it.copy(rotationDegrees = (it.rotationDegrees + 90f) % 360f)
-                        )
-                    }.getOrNull()
+            while (queuedTurns > 0) {
+                queuedTurns--
+                // 1. Turn what is on screen *right now* — the previous optimistic frame
+                // if there is one, so two taps turn 180° rather than re-turning the
+                // original and landing back where it started. A 90° turn of a decoded
+                // page is a memory copy: it is on screen in the next frame.
+                val source = optimisticPage ?: pageImage
+                val turned = source?.let { frame ->
+                    withContext(Dispatchers.Default) {
+                        frame.toRotatableBitmap()
+                            ?.let { runCatching { rotateBitmap(it, 90) }.getOrNull() }
+                            ?.asImageBitmap()
+                    }
                 }
-                if (baked != null) repository.updatePage(docId, page.id) { baked }
-                baked != null
-            }.also { bakedOk ->
-                // Only a *failed* bake clears the turned preview here. A successful one
-                // keeps it up until the re-decoded page arrives, so the reader never
-                // flickers back to the unturned bitmap for a frame.
-                if (!bakedOk && rotateBaseline === source) {
+                if (turned != null) {
+                    optimisticPage = turned
+                    rotateBaseline = source
+                }
+                // 2. Bake, on the untouched pipeline, off the main thread.
+                val bakedOk = withContext(Dispatchers.IO) {
+                    val latest = repository.getDocumentById(docId)
+                        ?.pages?.find { it.id == page.id }
+                    val baked = latest?.let {
+                        runCatching {
+                            PageRenderer.bake(
+                                context,
+                                it.copy(rotationDegrees = (it.rotationDegrees + 90f) % 360f)
+                            )
+                        }.getOrNull()
+                    }
+                    if (baked != null) repository.updatePage(docId, page.id) { baked }
+                    baked != null
+                }
+                if (!bakedOk) {
+                    // A failed bake must not leave a turned preview on screen for ever:
+                    // it would be a lie about what the file contains.
                     optimisticPage = null
                     rotateBaseline = null
+                    queuedTurns = 0
+                    Toast.makeText(context, "Could not rotate this page", Toast.LENGTH_SHORT)
+                        .show()
                 }
             }
-            isRotating = false
+            baking = false
         }
     }
+
 
     Box(
         modifier = Modifier
@@ -331,7 +397,11 @@ fun PageViewerScreen(
                     modifier = Modifier.align(Alignment.Center)
                 )
             }
-            pageImage == null -> {
+            // `shownPage`, not `pageImage`: a re-bake (rotate, annotate) makes the
+            // loader return null for a frame or two while it decodes the new file, and a
+            // spinner over a page that is already on screen was half of the "loading
+            // jitter after rotation".
+            shownPage == null -> {
                 CircularProgressIndicator(
                     color = Color.White,
                     modifier = Modifier.align(Alignment.Center)
@@ -388,12 +458,12 @@ fun PageViewerScreen(
                     // longer one wraps around: a page turn that lands you back at the
                     // start reads as a bug.
                     onSwipePrev = if (safeIndex > 0) {
-                        { currentPageIndex = safeIndex - 1 }
+                        { goToPage(safeIndex - 1) }
                     } else {
                         null
                     },
                     onSwipeNext = if (safeIndex < pages.lastIndex) {
-                        { currentPageIndex = safeIndex + 1 }
+                        { goToPage(safeIndex + 1) }
                     } else {
                         null
                     },
@@ -407,12 +477,32 @@ fun PageViewerScreen(
                     // whole transition — no slide, because the page still arrives
                     // from a tap as often as from a swipe, and a slide from a tap
                     // would imply movement that did not happen.
-                    Crossfade(
-                        targetState = shownPage,
-                        animationSpec = tween(durationMillis = 180),
+                    // A *page turn* crossfades; a *re-bake* does not.
+                    //
+                    // A plain crossfade over the bitmap alone cannot tell the two apart, so
+                    // every rotate ended with 180 ms of blur between two copies of the
+                    // same page — the second half of the "loading jitter". Keying on a
+                    // frame that carries the page id lets the transition answer the only
+                    // question that matters: did the page change, or did its pixels?
+                    AnimatedContent(
+                        targetState = PageFrame(
+                            bitmap = shownPage,
+                            pageId = currentPage?.id.orEmpty()
+                        ),
+                        transitionSpec = {
+                            if (initialState.pageId == targetState.pageId) {
+                                // Same page, new pixels: swap. The turn was already
+                                // animated by the finger, and animating the bake on top
+                                // of it is what made it look like a reload.
+                                EnterTransition.None togetherWith ExitTransition.None
+                            } else {
+                                fadeIn(tween(180)) togetherWith fadeOut(tween(180))
+                            }
+                        },
                         label = "pageSwap",
                         modifier = Modifier.fillMaxSize()
-                    ) { bitmap ->
+                    ) { frame ->
+                        val bitmap = frame.bitmap
                         if (bitmap != null) {
                             Image(
                                 bitmap = bitmap,
@@ -486,7 +576,17 @@ fun PageViewerScreen(
         // slab here would crop the paper, which is the opposite of what a reader is
         // for.
         ExpressiveActionBar(
-            containerColor = Color.Black.copy(alpha = 0.55f),
+            // The card's own surface **follows the app's theme**, and it is the same
+            // colour in both states on purpose.
+            //
+            // While reading, the shelf floats over a photograph, so a theme surface is
+            // the only tone that is guaranteed to be legible against whatever the page
+            // happens to be — the old 55 % black was tuned for a white page and looked
+            // like a hole over a dark one. While annotating, the shelf holds real form
+            // controls (tool and weight switches, colour swatches, undo/redo) and those
+            // are theme controls: painting them on black was why they read as a
+            // different app's widgets. One surface, the app's own, in both modes.
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             // Round on *all* corners: this bar floats with a margin around it, so the
             // sheet shape (top-only) would leave two square bottom corners hanging in
             // the middle of the page.
@@ -496,7 +596,13 @@ fun PageViewerScreen(
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 12.dp, vertical = 12.dp)
+                // Measured, so the page's inset above can be the *truth* rather than a
+                // guess, and so the card's frame is the same on every device.
+                .onSizeChanged { shelfHeightPx = it.height }
+                // One margin, used by the page inset too: the card floats 8 dp off the
+                // screen's sides and 8 dp off the navigation bar, and every gap inside
+                // it is the same 8 dp.
+                .padding(horizontal = ShelfPadding, vertical = ShelfPadding)
         ) {
             // Two shelves, one slot.
             //
@@ -531,7 +637,21 @@ fun PageViewerScreen(
                 },
                 label = "viewerShelf"
             ) { editing ->
-                Column(modifier = Modifier.fillMaxWidth()) {
+                // The shelf's own inner frame. `padding(ShelfPadding)` on the six edges
+                // this Column can touch — top, bottom and the two sides — is what makes
+                // the card's edge and its contents evenly spaced: the distance from the
+                // card's rounded corner to the first button is the same as the distance
+                // between two rows, which is the same as the gap between two cells.
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            start = ShelfPadding,
+                            end = ShelfPadding,
+                            top = if (editing) 0.dp else ShelfPadding,
+                            bottom = ShelfPadding
+                        )
+                ) {
                     if (editing) {
                         AnnotateShelf(
                             markup = markup,
@@ -547,22 +667,25 @@ fun PageViewerScreen(
                             ExpressivePager(
                                 index = safeIndex,
                                 count = pages.size,
-                                onPrev = { currentPageIndex = (safeIndex - 1).coerceAtLeast(0) },
-                                onNext = {
-                                    currentPageIndex = (safeIndex + 1).coerceAtMost(pages.size - 1)
-                                },
-                                contentColor = Color.White,
-                                // The rail is white-on-dark, not the theme accent: the
-                                // accent is tuned for a light surface and disappears
-                                // against a photograph.
-                                railColor = Color.White.copy(alpha = 0.20f),
-                                accentColor = Color.White,
+                                onPrev = { goToPage(safeIndex - 1) },
+                                onNext = { goToPage(safeIndex + 1) },
+                                // Theme ink on the theme surface: white-on-dark died
+                                // with the black bar.
+                                contentColor = MaterialTheme.colorScheme.onSurface,
+                                railColor = MaterialTheme.colorScheme.onSurface
+                                    .copy(alpha = 0.16f),
+                                accentColor = MaterialTheme.colorScheme.primary,
                                 trailing = { ViewerZoomBadge(scaleState = scaleState) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 8.dp, bottom = 2.dp)
+                                modifier = Modifier.fillMaxWidth()
                             )
-                            BarHairline(color = Color.White.copy(alpha = 0.08f))
+                            // The hairline sits in the same 8 dp rhythm as everything
+                            // else, rather than 2 dp from the pager and 4 dp from the
+                            // verbs.
+                            Spacer(Modifier.height(ShelfPadding))
+                            BarHairline(
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+                            )
+                            Spacer(Modifier.height(ShelfPadding))
                         }
 
                         ConnectedButtonGroup(
@@ -583,10 +706,20 @@ fun PageViewerScreen(
                                     }
                                 ),
                                 ConnectedAction(
+                                    // It never says "Rotating", never dims and is
+                                    // never disabled.
+                                    //
+                                    // Dimming the whole cell to 38 % was the "loading
+                                    // jitter" in this button: the label and the glyph
+                                    // faded, the plate stayed put, and then everything
+                                    // snapped back when the bake finished. A tap now
+                                    // turns the page immediately (see
+                                    // `rotateCurrentPage`) and queues one more turn if
+                                    // another tap arrives while the bake runs, so there
+                                    // is nothing to wait for and nothing to grey out.
                                     label = "Rotate",
                                     icon = Icons.Default.RotateRight,
-                                    onClick = { rotateCurrentPage() },
-                                    enabled = !isRotating
+                                    onClick = { rotateCurrentPage() }
                                 ),
                                 // The rare actions live behind this cell's menu instead
                                 // of a fifth button: sign and export apply here, delete
@@ -623,14 +756,19 @@ fun PageViewerScreen(
                                     }
                                 )
                             ),
-                            containerColor = ViewerPlate,
-                            contentColor = Color.White,
-                            // No theme accent down here: `primary` is tuned for a light
-                            // surface and would flash purple through a translucent bar
-                            // over a photograph.
-                            accentColor = Color.White,
-                            onAccentColor = Color.Black,
-                            modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                            // Cells are *inset* into the card rather than painted on
+                            // top of it: `surfaceContainerLowest` on
+                            // `surfaceContainerHigh` is one step, which is the app's
+                            // existing "container inside a container" pairing, and it
+                            // gives the group a visible frame without a border.
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            accentColor = MaterialTheme.colorScheme.primary,
+                            onAccentColor = MaterialTheme.colorScheme.onPrimary,
+                            // Cells slightly taller than the M3 default: the bar has
+                            // room (the page inset is measured now), and a 52 dp cell is
+                            // a comfortable thumb target on a floating card.
+                            cellHeight = 52.dp
                         )
                     }
                 }
@@ -752,20 +890,33 @@ fun PageViewerScreen(
 }
 
 /**
- * Bottom inset the page keeps clear for the reader's shelf.
+ * First-frame guess for the shelf's height, before it has been measured.
  *
- * The page is laid out *above* the bar rather than under it: a page whose last line
- * sits beneath a translucent slab is a line you cannot read.
+ * The page is laid out *above* the bar rather than under it: a page whose last line sits
+ * beneath a translucent slab is a line you cannot read. One measure pass later the real
+ * height replaces this (see `shelfHeightPx`), so the guess only has to be close enough
+ * that the first frame does not look wrong.
  */
 private val ReaderShelfInset = 132.dp
 
 /**
- * The same inset while the annotate shelf is up.
+ * Air between the paper and the shelf.
  *
- * Taller, because annotate is three rows — tools, ink, actions — instead of one. The
- * difference is animated by the caller, so the page makes room instead of jumping.
+ * The same 8 dp the shelf keeps from the screen edges and the same 8 dp between its own
+ * rows: one distance used everywhere is what makes a floating bar look deliberate
+ * instead of approximately placed.
  */
-private val AnnotateShelfInset = 214.dp
+private val ShelfGap = 8.dp
+
+/**
+ * The inset every edge and every gap inside a shelf uses.
+ *
+ * A floating card has **one** margin. The bar sits 8 dp from the screen's sides, its
+ * rows are 8 dp apart, and the first and last row are 8 dp from the card's own edge —
+ * so the card reads as a container with a consistent frame around its contents rather
+ * than as buttons that happened to land inside a shape.
+ */
+private val ShelfPadding = 8.dp
 
 /**
  * Annotate settings, in the reader's own shelf.
@@ -810,47 +961,65 @@ private fun AnnotateShelf(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            // The drag lives on the whole shelf, not on the handle strip.
+            //
+            // It used to be a 28 dp strip at the top: a target the user had to find
+            // before a mode that had arrived *from the bottom* could be pushed back
+            // down. Every bottom sheet in the app can be dragged anywhere, so this one
+            // behaves the same way now — a drag anywhere on the shelf's empty space
+            // moves it, and a tap on a swatch or a cell is still a tap because
+            // `detectVerticalDragGestures` only claims the gesture after slop.
+            .pointerInput(Unit) {
+                detectVerticalDragGestures(
+                    onVerticalDrag = { change, dy ->
+                        change.consume()
+                        dragY = (dragY + dy).coerceAtLeast(0f)
+                    },
+                    onDragEnd = {
+                        if (dragY > 84f) {
+                            dragY = 0f
+                            onCancel()
+                        } else {
+                            settle()
+                        }
+                    },
+                    onDragCancel = { settle() }
+                )
+            }
             .graphicsLayer {
                 translationY = dragY
                 // Fades as it is pulled away, so it cannot look like the bar detached
-                // from the screen while it is being moved.
-                alpha = (1f - (dragY / (AnnotateShelfInset.toPx() * 1.6f))).coerceIn(0f, 1f)
+                // from the screen while it is being moved. The divisor is generous: a
+                // short drag must stay opaque, or the shelf blinks while being nudged.
+                alpha = (1f - (dragY / (ReaderShelfInset.toPx() * 3f))).coerceIn(0f, 1f)
             }
-            .padding(top = 2.dp, bottom = 2.dp)
     ) {
-        // The grab handle: 36 × 4 dp of white at 30 %, the same one Google's own
-        // sheets use, and the whole 24 dp strip is the target rather than the bar.
+        // ## The 12 dp band that makes the shelf's spacing *even*
+        //
+        // The sheet's own 8 dp frame sits above this band, the band is 12 dp, and the
+        // dash is drawn at the band's top — so the gap from the card's edge to the dash
+        // is 8 dp and the gap from the dash to the first control is 8 dp (4 of dash +
+        // 8 of band left over). It used to be a centred 4 dp dash in a 28 dp strip, which
+        // left ~18 dp of unexplained air at the top of the card against 8 dp everywhere
+        // else. That is the "uneven edge-to-button spacing" the card was reported for.
         Box(
-            contentAlignment = Alignment.Center,
+            contentAlignment = Alignment.TopCenter,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(24.dp)
-                .pointerInput(Unit) {
-                    detectVerticalDragGestures(
-                        onVerticalDrag = { change, dy ->
-                            change.consume()
-                            dragY = (dragY + dy).coerceAtLeast(0f)
-                        },
-                        onDragEnd = {
-                            if (dragY > 84f) {
-                                dragY = 0f
-                                onCancel()
-                            } else {
-                                settle()
-                            }
-                        },
-                        onDragCancel = { settle() }
-                    )
-                }
+                .height(12.dp)
         ) {
             Box(
                 modifier = Modifier
                     .size(width = 36.dp, height = 4.dp)
                     .clip(DocShapes.pill)
-                    .background(Color.White.copy(alpha = 0.30f))
+                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f))
             )
         }
 
+        // Tool switch. Label-only cells on the same connected group the verbs use, so the
+        // switch and the action row are visibly the same component and not two toolbars
+        // stacked in one card. Theme ink, theme accent: these are form controls, and they
+        // were previously painted white-on-black like a camera overlay.
         ConnectedButtonGroup(
             actions = listOf(
                 ConnectedAction(
@@ -869,29 +1038,34 @@ private fun AnnotateShelf(
                     onClick = { markup.tool = MarkupTool.WHITEOUT }
                 )
             ),
-            containerColor = ViewerPlate,
-            contentColor = Color.White,
-            accentColor = Color.White,
-            onAccentColor = Color.Black,
-            cellHeight = 40.dp
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            accentColor = MaterialTheme.colorScheme.primary,
+            onAccentColor = MaterialTheme.colorScheme.onPrimary,
+            cellHeight = 44.dp
         )
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(ShelfPadding))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Swatches on a 40 dp cell grid, so the four dots are spaced by the same
+            // rhythm as the cells beside them instead of being a tight cluster that then
+            // collides with the weight group.
             MarkupInkColors.forEach { ink ->
                 val interactions = remember { MutableInteractionSource() }
                 val chosen = inkEnabled && ink == markup.colorArgb
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(34.dp)
                         .clip(CircleShape)
                         .clickable(
                             interactionSource = interactions,
-                            indication = ripple(color = Color.White.copy(alpha = 0.22f)),
+                            indication = ripple(
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f)
+                            ),
                             enabled = inkEnabled,
                             onClickLabel = inkLabel(ink),
                             role = Role.RadioButton,
@@ -907,13 +1081,17 @@ private fun AnnotateShelf(
                             .background(Color(ink))
                             .border(
                                 width = if (chosen) 3.dp else 1.dp,
-                                color = if (chosen) Color.White else Color.White.copy(alpha = 0.35f),
+                                color = if (chosen) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.outlineVariant
+                                },
                                 shape = CircleShape
                             )
                     )
                 }
             }
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(ShelfPadding))
             // A second connected group rather than a slider: three discrete weights are
             // three decisions, and a slider you cannot hit mid-drag is worse than three
             // cells you can.
@@ -927,15 +1105,15 @@ private fun AnnotateShelf(
                     )
                 },
                 modifier = Modifier.weight(1f),
-                containerColor = ViewerPlate,
-                contentColor = Color.White,
-                accentColor = Color.White,
-                onAccentColor = Color.Black,
-                cellHeight = 38.dp
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                accentColor = MaterialTheme.colorScheme.primary,
+                onAccentColor = MaterialTheme.colorScheme.onPrimary,
+                cellHeight = 44.dp
             )
         }
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(ShelfPadding))
 
         ConnectedButtonGroup(
             actions = listOf(
@@ -969,6 +1147,9 @@ private fun AnnotateShelf(
                 ),
                 ConnectedAction(
                     label = "",
+                    // The save cell is the group's primary action: filled with the theme
+                    // accent, with the theme's on-accent ink. Not an icon swap — a busy
+                    // state that changes the *glyph* changes the button under the finger.
                     icon = Icons.Default.Check,
                     contentDescription = if (isSaving) "Saving annotation" else "Save annotation",
                     enabled = !isSaving,
@@ -976,32 +1157,30 @@ private fun AnnotateShelf(
                     onClick = onSave
                 )
             ),
-            containerColor = ViewerPlate,
-            contentColor = Color.White,
-            // The save cell is the one filled cell, and it is filled **white** with
-            // black ink — the same snapping content colour the component gives every
-            // filled cell, which is what stopped these toggles blinking out.
-            accentColor = Color.White,
-            onAccentColor = Color.Black,
-            cellHeight = 44.dp
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            accentColor = MaterialTheme.colorScheme.primary,
+            onAccentColor = MaterialTheme.colorScheme.onPrimary,
+            cellHeight = 48.dp
         )
     }
 }
+
+/**
+ * What the page area paints: the pixels, and which page they belong to.
+ *
+ * The id is the whole point. A crossfade over the bitmap alone animates every re-bake
+ * (rotate, annotate, sign) as if it were a page turn, which is what made a rotate end in
+ * a blur-and-settle. With the id on the frame, a pixel swap is a swap and a page turn is
+ * a turn.
+ */
+private data class PageFrame(val bitmap: ImageBitmap?, val pageId: String)
 
 /** How far the viewer magnifies a page before the pan clamp takes over. */
 private const val MAX_VIEWER_ZOOM = 4f
 
 /** Dark, slightly warm backdrop: a page reads as paper against it. */
 private val ViewerBackdrop = Color(0xFF101215)
-
-/**
- * The plate behind an icon in the reader's bar.
- *
- * A dark page behind a translucent black bar is not enough contrast on its own for a
- * 19 dp glyph, so each action sits on a 14 % white plate: the icon reads as a control
- * rather than as part of the photograph.
- */
-private val ViewerPlate = Color.White.copy(alpha = 0.14f)
 
 @Composable
 private fun ViewerGlassButton(

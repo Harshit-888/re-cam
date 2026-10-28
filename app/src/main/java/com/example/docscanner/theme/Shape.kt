@@ -2,6 +2,13 @@ package com.example.docscanner.theme
 
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Shapes
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 
 /**
@@ -61,4 +68,54 @@ object DocShapes {
      * it is the difference between a picture of a button and a button.
      */
     fun pressed(pressed: Boolean) = RoundedCornerShape(if (pressed) 20.dp else 26.dp)
+
+    /**
+     * A sheet whose **top corners flare outwards**, for content that scrolls under a
+     * fixed header.
+     *
+     * The usual `topStart`/`topEnd` radius rounds the sheet's corners *inwards* — the
+     * sheet gets smaller than its own edge, which is right for a card floating on a
+     * page and wrong for a surface that continues the screen. This shape curves the
+     * other way: the top edge runs straight across and each end turns *down and out*
+     * into the sides, so the sheet looks tucked under the bar above it instead of lying
+     * on top of it. That is the seam detail the library's header was missing: with a
+     * plain straight divider the shelf and the grid read as two unrelated screens.
+     */
+    val outwardTop: Shape = OutwardTopShape(radius = 26.dp)
+}
+
+/**
+ * The shape above: straight top edge, concave (outward) fillets at both ends.
+ *
+ * Built from two quadratic curves rather than arcs because a curve gives the corner a
+ * continuous tangent with the vertical side, which is what makes the flare read as a
+ * surface bending rather than as a notch being cut out of it.
+ */
+private class OutwardTopShape(private val radius: Dp) : Shape {
+
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline {
+        val r = with(density) { radius.toPx() }.coerceAtMost(size.width / 2f)
+        val path = Path().apply {
+            // Start on the left edge, one radius down: the fillet has already happened.
+            moveTo(0f, r)
+            // Left shoulder: control point in the *corner* pulls the curve outward.
+            quadraticTo(0f, 0f, r, 0f)
+            lineTo(size.width - r, 0f)
+            // Right shoulder, mirrored.
+            quadraticTo(size.width, 0f, size.width, r)
+            lineTo(size.width, size.height)
+            lineTo(0f, size.height)
+            close()
+        }
+        return Outline.Generic(path)
+    }
+
+    override fun equals(other: Any?): Boolean =
+        other is OutwardTopShape && other.radius == radius
+
+    override fun hashCode(): Int = radius.hashCode()
 }
