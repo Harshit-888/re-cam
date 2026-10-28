@@ -115,6 +115,11 @@ data class ConnectedAction(
     val menuContent: (@Composable ColumnScope.(dismiss: () -> Unit) -> Unit)? = null
 )
 
+val ConnectedCellHeight: Dp = 56.dp
+val ConnectedSpacing: Dp = 2.dp
+val ConnectedInnerCorner: Dp = 8.dp
+val ConnectedPressedInnerCorner: Dp = 4.dp
+
 @Composable
 fun ConnectedButtonGroup(
     actions: List<ConnectedAction>,
@@ -303,7 +308,7 @@ private fun ConnectedCell(
                 // Anchored to the cell. A cell in a bottom bar has nowhere to open
                 // downward without leaving the screen, so it opens upward.
             ) {
-                menu(dismiss = { menuOpen = false })
+                menu { menuOpen = false }
             }
         }
     }

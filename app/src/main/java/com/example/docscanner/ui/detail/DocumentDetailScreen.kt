@@ -245,18 +245,6 @@ fun DocumentDetailScreen(
         }
     }
 
-    // Re-bake so the rotation is visible immediately in the grid, the viewer and the
-    // PDF — not just stored as a flag. One definition, because the card's rotate
-    // button, the selection bar's rotate and the viewer's rotate must not drift apart.
-    fun rotatePages(pages: List<ScannedPage>) {
-        if (pages.isEmpty()) return
-        scope.launch {
-            pages.forEach { page ->
-                rotateOne(page)
-            }
-        }
-    }
-
     // One page at a time, and a page that cannot be re-baked is skipped rather than
     // abandoning the batch: rotating nine pages and silently doing none because the
     // tenth has a missing file is worse than rotating nine.
@@ -269,6 +257,18 @@ fun DocumentDetailScreen(
         )
         if (baked != null) {
             repository.updatePage(docId, page.id) { baked }
+        }
+    }
+
+    // Re-bake so the rotation is visible immediately in the grid, the viewer and the
+    // PDF — not just stored as a flag. One definition, because the card's rotate
+    // button, the selection bar's rotate and the viewer's rotate must not drift apart.
+    fun rotatePages(pages: List<ScannedPage>) {
+        if (pages.isEmpty()) return
+        scope.launch {
+            pages.forEach { page ->
+                rotateOne(page)
+            }
         }
     }
 
@@ -1230,7 +1230,7 @@ fun PageGridItem(
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.primary.copy(alpha = washAlpha))
                 )
-                AnimatedVisibility(
+                androidx.compose.animation.AnimatedVisibility(
                     visible = selected,
                     enter = scaleIn(Motion.bouncy) + fadeIn(Motion.fade),
                     exit = scaleOut(Motion.press) + fadeOut(tween(120)),

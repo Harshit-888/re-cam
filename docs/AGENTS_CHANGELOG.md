@@ -49,6 +49,12 @@ parts that Compose can actually express at our version. **No dependency bumped**
 - Nothing that affects pixels: no filter, geometry, colour scheme, typography or
   `PdfGenerator`/`PdfWriter` change.
 
+## 2026-10-28 — Antigravity — Round 51 Compilation Fixes
+
+- **ui/common/ConnectedButtonGroup.kt**: Declared missing tokens ConnectedCellHeight (56 dp), ConnectedSpacing (2 dp), ConnectedInnerCorner (8 dp), and ConnectedPressedInnerCorner (4 dp); updated menu invocation to positional parameter.
+- **ui/detail/DocumentDetailScreen.kt**: Reordered local function rotateOne before caller rotatePages to resolve forward-reference scope; qualified androidx.compose.animation.AnimatedVisibility in PageGridItem to prevent receiver conflict inside Box.
+- **Build verified**: ./gradlew testDebugUnitTest assembleDebug 100% green; app-debug.apk built successfully.
+
 ## 2026-10-28 — Antigravity — IndyMobile Reverse Engineering Evidence & Decompiled Blueprints
 
 - **New indymobile/ directory**: Complete reverse-engineering package for Indiana Mobile Document Scanner (com.indymobileapp.document.scanner), mirroring dobe-scan/ for Target 1.
