@@ -811,6 +811,103 @@ class DocumentFiltersTest {
         }
     }
 
+    // -------------------------------- the surface estimator and the gate (R62)
+
+    /**
+     * The box blur this replaced smeared a hard shadow edge across the grid, which is
+     * the grey band alongside every crisp shadow. A median removes the same isolated
+     * bad cells and reproduces a step.
+     */
+    @Test
+    fun median3Grid_removesASpeckAndKeepsAStep() {
+        val gw = 9
+        val gh = 5
+        val flat = FloatArray(gw * gh) { 120f }
+        flat[2 * gw + 4] = 250f
+        val cleaned = DocumentFilters.median3Grid(flat, gw, gh)
+        assertEquals("an isolated hot cell must be gone", 120f, cleaned[2 * gw + 4], 0f)
+        assertEquals("and nothing else may move", 120f, cleaned[0], 0f)
+
+        // A vertical step at x = 4: a paper level of 200 against 100.
+        val step = FloatArray(gw * gh) { i -> if ((i % gw) < 4) 200f else 100f }
+        var grid = step
+        repeat(2) { grid = DocumentFilters.median3Grid(grid, gw, gh) }
+        for (y in 0 until gh) {
+            assertEquals("lit side must survive the step", 200f, grid[y * gw + 3], 0f)
+            assertEquals("shadow side must survive the step", 100f, grid[y * gw + 4], 0f)
+        }
+    }
+
+    /**
+     * The gate that decides whether shadows are removed at all.
+     *
+     * A page in a hard shadow is still a page: its paper is the brightest thing in it.
+     * The absolute-threshold classifier called this frame a scene (41 %) and then no
+     * shadow was removed — the bug this test exists to prevent from coming back.
+     */
+    @Test
+    fun surfaceGate_acceptsAPageThatIsHalfInShadow() {
+        val w = 64
+        val h = 64
+        val gw = 4
+        val gh = 4
+        val cell = 16
+        // Left half lit paper, right half the same paper at half the light.
+        val pixels = IntArray(w * h) { i ->
+            if ((i % w) < 32) grey(200) else grey(100)
+        }
+        val gridR = IntArray(gw * gh) { i -> if ((i % gw) < 2) 200 * 256 else 100 * 256 }
+        val gridG = gridR.copyOf()
+        val gridB = gridR.copyOf()
+
+        assertTrue(
+            "a shadowed page is a page",
+            DocumentFilters.surfaceIsPaper(pixels, w, gridR, gridG, gridB, gw, gh, cell)
+        )
+
+        // Same frame with ink: still a page, and now by both halves of the rule.
+        for (i in pixels.indices) {
+            if ((i / w) % 8 in 3..4 && (i % w) % 8 in 2..6 && (i % w) < 60) {
+                pixels[i] = grey(if ((i % w) < 32) 40 else 20)
+            }
+        }
+        assertTrue(
+            "ink must not change the verdict",
+            DocumentFilters.surfaceIsPaper(pixels, w, gridR, gridG, gridB, gw, gh, cell)
+        )
+    }
+
+    /** A scene: content that is brighter than its own neighbourhood, and no ink. */
+    @Test
+    fun surfaceGate_rejectsAFrameWithContentBrighterThanItsSurface() {
+        val w = 64
+        val h = 64
+        val gw = 4
+        val gh = 4
+        val cell = 16
+        // Every surface cell says 120; a 16x16 block of the frame is 240 — a window
+        // against a wall. That is 6.25 % of the frame, above the 3 % limit.
+        val pixels = IntArray(w * h) { i ->
+            val x = i % w
+            val y = i / w
+            grey(if (x < 16 && y < 16) 240 else 120)
+        }
+        val flatGrid = IntArray(gw * gh) { 120 * 256 }
+        assertFalse(
+            "a bright region above its own surface is not paper",
+            DocumentFilters.surfaceIsPaper(pixels, w, flatGrid, flatGrid, flatGrid, gw, gh, cell)
+        )
+    }
+
+    /** An empty frame must not be able to break the gate. */
+    @Test
+    fun surfaceGate_defaultsToDocumentOnAnEmptyFrame() {
+        val empty = IntArray(0)
+        assertTrue(
+            DocumentFilters.surfaceIsPaper(empty, 0, empty, empty, empty, 0, 0, 1)
+        )
+    }
+
     private fun grey(v: Int): Int = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
 
     private fun rgb(r: Int, g: Int, b: Int): Int =

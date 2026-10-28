@@ -76,6 +76,7 @@ Keep this table short. Delete your row when the change lands.
 
 | Agent       | Status          | Files                                                                                                                                                                                                                                                                           | Intent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Arena.ai & Antigravity | 🟡 built here, needs Antigravity build (Round 62) | `util/DocumentFilters.kt`, `util/DocumentFiltersTest.kt`, `docs/filter_combined_spec.md`, `tools/shadow_probe.py` (new), docs | `SMART`/`LIGHT_TEXT` still showed shadows in two measured cases: the absolute-threshold document/scene gate called a shadowed page a *scene* (41 %) so no shadow was removed, and the box-blurred surface smeared hard shadow edges into a 65-level band. Replaced by `surfaceIsPaper` (two ratios against the surface) and `median3Grid`. **No kernel, Rust or ABI change; the five transcribed presets keep their exact output.** See §6ay. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 61) | `model/Models.kt`, `util/DocumentFilters.kt`, `util/NativeFilters.kt`, `app/src/main/rust/src/{kernels,lib}.rs`, `util/DocumentFiltersTest.kt`, `docs/filter_combined_spec.md` (new), `tools/filter_ref.py` (new), docs | Two **new** presets, `SMART` (label "Smart Scan") and `LIGHT_TEXT` ("Light Text"), appended to `FilterType`: this app's paper-map divide with a ratio-domain tone curve, one hue-preserving gain per pixel, a bounded (soft-kneed) white balance, and Adobe's faint-ink idea as a curve window. Rust kernel `adaptive_colour` behind byte-exact parity (ABI 3). **The five original presets are untouched** — same code, same output. See §6ax. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 60) | `ui/editor/MarkupScreen.kt`, `ui/viewer/PageViewerScreen.kt`, docs | Annotate controls must never be removed by another control: the full-screen annotate bar's colour row was gated on `tool != WHITEOUT` (choosing **Erase** deleted it) and is now unconditional, and the reader's `AnnotateShelf` no longer owns a whole-shelf drag `alpha` (translation only). No visual change at rest, no output change. See §6aw. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 53) | `ui/common/ConnectedButtonGroup.kt`, `ui/detail/DocumentDetailScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/editor/MarkupStudio.kt` (new), `ui/editor/MarkupScreen.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/pdf/PdfExportSheet.kt`, `ui/camera/ScannerCameraScreen.kt`, `util/DocumentShare.kt` (new), `util/ImageStore.kt`, `data/ScannerRepository.kt`, `Navigation.kt`, docs | Seven reported defects: connected page-tile verbs + hold-to-collapse, Copy/Move on hold, dashboard multi-select **Share**, in-place annotate shelf in the reader, instant rotate, collapsing dashboard header, export-sheet microinteractions, camera preview lifted 32 dp. Chrome/layout/motion only. See §6ap. |
@@ -2358,3 +2359,72 @@ instead of (0, 0, 78).
 - Verified by reading and by `python3 tools/filter_ref.py` only (no cargo, no Gradle, no
   NDK in this sandbox). `./gradlew testDebugUnitTest assembleDebug` for R60 **and** R61,
   and `cargo test`, are still owed by Antigravity.
+
+## 6ay. Round 62: shadows, measured — the gate and the surface (Arena, 2026-10-28)
+
+The follow-up to R61: *"shadows are still there in some conditions."* Both causes were
+measured before either was touched. New tool: **`tools/shadow_probe.py`**, a Python port
+of `buildPaperMap` (`cellRadius`, `meanPool`, `windowOp`, `boxBlur3`) and of
+`classifiesAsDocument`, so the estimator and the gate can be swept on synthetic frames
+without a device:
+
+```sh
+python3 tools/shadow_probe.py            # R61 vs R62, per scenario
+python3 tools/shadow_probe.py variants   # each candidate estimator
+```
+
+### 1. The gate: a shadowed page was classified as a scene
+
+`classifiesAsDocument` is a faithful transcription of `wv3`'s rule and it is *absolute* —
+a pixel counts as paper if all three channels clear 80 after one global gain. Measured on
+a 900 × 675 frame of a page with a 3.2× hand shadow: **documentRatio 41 %**, below the
+60 % bar → "scene" → `GAIN_KNEE_SCENE`/`GAIN_CAP_SCENE` (1.2×/2×) → the shadowed half came
+out **123 levels grey**. The same classifier *accepted* a lit room with a beige wall at
+61 %, i.e. it was wrong in both directions.
+
+`DocumentFilters.surfaceIsPaper` replaces it **in the adaptive path only**. It asks the
+divisor's own question: for every sampled pixel, compare it with the surface estimated at
+that pixel, and count two fractions —
+
+- **brighter than the surface** (>1.05×): pages 0.0–1.8 %, photographs 4.2–5.3 %.
+  Paper is the ceiling of a page; in a photo the estimate sits *between* light and dark,
+  so every content boundary contributes.
+- **local marks** (<0.75× of the surface): pages 10.7–10.9 %, photographs 1.2–3.7 %.
+  This second term is the safety net for the one thing on a page that *can* be brighter
+  than its paper — a specular reflection.
+
+A frame is a page when the first is under `SURFACE_BRIGHT_PERCENT` (3) **or** the second
+is over `SURFACE_MARKED_PERCENT` (8). Both are ratios, so both are immune to exposure and
+to a shadow — the same page under a 3× shadow measures 1.4 %, exactly as under even light.
+Integer only: two multiplications per sample, no division.
+
+### 2. The surface: a box blur smears a shadow edge
+
+`closeDarkStructure` ended with three `boxBlur3` passes. On a **hard** shadow edge that
+turns a step in the estimated surface into a three-cell ramp, so the divide under-corrects
+alongside the edge: a grey band the width of a finger, worst 138 on a 3.2× shadow and 204
+on an 8× one. Two 3×3 medians do the job the blur was there for (remove isolated bad
+cells) and reproduce the step:
+
+| smoothing (band at a 3.2× shadow edge) | mean | worst |
+|---|---|---|
+| box ×3 (R61) | 24.2 | 112 |
+| **median ×2 (R62)** | **0.3** | **1** |
+
+`buildPaperMap` gained `edgePreserving: Boolean = false`, threaded into
+`closeDarkStructure`; `applyAdaptive` passes `true`. **The transcribed presets do not**,
+because that would change *their* output — it is a one-line change if it is ever wanted.
+
+### Invariants for the next agent
+
+- **No kernel change this round**: no Rust edit, no `ABI_VERSION` bump. The surface, the
+  gate and the smoothing are Kotlin; the kernel still receives the same Q8 grid.
+- `buildPaperMap(pixels, w, h)` (no flag) must keep meaning exactly what it meant in R61 —
+  Magic Color and Clear B&W depend on it byte for byte.
+- The document/scene decision must stay **relative to the surface**. An absolute threshold
+  anywhere in it is what this round removed; `classifiesAsDocument` carries a KDoc saying
+  it is no longer the gate.
+- Thresholds are 3 % / 8 %, with a measured margin of ~1.7× on both sides. Re-run the
+  probe before moving them.
+- Verified by reading and by `tools/shadow_probe.py` only (no Gradle, NDK or cargo here).
+  `./gradlew testDebugUnitTest assembleDebug` for R60–R62 is owed by Antigravity.

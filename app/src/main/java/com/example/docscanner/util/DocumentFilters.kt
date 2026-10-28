@@ -184,6 +184,9 @@ object DocumentFilters {
     /** Lowest value the surface may take. Only stops a divide by ~zero. */
     private const val PAPER_EPSILON = 4f
 
+    /** Median passes applied to the grid by the adaptive filters (see `median3Grid`). */
+    private const val PAPER_MEDIAN_PASSES = 2
+
     /**
      * Where the illumination gain stops being applied exactly, and how far it may
      * go. Below the knee the divide is exact; above it the gain saturates.
@@ -526,6 +529,13 @@ object DocumentFilters {
      * frame is not lifted into a false positive: the frame this was written for
      * (4000 × 3000, mean luminance 51) scores `documentRatio` 29.5 %,
      * `photoRatio` 4.9 %, and is correctly treated as a scene.
+     *
+     * **Not the gate the adaptive filters use.** [surfaceIsPaper] replaced it in Round 62
+     * for the white-balance decision, because these thresholds are absolute and a shadow
+     * moves a page across them — a page with a 3x hand shadow scores 41 % here and is
+     * called a scene, after which no shadow is removed. Kept because it is the
+     * transcription of `wv3`'s rule and it is tested; see [SURFACE_BRIGHT_PERCENT] for
+     * the measurements.
      */
     internal fun classifiesAsDocument(pixels: IntArray): Boolean {
         if (pixels.isEmpty()) return false
@@ -990,9 +1000,11 @@ object DocumentFilters {
     // * **Hue survives.** One scale applied to all three channels cannot invent a
     //   colour; the chroma term then expands (or, for a scene, contracts) saturation
     //   around the pixel's own luma instead of clipping channels independently.
-    // * **A scene is not repainted white.** `classifiesAsDocument` — written in an
-    //   earlier round and never wired in — selects a near-identity curve and caps the
-    //   white-balance gain at `GAIN_CAP_SCENE`, which is what those constants were for.
+    // * **A scene is not repainted white.** [surfaceIsPaper] selects a near-identity
+    //   curve and caps the white-balance gain at `GAIN_CAP_SCENE`, which is what those
+    //   constants were for. (Round 62 replaced `classifiesAsDocument` here: its
+    //   absolute thresholds called a page with a hand shadow a scene, so the shadow was
+    //   never removed at all. See [SURFACE_BRIGHT_PERCENT].)
     //
     // All of it is fixed point (Q8 = 256), so the Rust kernel and the Kotlin reference
     // below agree byte for byte and the parity self-test can be exact.
@@ -1023,6 +1035,47 @@ object DocumentFilters {
 
     /** `255 · 256 · 256`: the numerator of the Q8 white-balance gain, `255 / paper`. */
     private const val WHITE_Q8_OVER_PAPER = 255 * 256 * 256
+
+    /**
+     * The document/scene gate, in two numbers. A frame is a **page** when:
+     *
+     *   - fewer than this percentage of its pixels are >5 % **brighter than their own
+     *     estimated surface** (paper is the ceiling of a page), **or**
+     *   - more than [SURFACE_MARKED_PERCENT] of its pixels are local marks below three
+     *     quarters of that surface (text, ruling, a stamp — the safety term).
+     *
+     * Both are **ratios against the surface at that pixel**, so both are immune to
+     * exposure and to a shadow: the same page under a 3x hand shadow measures the same
+     * as under even light. That is exactly where `classifiesAsDocument` failed — it
+     * applies absolute thresholds to the whole frame, so a page with a 3x shadow scored
+     * 41 % and flipped to "scene", after which no shadow was removed at all (the
+     * shadowed half of the frame stayed 123 levels grey). It also *accepted* a lit room
+     * at 61 %, because a beige wall looks like paper under those rules. Both are
+     * measured, not guessed: `python3 tools/shadow_probe.py`.
+     *
+     * | frame | brighter | marked | verdict |
+     * |---|---|---|---|
+     * | flat page | 0.0 % | 10.7 % | document |
+     * | page, soft shadow | 0.0 % | 10.7 % | document |
+     * | page, 3.2x hard shadow | 1.4 % | 10.7 % | document |
+     * | page, 8x hard shadow | 1.4 % | 10.7 % | document |
+     * | page, lamp glare + shadow | 1.8 % | 10.9 % | document |
+     * | photograph, landscape | 4.2 % | 3.7 % | **scene** |
+     * | photograph, room | 5.3 % | 1.2 % | **scene** |
+     *
+     * Why either test is enough: a page has no content brighter than its paper, so the
+     * first test alone answers it — except for a specular reflection, which is the one
+     * genuinely-brighter thing a page can contain, and which is why the second test
+     * exists. A photograph fails the first test at every content boundary (its
+     * estimate sits *between* light and dark) and has no ink, so it fails both.
+     */
+    private const val SURFACE_BRIGHT_PERCENT = 3
+
+    /** Local marks (below 3/4 of the surface) that classify a frame as a page anyway. */
+    private const val SURFACE_MARKED_PERCENT = 8
+
+    /** Samples the gate takes; ~20k is plenty for a ratio, and it is off the hot path. */
+    private const val SURFACE_SAMPLE_TARGET = 20_000f
 
     /** Edge crispening: gain boost of up to this much where the Laplacian is strong. */
     private const val ADAPTIVE_DETAIL_SMART = 56     // up to +22 %
@@ -1098,6 +1151,61 @@ object DocumentFilters {
         IntArray(map.gw * map.gh) { (max(0f, map.b[it]) * 256f + 0.5f).toInt() }
     )
 
+    /**
+     * Is this frame one lit flat surface — a page — rather than a place?
+     *
+     * Asked in the divisor's own units: every sampled pixel is compared with the paper
+     * level estimated *at that pixel*, and two fractions are counted — how many are
+     * significantly **above** it, and how many are **local marks** below it. See
+     * [SURFACE_BRIGHT_PERCENT] for the measurement, the thresholds and the reason this
+     * replaces the absolute-threshold classifier.
+     *
+     * Only two multiplications per sample and no division: the surface luma stays in Q8
+     * and both tests are integer inequalities.
+     *
+     * @return `true` when the frame should be treated as a document.
+     */
+    internal fun surfaceIsPaper(
+        pixels: IntArray,
+        w: Int,
+        paperR: IntArray,
+        paperG: IntArray,
+        paperB: IntArray,
+        gw: Int,
+        gh: Int,
+        cell: Int
+    ): Boolean {
+        if (w <= 0 || pixels.isEmpty()) return true
+        val stride = max(1, ceil(sqrt(pixels.size / SURFACE_SAMPLE_TARGET)).toInt())
+        var brighter = 0
+        var marked = 0
+        var sampled = 0
+        var index = 0
+        while (index < pixels.size) {
+            val p = pixels[index]
+            val x = index % w
+            val y = index / w
+            val luma = lumaFixed((p ushr 16) and 0xFF, (p ushr 8) and 0xFF, p and 0xFF)
+            // Luma of the surface, still in Q8: a linear combination of Q8 values, so
+            // the comparisons below need no division.
+            val paperLumaQ8 = (
+                299 * max(0, samplePaperQ8(paperR, gw, gh, cell, x, y)) +
+                    587 * max(0, samplePaperQ8(paperG, gw, gh, cell, x, y)) +
+                    114 * max(0, samplePaperQ8(paperB, gw, gh, cell, x, y)) + 500
+                ) / 1000
+            // `luma > paper · 1.05`: 5 % is one level at paper 20 and 12 levels at paper
+            // 240, which is the right shape because it is a ratio.
+            if (luma.toLong() * 25_600L > paperLumaQ8.toLong() * 105L) brighter++
+            // `luma < paper · 0.75`.
+            if (luma.toLong() * 1024L < paperLumaQ8.toLong() * 3L) marked++
+            sampled++
+            index += stride
+        }
+        if (sampled == 0) return true
+        return brighter * 100 < sampled * SURFACE_BRIGHT_PERCENT ||
+            marked * 100 > sampled * SURFACE_MARKED_PERCENT
+    }
+
     /** Rec.601 luma into [out]; Rust when verified, else the loop below. */
     internal fun lumaPlane(pixels: IntArray, out: FloatArray) {
         if (nativeFiltersReady() && NativeFilters.lumaPlane(pixels, out)) return
@@ -1114,10 +1222,18 @@ object DocumentFilters {
     /**
      * The adaptive filter, applied in place.
      *
-     * [mode] selects the curve; whether the frame is a document selects the bounds.
+     * [mode] selects the curve; whether the surface is paper ([surfaceIsPaper]) selects
+     * the curve family and the white-balance bounds.
      */
     private fun applyAdaptive(pixels: IntArray, w: Int, h: Int, mode: AdaptiveMode) {
-        val document = classifiesAsDocument(pixels)
+        // The surface is needed by both the gate and the kernel, so it is built once,
+        // edge-preserving: see `median3Grid`.
+        val surface = buildPaperMap(pixels, w, h, edgePreserving = true)
+        val grid = paperGridQ8(surface)
+        val cell = surface.block.toInt()
+        val document = surfaceIsPaper(
+            pixels, w, grid[0], grid[1], grid[2], surface.gw, surface.gh, cell
+        )
 
         val curve = if (document) {
             when (mode) {
@@ -1143,9 +1259,6 @@ object DocumentFilters {
         // curve. Faint ink is the light-text target and a scene must not be sharpened.
         val detailCap = if (document && mode == AdaptiveMode.SMART) ADAPTIVE_DETAIL_SMART else 0
 
-        val surface = buildPaperMap(pixels, w, h)
-        val grid = paperGridQ8(surface)
-
         val detail = if (detailCap > 0) {
             val luma = FloatArray(w * h)
             lumaPlane(pixels, luma)
@@ -1159,13 +1272,13 @@ object DocumentFilters {
         val params = intArrayOf(kneeQ8, capQ8, floorQ8, chromaQ8, detailCap, ADAPTIVE_DETAIL_SCALE)
         val usedNative = nativeFiltersReady() && NativeFilters.adaptiveColour(
             pixels, w, grid[0], grid[1], grid[2],
-            surface.gw, surface.gh, surface.block.toInt(),
+            surface.gw, surface.gh, cell,
             curve, params, detail
         )
         if (!usedNative) {
             adaptiveColourReference(
                 pixels, w, grid[0], grid[1], grid[2],
-                surface.gw, surface.gh, surface.block.toInt(),
+                surface.gw, surface.gh, cell,
                 curve, params, detail
             )
         }
@@ -1341,7 +1454,20 @@ object DocumentFilters {
      * the page, which is what carries the paper level across a whole text line
      * instead of stopping at the stroke edge.
      */
-    private fun buildPaperMap(pixels: IntArray, w: Int, h: Int): PaperMap {
+    /**
+     * @param edgePreserving smooth the grid with a median instead of a box blur.
+     *
+     * Default `false`, because that is the transcribed pipeline and the five original
+     * presets must keep their exact output. The adaptive filters pass `true`: see
+     * `median3Grid` for the measurement that motivated it — a box blur smears a hard
+     * shadow edge across the grid, and the divide then leaves a grey band along it.
+     */
+    private fun buildPaperMap(
+        pixels: IntArray,
+        w: Int,
+        h: Int,
+        edgePreserving: Boolean = false
+    ): PaperMap {
         // §13.3: the original derives its cell size from the pixel count, not from a
         // fixed working width. `PAPER_WORK_DIM 320` was this port's guess at it.
         val cell = cellRadius(w, h) + 1
@@ -1349,9 +1475,9 @@ object DocumentFilters {
         val gh = max(1, (h + cell - 1) / cell)
 
         val pooled = meanPool(pixels, w, h, cell, gw, gh)
-        val gridR = closeDarkStructure(pooled, 0, gw, gh)
-        val gridG = closeDarkStructure(pooled, 1, gw, gh)
-        val gridB = closeDarkStructure(pooled, 2, gw, gh)
+        val gridR = closeDarkStructure(pooled, 0, gw, gh, edgePreserving)
+        val gridG = closeDarkStructure(pooled, 1, gw, gh, edgePreserving)
+        val gridB = closeDarkStructure(pooled, 2, gw, gh, edgePreserving)
 
         return PaperMap(gridR, gridG, gridB, gw, gh, cell.toFloat())
     }
@@ -1376,13 +1502,78 @@ object DocumentFilters {
      * Three box passes after that, because two left a visible cell structure on
      * hard-edged shadows (measured: shadowed paper 204 instead of 244).
      */
-    private fun closeDarkStructure(pooled: Array<FloatArray>, channel: Int, gw: Int, gh: Int): FloatArray {
+    private fun closeDarkStructure(
+        pooled: Array<FloatArray>,
+        channel: Int,
+        gw: Int,
+        gh: Int,
+        edgePreserving: Boolean
+    ): FloatArray {
         val plane = pooled[channel]
         val radius = paperRadius(gw, gh)
         var grid = windowOp(plane, gw, gh, radius, dilate = true)
         grid = windowOp(grid, gw, gh, radius, dilate = false)
-        repeat(3) { grid = boxBlur3(grid, gw, gh) }
+        if (edgePreserving) {
+            // Two median passes, not three box passes. See [median3Grid].
+            repeat(PAPER_MEDIAN_PASSES) { grid = median3Grid(grid, gw, gh) }
+        } else {
+            repeat(3) { grid = boxBlur3(grid, gw, gh) }
+        }
         return grid
+    }
+
+    /**
+     * 3×3 median of a paper grid — the smoothing that keeps a shadow edge a step.
+     *
+     * The box blur this replaces was there to remove *cell-scale* noise (a cell whose
+     * mean was dragged down by ink the closing could not reach), and it does that. But
+     * a box blur is isotropic: across a hard shadow edge it produces a three-cell ramp
+     * in the estimated surface, so on one side of the edge the divide under-corrects —
+     * which is a visible grey band running alongside every crisp shadow (a phone's own
+     * body, a hand, a door frame). Measured with `tools/shadow_probe.py` on a page
+     * with a 3.2x shadow, paper error inside a ±3-cell band around the edge:
+     *
+     * | smoothing | mean | worst |
+     * |---|---|---|
+     * | box ×3 (before) | 24.2 | 112 |
+     * | median ×2 (now) | **0.3** | **1** |
+     *
+     * A median is the standard answer for this: it removes isolated bad cells exactly
+     * like a blur does, and it reproduces a step instead of averaging it. It cannot
+     * smooth sub-cell detail — there is none, the grid *is* the estimate — and on a
+     * flat page both are identities, so nothing else changes.
+     *
+     * Everything below `0` and above `255` is impossible in this grid: the pool and
+     * the closing only ever produce means and maxima of 8-bit values.
+     */
+    internal fun median3Grid(plane: FloatArray, gw: Int, gh: Int): FloatArray {
+        val out = FloatArray(plane.size)
+        val window = IntArray(9)
+        for (y in 0 until gh) {
+            for (x in 0 until gw) {
+                var count = 0
+                for (dy in -1..1) {
+                    val row = (y + dy).coerceIn(0, gh - 1) * gw
+                    for (dx in -1..1) {
+                        val value = plane[row + (x + dx).coerceIn(0, gw - 1)]
+                        window[count++] = (value + 0.5f).toInt()
+                    }
+                }
+                // Nine elements: an insertion sort is the cheapest thing that is
+                // obviously correct, and it allocates nothing.
+                for (i in 1 until 9) {
+                    val value = window[i]
+                    var j = i - 1
+                    while (j >= 0 && window[j] > value) {
+                        window[j + 1] = window[j]
+                        j--
+                    }
+                    window[j + 1] = value
+                }
+                out[y * gw + x] = window[4].toFloat()
+            }
+        }
+        return out
     }
 
     /**
@@ -2245,7 +2436,8 @@ object DocumentFilters {
             //     with and without edge crispening. `contentEquals` is exact on
             //     purpose: the kernel is integer-only, so any disagreement is a bug
             //     in one of the two, not float drift.
-            val surface = buildPaperMap(colourPage, w, h)
+            // The same surface the filter builds, so parity covers what ships.
+            val surface = buildPaperMap(colourPage, w, h, edgePreserving = true)
             val grid = paperGridQ8(surface)
             val adaptiveCell = surface.block.toInt()
             val detailPlane = run {

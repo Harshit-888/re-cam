@@ -10,6 +10,47 @@ Resolved compilation error from Arena Round 61 integration and verified clean bu
 - **`util/DocumentFilters.kt`**: Fixed duplicate variable declaration `val cell` in `verifyNativeFilters()` by renaming the second instance to `val adaptiveCell = surface.block.toInt()`.
 - **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.5 MB), and `testDebugUnitTest` passed 100% (25 tasks, 0 failures).
 
+## 2026-10-28 — Arena.ai — Round 62: `SMART`/`LIGHT_TEXT` keep shadows in two cases, and why
+
+Follow-up to Round 61: *"shadows are still there in some conditions."* Two defects, both
+measured before either was touched, with a new tool — **`tools/shadow_probe.py`** — that
+ports `buildPaperMap` and `classifiesAsDocument` to Python so the estimator and the gate
+can be swept without a device.
+
+**Nothing in the kernel changed.** No Rust edit, no `ABI_VERSION` bump, no change to the
+five transcribed presets (`buildPaperMap`'s new smoothing is opt-in and they do not opt
+in). All of it is Kotlin: the surface, and the decision that selects its bounds.
+
+1. **The document/scene gate was wrong.** `classifiesAsDocument` applies *absolute*
+   thresholds, so a page with a 3.2× hand shadow scored 41 % and was treated as a
+   **scene** — which caps the white balance at 2×, i.e. the shadow was never removed at
+   all (123 levels of grey on the shadowed half). It also *accepted* a lit room at 61 %,
+   because a beige wall looks like paper under those rules. Replaced in the adaptive
+   path by **`DocumentFilters.surfaceIsPaper`**, which asks the same question in the
+   divisor's own units: what fraction of pixels are brighter than the surface estimated
+   at that pixel, and what fraction are local marks below it. Pages measure 0.0–1.8 %
+   bright / 10.7–10.9 % marked; photographs 4.2–5.3 % / 1.2–3.7 %. `classifiesAsDocument`
+   stays, with a note saying it is no longer the gate.
+2. **The surface smeared hard shadow edges.** Three `boxBlur3` passes turn a step in the
+   estimate into a three-cell ramp, so the divide under-corrects beside every crisp
+   shadow: a 65-level grey band the width of a finger, worst 138. Replaced in the
+   adaptive path by **`median3Grid`** (two 3×3 medians, `PAPER_MEDIAN_PASSES`), which
+   removes the same bad cells and reproduces a step: **0.3 mean / 1 worst**. Flat pages
+   are unaffected (both are identities there).
+
+New `internal` API: `surfaceIsPaper`, `median3Grid`; `buildPaperMap` gained an
+`edgePreserving` parameter (default `false` = today's behaviour) and `closeDarkStructure`
+takes it too. New constants `PAPER_MEDIAN_PASSES`, `SURFACE_BRIGHT_PERCENT` (3),
+`SURFACE_MARKED_PERCENT` (8), `SURFACE_SAMPLE_TARGET` (20 000). New tests:
+`median3Grid_*`, `surfaceGate_*` (4, pure JVM).
+
+Still exact up to ~8× attenuation (a phone's own shadow at arm's length); 12× leaves 22
+levels, and the 24× cap is deliberate — beyond it the divide starts lifting genuinely
+black objects on the page. `docs/filter_combined_spec.md` §4.4 has the before/after table.
+
+Owed by Antigravity: `./gradlew testDebugUnitTest assembleDebug` (Rounds 60–62) and
+`cargo test` (Round 61's kernel).
+
 ## 2026-10-28 — Arena.ai — Round 61: two new presets, `SMART` and `LIGHT_TEXT`
 
 **New public surface:** `FilterType.SMART` and `FilterType.LIGHT_TEXT` (**appended**; the
