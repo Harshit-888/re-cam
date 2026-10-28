@@ -216,10 +216,13 @@ fun PageViewerScreen(
     )
 
     // Back leaves annotate mode, not the page: the shelf is a mode, and the platform
-    // back gesture is how a mode is left.
-    BackHandler(enabled = annotating && !isSavingMarkup) {
-        annotating = false
-        annotateEpoch++
+    // back gesture is how a mode is left. It is *trapped* while the bake runs, because
+    // leaving the screen would cancel the coroutine that is still writing the page.
+    BackHandler(enabled = annotating) {
+        if (!isSavingMarkup) {
+            annotating = false
+            annotateEpoch++
+        }
     }
 
     fun saveMarkup() {
