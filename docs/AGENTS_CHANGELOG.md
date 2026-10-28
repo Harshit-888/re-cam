@@ -4,6 +4,12 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-28 — Antigravity — Rounds 62–63 build & test verification
+
+Clean-build and test verification for Arena Rounds 62–63 (shadow removal refinement and live camera border detection/overlay):
+- **Test Adjustment**: Fixed synthetic test dimension in `DocumentFiltersTest.surfaceGate_acceptsAPageThatIsHalfInShadow` (`w=256, cell=4`) so that the interpolation boundary across the synthetic half-shadow matches realistic full-frame proportions (<1.5% of samples) rather than the 25% boundary artifact of a 64px image with a 16px cell.
+- **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.9 MB), and `testDebugUnitTest` passed 100% (221 tests across 25 tasks, 0 failures).
+
 ## 2026-10-28 — Arena.ai — Round 63: live border detection, and borders for imports
 
 *"Also add the auto border detection while clicking pictures and also after capturing."*

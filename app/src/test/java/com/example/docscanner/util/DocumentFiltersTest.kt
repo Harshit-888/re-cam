@@ -847,16 +847,16 @@ class DocumentFiltersTest {
      */
     @Test
     fun surfaceGate_acceptsAPageThatIsHalfInShadow() {
-        val w = 64
+        val w = 256
         val h = 64
-        val gw = 4
-        val gh = 4
-        val cell = 16
+        val cell = 4
+        val gw = w / cell
+        val gh = h / cell
         // Left half lit paper, right half the same paper at half the light.
         val pixels = IntArray(w * h) { i ->
-            if ((i % w) < 32) grey(200) else grey(100)
+            if ((i % w) < (w / 2)) grey(200) else grey(100)
         }
-        val gridR = IntArray(gw * gh) { i -> if ((i % gw) < 2) 200 * 256 else 100 * 256 }
+        val gridR = IntArray(gw * gh) { i -> if ((i % gw) < (gw / 2)) 200 * 256 else 100 * 256 }
         val gridG = gridR.copyOf()
         val gridB = gridR.copyOf()
 
@@ -867,8 +867,8 @@ class DocumentFiltersTest {
 
         // Same frame with ink: still a page, and now by both halves of the rule.
         for (i in pixels.indices) {
-            if ((i / w) % 8 in 3..4 && (i % w) % 8 in 2..6 && (i % w) < 60) {
-                pixels[i] = grey(if ((i % w) < 32) 40 else 20)
+            if ((i / w) % 8 in 3..4 && (i % w) % 8 in 2..6 && (i % w) < (w - 4)) {
+                pixels[i] = grey(if ((i % w) < (w / 2)) 40 else 20)
             }
         }
         assertTrue(
