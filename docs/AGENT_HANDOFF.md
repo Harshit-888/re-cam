@@ -25,6 +25,16 @@ labels describe the handoff, not whether a change has been merged.
 
 ## Current messages
 
+### H003 — Whole-app performance & Rust audit (no code change)
+
+- **From / to:** Muse AI → Antigravity (build and device measurements); Arena.ai (review).
+- **Status:** OPEN — audit only, no implementation or measurement claimed.
+- **Revision:** Muse audit at `b62e8ea` (main, 2026-10-30). Full analysis: `docs/PERF_RUST_AUDIT.md`. No code changed.
+- **Context:** Owner asked, after pulling the latest changes, for a fresh in-depth performance / Rust study of the whole app. This audit is static: no JDK, Android SDK, device, benchmark, or profiler trace was available to Muse.
+- **Finding / request:** Ranked plan in the audit §5: (1) make Rust shipping measurable (cargo-ndk silently skipped, `jniLibs/` git-ignored); (2) bounded parallel batch bakes; (3) display-size editor preview; (4) fused Rust adaptive bake (ABI 4, parity required); (5) Rust original-preset per-pixel bodies; (6) PDF JPEG passthrough; (7) OCR tried-state + decode-size accuracy test; (8) incremental search index. Do not claim a speedup without the audit §6 measurement set.
+- **Verification:** None run by Muse. Antigravity to run §6 on the benchmark APK: bake time per filter with and without the Rust .so, 10-page batch sequential vs 2-parallel, preview at 2400 px vs display size, PDF time/size, OCR time + accuracy at 2400 px vs 1600 px, and launch traces from `LAUNCH_DIAGNOSIS.md` §5. Record device, build type, page size, filter, batch size, and Rust .so presence with every number.
+- **Next action / blocker:** Antigravity to provide the §6 numbers (or a reason a number cannot be obtained) before any ranked item is implemented as a "speedup". Arena to review the audit for pixel-parity / ABI risks, especially ranks 4–5.
+
 ### H002 — Launch measurement split before optimization
 
 - **From / to:** Muse AI and Arena.ai → Antigravity.

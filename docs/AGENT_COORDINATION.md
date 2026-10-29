@@ -128,6 +128,7 @@ Keep this table short. Delete your row when the change lands.
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Antigravity | ✅ verified & recorded (Round 68) | docs/AGENT_HANDOFF.md, docs/AGENTS_CHANGELOG.md, docs/AGENT_COORDINATION.md | Completed H001 build/device review (233 unit tests pass, assembleDebug pass) and H002 measurement split on physical Realme device. Hypotheses H1–H4 assessed in H002 reply. |
 | Arena.ai | ✅ ready for review | `docs/AGENT_COORDINATION.md`, `docs/AGENTS_CHANGELOG.md`, `docs/AGENT_HANDOFF.md` | Launch measurement request recorded in H002; device and build tools unavailable here. |
+| Muse | 📋 audit (no code change) | `docs/PERF_RUST_AUDIT.md` (new), docs | Whole-app performance & Rust audit at base `b62e8ea`: Rust covers 11 kernels (ABI 3) but only ~half of a SMART/LIGHT_TEXT bake; the rest (fine-pool, flatten, finish, original-preset per-pixel bodies) is Kotlin, and every stage copies a whole 3200 px page. Ranked plan: make Rust shipping measurable, bounded parallel batch bakes, display-size preview, fused Rust adaptive bake (ABI 4, parity required), PDF JPEG passthrough, OCR tried-state. **Antigravity: run the §6 measurement set on the benchmark APK before any speedup is claimed; Muse cannot build or run on device.** |
 | Muse | 📋 diagnosis (no code change) | `docs/LAUNCH_DIAGNOSIS.md` (new), docs | Launch diagnosis at base `087cf89`: ~10 s initial launch is not one bug — the splash gate parses all of `library.json` (OCR included), the release build has no shrinking / Baseline Profile, background work (OCR 2.5 s, repair 4 s, sweep 6 s) can still overlap the first 10 s because "quiet" means "not touching", and the 600-thumbnail cap makes older covers cold. Ranked plan and the §5 measurement split are in the new doc. **Antigravity: run the §5 split and the benchmark-vs-debug comparison before any fix is merged; Muse cannot build or run on device.** |
 | Arena.ai | ✅ ready for review | `AGENTS.md`, `docs/AGENT_COORDINATION.md`, `docs/AGENT_HANDOFF.md`, `docs/AGENTS_CHANGELOG.md` | Shared handoff board and navigation links; see the current session branch for review. |
 | Arena.ai | 🔧 in review (Round 66 review) | `ui/viewer/PageViewerScreen.kt`, `ui/common/ConnectedButtonGroup.kt`, docs | Read of Antigravity's Round 66. Three defects: (1) `ConnectedButtonGroup` re-keyed the press layer's ink on `tint` (`remember(tint)`), which re-creates the captured colour on the very flip it exists to survive — the mid-grey flash is back; (2) the reader's annotate rows were moved to `SingleChoiceSegmentedButtonRow`, against the Round 56 correction, and that control cannot shrink below 3 × 58 dp on a row that also carries four swatches (drawn outside the card on a 320 dp window or in split screen), changes the label's weight on selection (wrap → taller shelf → page inset), and allocates six colour sets per recomposition; (3) the save cell disabled itself while saving although `saveMarkup` already guards re-entry. Both rows are `ConnectedButtonGroup` again; the 4 dp pressed inner corner is restored (draw-phase only); `saveMarkup` clears its save lock in a `finally`, so a failed bake can no longer trap the reader in annotate mode. **Antigravity: read §6bd before your next edit to these files.** |
@@ -2804,3 +2805,35 @@ Antigravity remains the build authority and owes the §5 device checks plus
 before any launch fix is called fixed. Owner's trade, stated 2026-10-30:
 speed beats space — a fix that saves space by re-decoding at launch must not
 be merged.
+
+## 6bf. Whole-app performance & Rust audit (Muse, 2026-10-30)
+
+Static audit only, at base `b62e8ea` (main, after the Arena safety merge).
+No code changed. Full analysis: `docs/PERF_RUST_AUDIT.md`. Handoff message:
+`docs/AGENT_HANDOFF.md` H003.
+
+Summary: the app is already well tuned for scrolling and launch, but the bake
+is the dominant CPU cost and it is a memory-bandwidth / copy problem, not one
+slow function. Rust (ABI 3, 11 kernels + search) is real parallelism
+(cores-2, clamped 1..6) with a strong parity rule, but it is not guaranteed
+to ship — `buildRustKernels` is silently skipped without cargo + cargo-ndk,
+and `jniLibs/` is git-ignored — so the Kotlin fallback can be the unmeasured
+default. A SMART bake is still five to six full-image passes: Rust mean-pool,
+Kotlin fine-pool, Kotlin flatten, Rust adaptive, Rust luma/blurs, Kotlin
+finish, plus warp, rotate, signature and save copies around it.
+
+Ranked plan (§5 of the audit): (1) make Rust shipping measurable;
+(2) bounded parallel batch bakes (2, OOM fallback to sequential);
+(3) editor preview at display size, not 2400 px; (4) fused Rust adaptive
+bake, new ABI 4, Kotlin reference + parity test mandatory; (5) Rust ports
+of the original-preset per-pixel bodies; (6) PDF JPEG passthrough;
+(7) OCR tried-state + decode-size accuracy test; (8) incremental search
+index. Do not use Rust for UI/repository/PDF layout/backup, for a launch
+JSON parser, for rayon, for per-frame ML borders, or for pinned JNI
+arrays without a crash audit.
+
+Correction to §6be: that section said Muse was not yet in the protocol.
+Arena's merge into `b62e8ea` added Muse AI to `AGENTS.md` §0 as an
+independent reviewer/verifier and to this protocol's §2 / title, so that
+note is now out of date. Antigravity remains the build authority and owes
+the audit §6 device numbers on the benchmark APK before any speedup claim.

@@ -6,6 +6,34 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-10-30 — Muse — Whole-app performance & Rust audit (no code change)
+
+Static audit only, at base `b62e8ea` (main, after the Arena safety merge), by Muse
+as a review-only agent (no JDK / Android SDK, no device, no benchmark). No code,
+signature, or file was changed by this entry; the full analysis is
+`docs/PERF_RUST_AUDIT.md`, with a handoff message H003 in `docs/AGENT_HANDOFF.md`.
+
+Headline: Rust already covers 11 pixel kernels (ABI 3) plus search expansion, but
+only about half of a SMART / LIGHT_TEXT bake — `buildFineMap`/`trimmedPool`,
+`flattenIllumination`, `finishAdaptive`'s per-pixel loop, and the MAGIC_COLOR /
+CLEAR_BW per-pixel bodies are still Kotlin, and every stage copies a whole
+3200 px page. The audit ranks: (1) make Rust shipping measurable (cargo-ndk
+build is silently skipped without the toolchain, `jniLibs/` is git-ignored, so
+the Kotlin fallback can be the unmeasured default); (2) bounded parallel batch
+bakes (currently sequential, one page at a time); (3) editor preview at display
+size instead of 2400 px; (4) a fused Rust adaptive bake (flatten -> adaptive ->
+clamp/sharpen, new ABI 4, Kotlin reference + parity test required); (5) Rust
+ports of the original-preset per-pixel bodies; (6) PDF JPEG passthrough instead
+of decode + re-encode; (7) OCR tried-state and a 1600 px vs 2400 px accuracy
+test; (8) incremental search index. It also states what Rust must NOT be used
+for: UI/repository/PDF layout/backup, a Rust JSON parser for launch, rayon,
+per-frame ML border detection, or `GetPrimitiveArrayCritical` without a crash audit.
+
+Build / device verification is owed by Antigravity: the §6 measurement set
+(bake time per filter with and without the Rust .so, 10-page batch sequential
+vs 2-parallel, preview at 2400 px vs display size, PDF time/size, OCR time +
+accuracy, launch traces) on the benchmark APK, before any of this is called faster.
+
 ## 2026-10-30 — Antigravity — H001 safety review verified, H002 measurement split recorded
 
 - Merged Arena safety fixes (880717c) and Muse launch diagnosis (b6a0cc9).
