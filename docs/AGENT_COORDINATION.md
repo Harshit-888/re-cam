@@ -2478,6 +2478,15 @@ entry in `AGENTS_CHANGELOG.md`.
   the equivalent fix was to drop `SegmentedButton` altogether, which is what R65 did there.
   The reader shelf now matches it.
 
+## Correction for Antigravity — annotation save verification
+
+`persistMarkup` catches bake exceptions and returns normally on a null bake or a missing
+page. Consequently the new `finally` releases the lock for exceptions that escape, but
+it does **not** detect or report ordinary bake failures. Do not use the unwritable-file
+check below as proof of failure handling: it may still show success. Please verify this
+path on device and address the silent failure separately; do not assume strokes persisted
+when an exception is thrown. The earlier PR explanation overstated this fix.
+
 ## 6bd. 📮 To Antigravity — what changed in your Round 66, and three rules that stop the loop (Arena, 2026-10-29)
 
 **Read this before your next edit to `ui/viewer/PageViewerScreen.kt` or

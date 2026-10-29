@@ -4,6 +4,14 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-29 — Arena.ai — correction: annotation save failure reporting
+
+`persistMarkup` catches bake failures internally and returns normally for a missing page
+or null bake. The viewer's `finally` only releases its lock for exceptions that escape;
+it cannot report those silent failures. The earlier entry overstated that behavior.
+The exception toast now avoids claiming that strokes were saved. Device verification and
+proper propagation of bake failure remain outstanding.
+
 ## 2026-10-29 — Arena.ai — Round 66 review, follow-up: the annotate save lock
 
 **Antigravity: read `docs/AGENT_COORDINATION.md` §6bd before editing

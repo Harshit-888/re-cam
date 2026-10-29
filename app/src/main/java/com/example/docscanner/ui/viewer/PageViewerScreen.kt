@@ -274,16 +274,9 @@ fun PageViewerScreen(
         isSavingMarkup = true
         val strokes = markup.strokes
         scope.launch {
-            // ## The save state is cleared in `finally`, because it locks the screen
-            //
-            // `isSavingMarkup` does three things at once: it disables the shelf's Cancel
-            // cell, it makes the `BackHandler` above a no-op, and it makes this function
-            // return immediately. So a throw out of the bake — `persistMarkup` writes the
-            // strokes as data and then re-bakes, and `ImageStore.saveEditedPage` can fail
-            // on a full disk — used to leave the reader **trapped in annotate mode for the
-            // life of the screen**: Cancel dimmed, back ignored, save ignored. The ink is
-            // still safe (the strokes are written before the bake), so the honest outcome
-            // is a message and a working shelf, not a dead one.
+            // Release the save lock even if persistence unexpectedly throws.
+            // persistMarkup currently handles bake failures internally, so a normal
+            // return does not guarantee that the page was re-rendered.
             var saved = false
             try {
                 // The bake is a full-resolution decode, warp and filter pass — off the main
@@ -295,7 +288,7 @@ fun PageViewerScreen(
             } catch (cancelled: CancellationException) {
                 // The screen is going away; nothing to report, and nothing to unlock.
                 throw cancelled
-            } catch (_: Throwable) {
+            } catch (_: Exception) {
                 saved = false
             } finally {
                 isSavingMarkup = false
@@ -305,11 +298,9 @@ fun PageViewerScreen(
                 annotateEpoch++
                 Toast.makeText(context, "Annotation saved", Toast.LENGTH_SHORT).show()
             } else {
-                // The strokes are already stored, so this is not "your ink is gone"; it is
-                // "the page has not been re-rendered yet".
                 Toast.makeText(
                     context,
-                    "Annotation saved; the page could not be re-rendered",
+                    "Could not save annotation. Please try again.",
                     Toast.LENGTH_LONG
                 ).show()
             }
