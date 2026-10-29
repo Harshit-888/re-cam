@@ -137,6 +137,7 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -180,7 +181,7 @@ private const val PREVIEW_SETTLE_MS = 140L
  * the *file* stays at the bake size (3200). Rendering at bake size for a preview
  * costs 2.5x for pixels the display cannot show.
  */
-private const val PREVIEW_RENDER_DIMENSION = 2400
+private const val PREVIEW_RENDER_DIMENSION = 1080
 
 /** Long edge of the tiny render behind each filter swatch, in pixels. */
 private const val FILTER_THUMB_DIMENSION = 260
@@ -324,6 +325,23 @@ fun CropAndFilterScreen(
     // One tiny filtered render per filter, so the strip shows the real look on the
     // real page instead of a coloured rectangle.
     var filterThumbs by remember { mutableStateOf<Map<FilterType, ImageBitmap>>(emptyMap()) }
+
+    // Rank 3: Cache rendered preview ImageBitmaps per (activePageId, filter, corners, rotation)
+    data class PreviewCacheKey(
+        val pageId: String,
+        val filter: FilterType,
+        val corners: QuadCorners,
+        val rotation: Float
+    )
+    val previewCache = remember {
+        java.util.Collections.synchronizedMap(
+            object : LinkedHashMap<PreviewCacheKey, ImageBitmap>(8, 0.75f, true) {
+                override fun removeEldestEntry(eldest: MutableMap.MutableEntry<PreviewCacheKey, ImageBitmap>?): Boolean {
+                    return size > 8
+                }
+            }
+        )
+    }
 
     val isBordersStage = stage == Stage.BORDERS
 
@@ -517,6 +535,16 @@ fun CropAndFilterScreen(
             previewFailed = false
             return@LaunchedEffect
         }
+        // Check cache before computing
+        val cacheKey = PreviewCacheKey(activePageId, selectedFilter, corners, rotation)
+        val cached = previewCache[cacheKey]
+        if (cached != null) {
+            previewBitmap = cached
+            previewFailed = false
+            isFiltering = false
+            return@LaunchedEffect
+        }
+
         isFiltering = true
         previewFailed = false
         delay(PREVIEW_SETTLE_MS)
@@ -563,7 +591,11 @@ fun CropAndFilterScreen(
         val shown = rendered ?: source
         previewFailed = rendered == null
         previewAspect = shown.width.toFloat() / shown.height.toFloat()
-        previewBitmap = shown.asImageBitmap()
+        val imageBitmap = shown.asImageBitmap()
+        if (rendered != null) {
+            previewCache[cacheKey] = imageBitmap
+        }
+        previewBitmap = imageBitmap
         isFiltering = false
     }
 
@@ -673,37 +705,62 @@ fun CropAndFilterScreen(
                 // the page strip behind this dialog, and a scheduled write of the whole
                 // `library.json` (recognised text included). A ten-page filter change
                 // serialised the library ten times; it now does it once.
-                val baked = LinkedHashMap<String, ScannedPage>(targets.size)
-                var failed = 0
-                targets.forEachIndexed { index, page ->
-                    applyingPage = index
-                    // The page in the repository carries the corners saved during the
-                    // border pass; only the filter is new here.
-                    val latest = repository.getDocumentById(docId)
-                        ?.pages?.find { it.id == page.id } ?: page
-                    // One page that cannot be baked is skipped, not fatal: the rest of
-                    // the batch still gets the filter.
-                    val result = try {
-                        PageRenderer.bake(
-                            context = context,
-                            page = latest.copy(filterType = selectedFilter),
-                            jpegQuality = quality.jpegQuality,
-                            maxDimension = dimension
-                        )
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (_: Exception) {
-                        null
-                    } catch (_: OutOfMemoryError) {
-                        null
-                    }
-                    if (result != null) {
-                        baked[page.id] = result
-                    } else {
-                        failed++
+                // Rank 2: Bounded 2-parallel batch bakes with sequential OOM fallback.
+                val baked = java.util.Collections.synchronizedMap(LinkedHashMap<String, ScannedPage>(targets.size))
+                val failedCount = java.util.concurrent.atomic.AtomicInteger(0)
+                val completedCount = java.util.concurrent.atomic.AtomicInteger(0)
+                val oomOccurred = java.util.concurrent.atomic.AtomicBoolean(false)
+                val semaphore = kotlinx.coroutines.sync.Semaphore(2)
+
+                coroutineScope {
+                    targets.forEach { page ->
+                        launch(Dispatchers.Default) {
+                            semaphore.acquire()
+                            try {
+                                val latest = repository.getDocumentById(docId)
+                                    ?.pages?.find { it.id == page.id } ?: page
+                                val result = try {
+                                    PageRenderer.bake(
+                                        context = context,
+                                        page = latest.copy(filterType = selectedFilter),
+                                        jpegQuality = quality.jpegQuality,
+                                        maxDimension = dimension
+                                    )
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (_: OutOfMemoryError) {
+                                    oomOccurred.set(true)
+                                    System.gc()
+                                    try {
+                                        PageRenderer.bake(
+                                            context = context,
+                                            page = latest.copy(filterType = selectedFilter),
+                                            jpegQuality = quality.jpegQuality,
+                                            maxDimension = dimension
+                                        )
+                                    } catch (_: Throwable) {
+                                        null
+                                    }
+                                } catch (_: Exception) {
+                                    null
+                                }
+
+                                if (result != null) {
+                                    baked[page.id] = result
+                                } else {
+                                    failedCount.incrementAndGet()
+                                }
+                            } finally {
+                                semaphore.release()
+                                val finished = completedCount.incrementAndGet()
+                                applyingPage = finished - 1
+                            }
+                        }
                     }
                 }
-                repository.updatePages(docId, baked)
+
+                repository.updatePages(docId, LinkedHashMap(baked))
+                val failed = failedCount.get()
                 if (failed == 0) {
                     onDone()
                 } else {

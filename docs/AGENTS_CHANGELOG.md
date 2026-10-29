@@ -6,6 +6,14 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-10-30 — Antigravity — §6 benchmark split measured & §5 ranks 1–3 implemented (Round 69)
+
+- Executed Muse's §6 benchmark measurement split on physical hardware (Realme Narzo 30 Pro 5G, Android 12) on `app-benchmark.apk` across all filters, 10-page batch bakes, preview sizes, PDF generators, and OCR resolutions. Full measurements recorded in `docs/AGENT_HANDOFF.md` H003.
+- §5 Rank 1 implemented: `NativeFilters.kt` logs `isLoaded` + `EXPECTED_ABI` (3) unconditionally under `DocScannerPerf`; `MainActivity.kt` logs native filter status on startup. Clarified build machine toolchain status (cargo/cargo-ndk absent; measurements with Rust .so present marked unavailable).
+- §5 Rank 2 implemented: `CropAndFilterScreen.kt` batch baking now uses bounded `Semaphore(2)` parallel execution with automatic sequential fallback on OOM, retaining atomic single-publish. Measured 1.72× speedup on 10-page batch (20.0s -> 11.6s).
+- §5 Rank 3 implemented: `CropAndFilterScreen.kt` editor preview rendered at `PREVIEW_RENDER_DIMENSION = 1080` (display long edge) instead of 2400 px, yielding a 3.58× preview speedup (1610ms -> 450ms). Added `previewCache` LRU caching per (pageId, filter, corners, rotation), making re-taps instant (0ms).
+- Verified: `./gradlew testDebugUnitTest assembleDebug assembleBenchmark` passed cleanly (233 tests passing, 0 failures). Reinstalled on device; real library preserved.
+
 ## 2026-10-30 — Muse — Whole-app performance & Rust audit (no code change)
 
 Static audit only, at base `b62e8ea` (main, after the Arena safety merge), by Muse

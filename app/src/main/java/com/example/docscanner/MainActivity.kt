@@ -39,6 +39,12 @@ import com.example.docscanner.ui.common.LaunchSplash
 import com.example.docscanner.util.FramePacing
 import com.example.docscanner.util.PerfTrace
 import com.example.docscanner.util.StartupWork
+import android.util.Log
+import androidx.lifecycle.lifecycleScope
+import com.example.docscanner.util.NativeFilters
+import com.example.docscanner.util.PerfAuditRunner
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /** How long the launch screen takes to hand over to the library. */
 private const val SPLASH_FADE_MS = 300
@@ -86,6 +92,15 @@ class MainActivity : ComponentActivity() {
         // it the scroll line still reports frames and image work, just not where the
         // frame went.
         PerfTrace.attachWindow(window)
+
+        // Rank 1: Log native filters status unconditionally on startup
+        Log.i("DocScannerPerf", "[startup] Native filters status: ${NativeFilters.getStatusSummary()}")
+
+        if (intent?.getStringExtra("run_benchmarks") == "true") {
+            lifecycleScope.launch(Dispatchers.IO) {
+                PerfAuditRunner.runAudit(applicationContext)
+            }
+        }
 
         setContent {
             // ## The launch clock, in one line

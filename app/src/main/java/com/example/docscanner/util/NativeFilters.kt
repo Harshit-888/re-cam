@@ -36,7 +36,7 @@ internal object NativeFilters {
      * `src/main/jniLibs/` from an older checkout reports the old number and is
      * refused, instead of silently producing different pixels.
      */
-    private const val EXPECTED_ABI = 3
+    const val EXPECTED_ABI = 3
 
     /**
      * True only when the shared object loaded *and* reports the ABI this Kotlin
@@ -49,7 +49,14 @@ internal object NativeFilters {
     }.getOrElse { error ->
         runCatching { Log.i(TAG, "Rust kernels unavailable (${error.javaClass.simpleName}: ${error.message})") }
         false
+    }.also { loaded ->
+        runCatching {
+            Log.i("DocScannerPerf", "[native] Rust filters: isLoaded=$loaded, expectedABI=$EXPECTED_ABI, library=$LIBRARY")
+        }
     }
+
+    fun getStatusSummary(): String =
+        "Rust filters: isLoaded=$isLoaded, ABI=$EXPECTED_ABI" 
 
     /**
      * In-place `ksize × ksize` median over the grey level of an ARGB plane.
