@@ -4,6 +4,50 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-29 — Arena.ai — Round 66 review: three defects in the Round 66 annotate change
+
+Read of Antigravity's Round 66 against the code in the tree. Three defects, one of them the
+same one the round was trying to fix:
+
+1. **`ConnectedButtonGroup` re-keyed the press layer's ink on `tint`**
+   (`ui/common/ConnectedButtonGroup.kt`). `remember(tint) { mutableStateOf(tint) }`
+   **re-creates** the captured colour on every tint flip — i.e. in the same frame the user
+   taps a cell, which is precisely the frame the value exists to survive. The exit layer was
+   therefore painted in the *new* ink again, which is the mid-grey flash documented in the
+   comment directly above it (camera Single/Batch, shelf toggles). Back to
+   `remember { mutableStateOf(tint) }`; only a press may set it.
+2. **The two annotate rows in the reader went back to `SingleChoiceSegmentedButtonRow`**
+   (`ui/viewer/PageViewerScreen.kt`). The user's Round 56 correction is explicit: that shelf
+   keeps `ConnectedButtonGroup`, never `SingleChoiceSegmentedButtonRow`. Beyond the rule, the
+   swap introduced three mechanisms the connected group cannot have:
+   `SegmentedButton`'s `defaultMinSize(minWidth = 58.dp)` makes three cells unable to shrink
+   below 174 dp on a row that also carries four 34 dp swatches (160 dp of it on a 320 dp
+   window, or in split screen) and what does not fit is drawn outside the card; the
+   selection-dependent `fontWeight = SemiBold` changes the label's width on a `Text` with no
+   `maxLines`, so a tap can make a cell wrap to two lines and the shelf — which feeds the
+   page's bottom inset — grow taller; and `SegmentedButtonDefaults.colors(...)` is
+   constructed per call, handing six new colour objects to six cells on every recomposition.
+   Both rows are `ConnectedButtonGroup` again, at `cellHeight = 44.dp` as before.
+3. **Save disabled itself while saving** (same shelf). `saveMarkup` already returns early
+   when a save is running, so the dim was pure cost — and it dims the exact cell the user
+   just pressed. Same rule as the full-screen editor. Cancel stays disabled while the bake
+   runs, because the `BackHandler` is trapped there too and the two must agree.
+
+Also in this round:
+
+* **`ConnectedPressedInnerCorner` is restored.** The press step (8 dp → 4 dp inner corner)
+  was removed on the theory that it made labels clip; the shape reaches `Modifier.clip` and
+  nothing else, so it is draw-phase at any value and cannot touch a measure pass. It is also
+  the M3 Expressive token, and both `ExpressiveActionBar`'s KDoc and this file's own anatomy
+  table quote it.
+* **`shelfSegmentedColors()` deleted** (unused after the revert), together with the three
+  now-unused imports. Its insertion had also orphaned the KDoc of `private data class
+  PageFrame` — the doc belongs to the class again.
+* **Correction to the Round 66 entry above:** the 1-pixel deadband is in `AnnotateShelf`'s
+  card in `PageViewerScreen` (`onSizeChanged { newSize -> … > 1 … }`), **not** in
+  `ExpressiveActionBar`, which has no `onSizeChanged` at all. It is kept: it stops the
+  `shelfHeightPx` → page-inset feedback from chasing sub-pixel changes.
+
 ## 2026-10-29 — Antigravity — Round 66: Fix glitching & disappearing annotate M3 buttons in PageViewerScreen
 
 Root-cause fix for button disappearance and flicker on the reader's in-place `AnnotateShelf`:

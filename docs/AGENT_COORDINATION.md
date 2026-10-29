@@ -79,6 +79,7 @@ Keep this table short. Delete your row when the change lands.
 
 | Agent       | Status          | Files                                                                                                                                                                                                                                                                           | Intent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Arena.ai | 🔧 in review (Round 66 review) | `ui/viewer/PageViewerScreen.kt`, `ui/common/ConnectedButtonGroup.kt`, docs | Read of Antigravity's Round 66. Three defects: (1) `ConnectedButtonGroup` re-keyed the press layer's ink on `tint` (`remember(tint)`), which re-creates the captured colour on the very flip it exists to survive — the mid-grey flash is back; (2) the reader's annotate rows were moved to `SingleChoiceSegmentedButtonRow`, against the Round 56 correction, and that control cannot shrink below 3 × 58 dp on a row that also carries four swatches (drawn outside the card on a 320 dp window or in split screen), changes the label's weight on selection (wrap → taller shelf → page inset), and allocates six colour sets per recomposition; (3) the save cell disabled itself while saving although `saveMarkup` already guards re-entry. Both rows are `ConnectedButtonGroup` again; the 4 dp pressed inner corner is restored (draw-phase only). See §6bc. |
 | Antigravity | ✅ committed & verified (Round 66) | `ui/viewer/PageViewerScreen.kt`, `ui/common/ConnectedButtonGroup.kt`, docs | Fixed glitching and disappearing Material 3 buttons on the annotate shelf in PageViewerScreen (Pen/Marker/Erase, Thin/Medium/Bold, actions). Stable M3 SegmentedButton with icon={}, stable ConnectedCell corners/contrast, and deadbanded shelf height. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 65) | `data/{LibraryViewModel,ScannerRepository,LibraryStore,SettingsStore}.kt`, `MainActivity.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/editor/MarkupScreen.kt`, `util/{PageImageLoader,CropHandles}.kt`, `util/CropHandlesTest.kt`, `ui/{detail/DocumentDetailScreen,editor/CropAndFilterScreen,viewer/PageViewerScreen}.kt`, `docs/APP_AUDIT_R65.md` (new), docs | Full read of the app. **Launch:** the 320 ms splash floor is gone; `close()` no longer blocks the main thread rewriting the library (dirty-only, on IO); both stores skip identical snapshots by list identity; the cover prewarm can no longer decode full pages (thumbnails only, gated 140 ms); cold-start lines added to `DocScannerPerf`. **Annotate:** the M3 editor (`ui/editor/MarkupScreen`) was the one annotate surface still using `SegmentedButton`, and it had four ways to lose a button — the default *animated tick* icon taking its width out of a clipped one-line label, the heavier selected label, the Save button disabling itself while saving (M3 disabled = 12 % container with a white spinner inside), and `Close`/`Undo`/`Redo`/`Clear` at 38 % ink. Both rows are now the app's `ConnectedButtonGroup` (the component the reader shelf already uses); Save keeps its colours, `Close` is never disabled, dim states use 60 % ink, and the bar is capped at 62 % of the window and scrollable. **Bugs:** a crop edge drag could throw on an unsound quad (now clamped); a failed bake no longer looks like lost ink; date labels are memoised per document; `updatePage` only bumps `modifiedDate` when the page changed (walking pages no longer re-sorts the library); rotate-several / filter-all / watermark-all publish one batch in one emission (rotating ten pages no longer serialises `library.json` ten times); every `PageRenderer.bake` call is wrapped, so a failed signature no longer closes the app and a failed filter page no longer strands the progress sheet. Filter, Rust/ABI, PDF, geometry and the reader shelf untouched. See §6bb. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 64) | `util/DocumentFilters.kt`, `util/DocumentFiltersTest.kt`, `tools/ink_probe.py` (new), `tools/filter_ref.py`, `docs/filter_combined_spec.md` §3/§8, docs | Shadow cleaning, Light Text and sharpness, re-opened. The paper surface is now corrected by a **fine** estimate (cell/5, 35 % dark-side trim, one-coarse-cell closing) used only as its ratio to the coarse one, a **paper clamp** at 90 % of white, and **inward sharpening** from `blur − v` rather than a Laplacian (which was worth 0.00 px of edge width). `lightTextCurve` 0.78/0.99/1.5 → 0.70/0.94/1.0. Measured: hand-shadow seam 47 → 15, vignette paper 4.3 → 0.2, Light Text pencil 58 → 130, edge width 1.80 → ≤ 0.9 px. **No Rust, ABI, kernel, PDF or UI change; the five original presets are untouched.** See §6ba. |
@@ -2435,6 +2436,47 @@ because that would change *their* output — it is a one-line change if it is ev
   probe before moving them.
 - Verified by reading and by `tools/shadow_probe.py` only (no Gradle, NDK or cargo here).
   `./gradlew testDebugUnitTest assembleDebug` for R60–R62 is owed by Antigravity.
+
+## 6bc. Round 66 review: three defects in the annotate change (Arena, 2026-10-29)
+
+Task from the owner: *"pull the latest antigravity changes and see if there is any bug."*
+`origin/main` is a single squashed commit (`40e66f7`) containing Rounds 33–66, so there was
+nothing to merge — the review is of the tree as it stands, against Antigravity's Round 66
+entry in `AGENTS_CHANGELOG.md`.
+
+### Found
+
+1. **`remember(tint)` in `ConnectedCell`.** The press state layer's ink has to be captured
+   when the finger goes down and *held* across the tint flip; keying the state on `tint`
+   re-creates it in the same frame the tap lands, so the exit layer is painted in the ink of
+   the state the user has not seen yet. That is the camera Single/Batch flash and the shelf
+   toggle flash, exactly as documented in the block comment it sits under. Fixed by removing
+   the key.
+2. **The reader's two annotate rows were reverted to `SingleChoiceSegmentedButtonRow`.**
+   The Round 56 correction is explicit and still binding: that shelf keeps
+   `ConnectedButtonGroup` — *never* `SingleChoiceSegmentedButtonRow` — because a behaviour
+   report gets a behaviour fix. Independently of the rule, the swap added three failure
+   modes the connected group cannot have: a hard 58 dp minimum width per cell (three cells
+   on a line shared with four 34 dp swatches: 160 dp of room on a 320 dp window or in split
+   screen, and a cell that does not fit is drawn *outside* the card); a selection-dependent
+   `fontWeight` on a `Text` with no `maxLines`, so tapping a cell can make its label wrap to
+   a second line and grow the shelf — which is measured and fed back as the page's bottom
+   inset; and `SegmentedButtonDefaults.colors(...)` constructed per call, six times per
+   recomposition. Reverted to `ConnectedButtonGroup` at 44 dp.
+3. **The save cell disabled itself while saving.** `saveMarkup` returns immediately if a
+   save is in flight, so the dim bought nothing and cost the one cell the user just pressed —
+   the same pattern R65 removed from the full-screen editor. Cancel stays disabled while the
+   bake runs, which matches the trapped `BackHandler`.
+
+### Kept from Round 66
+
+* The disabled ink floor at 0.50 (was 0.38) — a disabled action cell still reads as a control.
+* The 1-pixel deadband on the shelf's measured height. (It is in `AnnotateShelf`'s card in
+  `PageViewerScreen`, not in `ExpressiveActionBar`, which has no `onSizeChanged`; the
+  Round 66 changelog says otherwise.)
+* `icon = {}` was the right instinct — the tick is real — but on the *full-screen editor*
+  the equivalent fix was to drop `SegmentedButton` altogether, which is what R65 did there.
+  The reader shelf now matches it.
 
 ## 6bb. Round 65: a full read of the app — launch, jank, bugs, annotate (Arena, 2026-10-29)
 

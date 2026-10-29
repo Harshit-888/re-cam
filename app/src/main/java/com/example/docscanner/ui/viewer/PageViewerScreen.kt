@@ -64,9 +64,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
@@ -1081,42 +1078,54 @@ private fun AnnotateShelf(
             )
         }
 
-        // ## Tool and weight: the connected group, unchanged
+        // ## Tool and weight: the app's own connected group
         //
-        // These two rows are the same `ConnectedButtonGroup` of label-only cells this
-        // shelf has always used — same plate (`surfaceContainerLowest`), same ink
-        // (`onSurfaceVariant`), same accent and the same 44 dp cells. No component was
-        // swapped: the complaint was about behaviour, not style.
+        // These two rows are `ConnectedButtonGroup`, the component every other shelf and
+        // per-page action in the app uses — and the one they must stay: a behaviour report
+        // is answered with a behaviour fix, not by swapping the control out.
         //
-        // The "disappearing button" report is fixed *inside* the cell (no ink-coloured
-        // ripple bounded to the label; no whole-cell alpha for the disabled state) and
-        // *inside this shelf* (nothing is disabled when the eraser is chosen), so what the
-        // finger sees at rest is pixel-for-pixel what it saw before.
-        val tools = listOf(
-            MarkupTool.PEN to "Pen",
-            MarkupTool.HIGHLIGHTER to "Marker",
-            MarkupTool.WHITEOUT to "Erase"
-        )
-        SingleChoiceSegmentedButtonRow(
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            tools.forEachIndexed { index, (toolOption, label) ->
-                SegmentedButton(
-                    selected = markup.tool == toolOption,
-                    onClick = { markup.tool = toolOption },
-                    shape = SegmentedButtonDefaults.itemShape(index = index, count = tools.size),
-                    colors = shelfSegmentedColors(),
-                    icon = {},
-                    label = {
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = if (markup.tool == toolOption) FontWeight.SemiBold else FontWeight.Medium
-                        )
-                    }
+        // They were briefly M3 `SingleChoiceSegmentedButtonRow` + `SegmentedButton`, to get
+        // rid of the animated tick. That traded one mechanism for three:
+        //
+        // * `SegmentedButton` carries `defaultMinSize(minWidth = 58.dp)`, so three cells
+        //   cannot be narrower than 174 dp. This row shares its line with four 34 dp
+        //   swatches, which leaves 160 dp on a 320 dp-wide window or in split screen — and
+        //   what does not fit is **drawn outside the card**, i.e. a button disappears. The
+        //   connected group has no minimum width: its cells are equal shares and shrink.
+        // * the label was given a heavier weight when selected, which changes the text's
+        //   width; the label has no `maxLines`, so a word that fits on one line at Medium
+        //   can wrap to two at SemiBold — the row gets taller *when you tap it*, and the
+        //   shelf height feeds the page inset above it.
+        // * `SegmentedButtonDefaults.colors(...)` is constructed per call, so the six cells
+        //   were being handed six brand-new colour objects on every recomposition of the
+        //   shelf, defeating skipping for the whole row.
+        //
+        // The connected group answers all three by construction, and its cells already say
+        // which one is chosen by *filling* — no glyph, no weight change, no minimum width.
+        ConnectedButtonGroup(
+            actions = listOf(
+                ConnectedAction(
+                    label = "Pen",
+                    selected = markup.tool == MarkupTool.PEN,
+                    onClick = { markup.tool = MarkupTool.PEN }
+                ),
+                ConnectedAction(
+                    label = "Marker",
+                    selected = markup.tool == MarkupTool.HIGHLIGHTER,
+                    onClick = { markup.tool = MarkupTool.HIGHLIGHTER }
+                ),
+                ConnectedAction(
+                    label = "Erase",
+                    selected = markup.tool == MarkupTool.WHITEOUT,
+                    onClick = { markup.tool = MarkupTool.WHITEOUT }
                 )
-            }
-        }
+            ),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            accentColor = MaterialTheme.colorScheme.primary,
+            onAccentColor = MaterialTheme.colorScheme.onPrimary,
+            cellHeight = 44.dp
+        )
 
         Spacer(Modifier.height(ShelfPadding))
 
@@ -1166,29 +1175,21 @@ private fun AnnotateShelf(
             // A second connected group rather than a slider: three discrete weights are
             // three decisions, and a slider you cannot hit mid-drag is worse than three
             // cells you can.
-            SingleChoiceSegmentedButtonRow(
-                modifier = Modifier.weight(1f)
-            ) {
-                MarkupWidths.forEachIndexed { index, fraction ->
-                    SegmentedButton(
+            ConnectedButtonGroup(
+                actions = MarkupWidths.mapIndexed { index, fraction ->
+                    ConnectedAction(
+                        label = MarkupWidthLabels[index],
                         selected = markup.widthFraction == fraction,
-                        onClick = { markup.widthFraction = fraction },
-                        shape = SegmentedButtonDefaults.itemShape(
-                            index = index,
-                            count = MarkupWidths.size
-                        ),
-                        colors = shelfSegmentedColors(),
-                        icon = {},
-                        label = {
-                            Text(
-                                text = MarkupWidthLabels[index],
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = if (markup.widthFraction == fraction) FontWeight.SemiBold else FontWeight.Medium
-                            )
-                        }
+                        onClick = { markup.widthFraction = fraction }
                     )
-                }
-            }
+                },
+                modifier = Modifier.weight(1f),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                accentColor = MaterialTheme.colorScheme.primary,
+                onAccentColor = MaterialTheme.colorScheme.onPrimary,
+                cellHeight = 44.dp
+            )
         }
 
         Spacer(Modifier.height(ShelfPadding))
@@ -1228,9 +1229,15 @@ private fun AnnotateShelf(
                         // The save cell is the group's primary action: filled with the theme
                         // accent, with the theme's on-accent ink. Not an icon swap — a busy
                         // state that changes the *glyph* changes the button under the finger.
+                        //
+                        // **And it does not disable itself while saving.** `onSave` is
+                        // `saveMarkup`, which returns immediately if a save is already
+                        // running, so enabling it costs nothing — whereas disabling it dims
+                        // the one cell the user just tapped, which is the "the button
+                        // disappeared when I tapped Save" half of the report that the
+                        // full-screen editor had too.
                         icon = Icons.Default.Check,
-                        contentDescription = if (isSaving) "Saving annotation" else "Save annotation",
-                        enabled = !isSaving,
+                        contentDescription = "Save annotation",
                         emphasized = true,
                         onClick = onSave
                     )
@@ -1252,18 +1259,6 @@ private fun AnnotateShelf(
  * a blur-and-settle. With the id on the frame, a pixel swap is a swap and a page turn is
  * a turn.
  */
-/**
- * The palette for the annotate shelf's Material 3 segmented switches.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun shelfSegmentedColors() = SegmentedButtonDefaults.colors(
-    activeContainerColor = MaterialTheme.colorScheme.primary,
-    activeContentColor = MaterialTheme.colorScheme.onPrimary,
-    inactiveContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
-    inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant
-)
-
 private data class PageFrame(val bitmap: ImageBitmap?, val pageId: String)
 
 /** How far the viewer magnifies a page before the pan clamp takes over. */

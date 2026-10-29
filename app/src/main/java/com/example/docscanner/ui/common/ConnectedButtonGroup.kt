@@ -210,9 +210,20 @@ private fun ConnectedCell(
     // the full cell radius when it is the chosen one. `animateDpAsState` because the
     // corner is a `CornerSize` in dp — the 50 % token is realised as half the cell
     // height, which is exactly what 50 % of a corner resolves to on a square-ish cell.
+    //
+    // The press step was removed for one round, on the theory that it made labels clip.
+    // It cannot: the shape reaches `Modifier.clip(shape)` and nothing else — the cell's
+    // *bounds* and the label's *measure* are untouched, so this is a draw-phase change at
+    // any value. It is also the M3 Expressive token
+    // (`m3_comp_button_group_connected_*`) and two other files' documentation quotes it,
+    // so it is here rather than in a changelog that disagrees with the code.
     val innerCorner by animateDpAsState(
-        targetValue = if (action.selected || action.emphasized) cellHeight / 2 else ConnectedInnerCorner,
-        animationSpec = tween(durationMillis = 150),
+        targetValue = when {
+            action.selected || action.emphasized -> cellHeight / 2
+            pressed -> ConnectedPressedInnerCorner
+            else -> ConnectedInnerCorner
+        },
+        animationSpec = spring(dampingRatio = 0.8f, stiffness = 520f),
         label = "connectedInnerCorner"
     )
 
@@ -283,7 +294,15 @@ private fun ConnectedCell(
     // over a white pill is nothing, black over the dark glass is nothing. `tint` is still
     // what drives everything that is *visible at rest*, so the plate, the label and the
     // selected state are unchanged.
-    var layerInk by remember(tint) { mutableStateOf(tint) }
+    // **Not** `remember(tint, …)`.
+    //
+    // Keying the state on `tint` looks tidier and breaks the one thing it is for: toggling
+    // a cell flips `tint` in the same frame the finger lifts, `remember(tint)` then
+    // *re-creates* the state with the **new** ink, and the still-visible exit layer is
+    // painted in the colour of the state the user has not seen yet — the exact mid-grey
+    // flash described above, back again. The value has to survive the flip; only a press
+    // may set it.
+    var layerInk by remember { mutableStateOf(tint) }
     LaunchedEffect(pressed, tint) {
         if (pressed) layerInk = tint
     }
