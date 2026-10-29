@@ -48,8 +48,21 @@ object PageImageLoader {
      * window live — so the cap has to hold tens of them, not four. The previous
      * floor of 8 MB did not, which made the cache thrash on small-heap devices:
      * every tile was evicted before the next frame needed it.
+     *
+     * **A fifth, not an eighth.** The scarce resource on this app's path is decode
+     * time, not RAM: a bitmap that has been evicted has to be re-decoded from a page
+     * file that may be a 3200 px PNG, and that is the stutter the user sees when
+     * scrolling back up or flipping through a document in the reader. The cache holds
+     * *scaled* bitmaps (the size the UI asked for), so a fifth of the heap is tens of
+     * megapixels of tiles rather than a handful of full pages, and the bitmaps are
+     * shared — nothing here is copied per screen.
+     *
+     * This is an explicit trade the owner asked for: "there is no issue of memory".
+     * On a 6 GB phone the per-app heap cap is the number that matters, and a fifth of
+     * it still leaves the rest of the app (a 3200 px bake, a PDF page, an ML Kit
+     * inference) the majority of it.
      */
-    private val maxCacheKilobytes: Int = (Runtime.getRuntime().maxMemory() / 1024L / 8L)
+    private val maxCacheKilobytes: Int = (Runtime.getRuntime().maxMemory() / 1024L / 5L)
         .toInt()
         .coerceAtLeast(24 * 1024)
 

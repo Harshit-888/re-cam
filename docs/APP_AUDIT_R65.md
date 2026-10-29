@@ -124,49 +124,51 @@ of `awaitQuiet(0, …)`, which was not a gate at all. It used to start decoding 
 launch crossfade and the grid's first layout — precisely the two frames that decide whether
 the app feels quick to open.
 
-### 2.5 The annotate M3 buttons — `ui/editor/MarkupScreen`
+### 2.5 The annotate buttons — four separate ways they could vanish
 
-This is the "annotate m3 buttons are still glitching and disappearing" report, and the
-cause is in a **default argument**, which is why five rounds of fixing the surrounding
-layout never touched it.
+This is the "the annotate m3 buttons are still glitching and disappearing" report, filed for
+the second time. Four mechanisms, all in the full-screen annotate editor
+(`ui/editor/MarkupScreen`), which is the only annotate surface left using M3's segmented
+buttons — the reader's shelf had already been moved to the app's own
+`ConnectedButtonGroup` in earlier rounds, which is why fixing the shelf twice never touched
+this.
 
-`SegmentedButton`'s signature ends in
+1. **`SegmentedButton`'s default `icon` is an animated tick.** Its signature ends in
 
-```kotlin
-icon: @Composable () -> Unit = { SegmentedButtonDefaults.Icon(selected) },
-```
+   ```kotlin
+   icon: @Composable () -> Unit = { SegmentedButtonDefaults.Icon(selected) },
+   ```
 
-— the **animated tick** that M3 grows into a cell when it becomes the selected one. This
-row never passed an `icon`, so every cell had one, and it is an `AnimatedVisibility`: on
-selection the tick is composed *inside the cell* and grows from scale 0 while occupying its
-full measured width, and on deselection it is removed again once the fade finishes. So the
-content width of the cell that is being selected or deselected changes over ~150 ms, and
-every frame of that is a layout pass for the row:
+   and `Icon(active)` is an `AnimatedVisibility`: the selected cell gains the icon's full
+   measured width on selection and loses it ~150 ms after deselection. The label is
+   `maxLines = 1` with the **default** `TextOverflow.Clip`, so the part that got dropped was
+   the label itself, the neighbours shifted, and the row re-measured on every frame of the
+   animation. The row never passed an icon, so every cell had one.
+2. **The selected label is painted at a heavier weight**, so the cells changed width with the
+   selection as well — with no `weight` on the cells, the row's total width followed the
+   selection.
+3. **The Save button disabled itself while saving**, and M3 paints a disabled filled button
+   with a 12 % container and 38 % content. Its busy content is a spinner in `onPrimary` —
+   white on a near-white bar. So the moment the user tapped Save, the button *disappeared* and
+   the spinner was invisible.
+4. **Disabled controls were painted at 38 %**, which on this pale bar is a ghost: `Close` was
+   disabled while a save was in flight (so the way out vanished exactly when a user who
+   regretted the save would reach for it), and `Undo`/`Redo`/`Clear` start disabled, i.e.
+   invisible, until the first stroke.
 
-1. the label — `maxLines = 1` with the **default** `TextOverflow.Clip` — loses its tail to
-   the tick for the duration of the animation and gets it back afterwards ("the text
-   glitches"); on a 360 dp phone, three cells wide with a tick in one of them, the label is
-   the part that is dropped ("one of them disappears");
-2. the neighbours move, because a connected row is laid out from the children's widths —
-   and a row whose geometry depends on which cell is selected also re-measures from the
-   *default* `defaultMinSize(minWidth = 58.dp)` whenever a label is longer than a third of
-   the row.
+**Fixed:** both segmented rows are now the app's own `ConnectedButtonGroup` — the component
+the reader's shelf and every per-page action already use. It has no default icon, no width
+animation, no disabled-alpha and equal cells, so mechanisms 1, 2 and 4 cannot recur there by
+construction, and the two annotate surfaces finally behave identically. The Save button keeps
+its own colours while it works (`save()` already guarded re-entry), and `Close` is never
+disabled: the strokes are written as *data* before the bake, so leaving mid-bake is safe.
+`Undo`/`Redo`/`Clear` keep a 60 % disabled ink so they read as unavailable rather than absent.
 
-A connected segmented row already says which cell is chosen by *filling* it. The glyph was a
-second, worse indicator, drawn inside the same space as the label.
-
-**Fixed:** `icon = {}` on all six cells (tools and weights) — no tick, so no per-selection
-width animation at all — plus `overflow = TextOverflow.Ellipsis` so a long word shortens
-instead of being clipped, and `Modifier.weight(1f)` so the three cells are equal shares of
-the row and that stays true at every font scale, whatever M3's own default weighting does in
-a future version.
-
-**Also fixed (same bar):** the annotate bar is one Column of 230 dp — two segmented rows, a
-swatch row and the save button — which is **more than 340 dp at a 2.0× font scale**. A
-`Scaffold` measures its bottom bar against the window, so in landscape or with large text
-the overflow is drawn *outside* the window: the save button, then the swatch row, are simply
-not on screen and there is nothing to scroll to reach them. The bar is now capped at 62 % of
-the window height and scrolls when it needs to.
+**Also fixed (same bar):** it is a `Scaffold` bottom bar — one Column of 230 dp, **more than
+340 dp at a 2.0× font scale**, and a bottom bar is measured against the window, so the
+overflow was drawn *outside* the window with nothing to scroll to: the save button, then the
+swatch row, simply were not on screen. It is now capped at 62 % of the window height and
+scrolls.
 
 ### 2.6 Date labels were reformatted for every document on every change — `ui/dashboard`
 
@@ -199,6 +201,13 @@ high`; order the bounds first") and the corner paths used it; the edge paths did
 **Fixed:** all eight clamps go through `clamp`, and two unit tests pin it
 (`a collapsed quad cannot throw out of an edge drag`, `an inverted quad cannot throw …`).
 
+### 2.8 A failed bake looked like lost ink — `ui/editor/MarkupScreen`
+
+`save()` stored the strokes as data and then re-baked the page, and if the bake returned
+`null` it closed the screen silently. The ink is not lost — it is on the page and replays on
+the next bake — but nothing said so, so it reads as "my annotation vanished". It now says
+what happened.
+
 ### 2.9 Two writers could interleave inside `library.json.tmp` — `data/LibraryStore`
 
 Found while making 2.2 safe, and a bug in its own right. Both stores write to a fixed temp
@@ -214,13 +223,6 @@ app.
 second writer waits for the first to finish and both publish a complete file. It is held
 only around a small file write, and never on the main thread — `close()` no longer writes
 there at all.
-
-### 2.8 A failed bake looked like lost ink — `ui/editor/MarkupScreen`
-
-`save()` stored the strokes as data and then re-baked the page, and if the bake returned
-`null` it closed the screen silently. The ink is not lost — it is on the page and replays on
-the next bake — but nothing said so, so it reads as "my annotation vanished". It now says
-what happened.
 
 ### 2.10 A batch of edits was a batch of library writes — `data/ScannerRepository`
 
@@ -277,6 +279,18 @@ batch". One bad page abandoned the batch and published nothing.
 **Fixed:** every bake is wrapped; the signature paths say "Could not sign this page"; the
 filter batch skips the page that failed and resets its state in a `finally`.
 
+
+### 2.13 The bitmap cache was sized for the smallest phone, not this one
+
+`PageImageLoader`'s cache was `maxMemory / 8` with a 24 MB floor. That number is a
+*decoding* budget in disguise: every eviction is a page that has to be decoded again on the
+frame that needs it, and a page can be a 3200 px PNG (~30 MB of transient inflation) whereas
+a cover is 1.1 MB. It is now `maxMemory / 5`.
+
+This is the one place the owner's instruction changes an engineering default: *"there is no
+issue of memory"*. The cache holds **scaled** bitmaps at the size the UI asked for, so a fifth
+of the heap is tens of megapixels of tiles rather than a handful of full pages, and those
+bitmaps are shared — nothing is copied per screen.
 
 ---
 

@@ -53,14 +53,18 @@ facts from things that need a device, and says which is which.
 
 **Annotate buttons — the actual cause, in a default argument**
 
-6. `SegmentedButton`'s default `icon` is `SegmentedButtonDefaults.Icon(selected)` — the
-   **animated tick**, an `AnimatedVisibility` that gives the cell the icon's width on
-   selection and removes it ~150 ms after deselection. This row never passed an icon, so
-   every cell had one, and the label is `maxLines = 1` with the default `Clip` overflow: the
-   tick's space came out of the label, the neighbours shifted, and the row re-measured on
-   every frame of the animation. **Fixed:** `icon = {}` on all six cells, ellipsis on the
-   labels, and `weight(1f)` so each cell is a fixed third. A connected row says which cell is
-   chosen by filling it.
+6. **The annotate buttons had four ways to vanish**, all in `ui/editor/MarkupScreen` — the
+   only annotate surface still using M3 segmented buttons. `SegmentedButton`'s default `icon`
+   is the **animated tick**, an `AnimatedVisibility` that gives the selected cell the icon's
+   width and removes it ~150 ms after deselection, taken out of a `maxLines = 1` label with
+   the default `Clip` overflow: the label was what got clipped, and the row re-measured on
+   every frame. The Save button disabled itself while saving (M3 paints a disabled filled
+   button at 12 % container / 38 % content) — so it disappeared the instant it was tapped,
+   with a white spinner inside it. `Close` was disabled during a save, and `Undo`/`Redo`/
+   `Clear` started at 38 % ink, i.e. invisible. **Fixed:** both rows are now the app's own
+   `ConnectedButtonGroup`, the same component the reader's shelf uses — no default icon, no
+   width animation, no disabled alpha, equal cells — Save keeps its colours, `Close` is never
+   disabled, and the dim states use 60 % ink.
 7. **The annotate bar could be taller than the window.** Two segmented rows, a swatch row and
    the save button are 230 dp — over 340 dp at a 2.0x font scale. A `Scaffold` measures its
    bottom bar against the window, so the overflow was drawn off-screen with nothing to scroll
@@ -108,6 +112,11 @@ facts from things that need a device, and says which is which.
    reset, stranding the sheet at "applying page 3 of 9" for the life of the screen. Every
    bake is now wrapped; the filter batch resets in a `finally` and skips the page that
    failed.
+
+15. **The bitmap cache was sized for the smallest phone** (`PageImageLoader`): `maxMemory / 8`
+   with a 24 MB floor, i.e. one eviction per screenful on a large library, and an eviction is a
+   page re-decode that may be a 3200 px PNG. Now `maxMemory / 5` — the owner's rule is "there
+   is no issue of memory", and the cache holds *scaled* bitmaps, not full pages.
 
 **Audited and sound** (do not re-fix): every `PageRenderer.bake` call site (the function is a
 `suspend` wrapper around IO), PDF export, `MarkupSession`, `ConnectedButtonGroup`,

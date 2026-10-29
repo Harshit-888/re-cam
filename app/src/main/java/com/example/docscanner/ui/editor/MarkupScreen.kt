@@ -31,15 +31,14 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Redo
 import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -68,7 +67,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.example.docscanner.data.ScannerRepository
@@ -78,6 +76,8 @@ import com.example.docscanner.model.MarkupStroke
 import com.example.docscanner.model.MarkupTool
 import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.theme.DocShapes
+import com.example.docscanner.ui.common.ConnectedAction
+import com.example.docscanner.ui.common.ConnectedButtonGroup
 import com.example.docscanner.ui.common.TapTarget
 import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.MarkupRenderer
@@ -249,20 +249,36 @@ private fun MarkupEditor(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onClose, enabled = !isSaving) {
+                    // **Never disabled.** M3 paints a disabled `IconButton` at 38 % of
+                    // its ink — on a white app bar that is a ghost, and this is the way
+                    // out of the screen. It was disabled while a save was in flight, so
+                    // the close button *vanished* at exactly the moment a user who had
+                    // changed their mind would reach for it. Leaving mid-bake is safe:
+                    // the strokes are written as data before the bake starts.
+                    IconButton(onClick = onClose) {
                         Icon(Icons.Default.Close, contentDescription = "Close without saving")
                     }
                 },
                 actions = {
+                    // Undo and redo are correctly *disabled* before the first stroke —
+                    // but the default 38 % ink hides them, which is the "the buttons are
+                    // missing" half of this screen's report. 60 % stays legible while
+                    // still reading as unavailable.
+                    val dimmed = IconButtonDefaults.iconButtonColors(
+                        disabledContentColor =
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.60f)
+                    )
                     IconButton(
                         onClick = { history.undo(); revision++ },
-                        enabled = canUndo && !isSaving
+                        enabled = canUndo && !isSaving,
+                        colors = dimmed
                     ) {
                         Icon(Icons.Default.Undo, contentDescription = "Undo")
                     }
                     IconButton(
                         onClick = { history.redo(); revision++ },
-                        enabled = canRedo && !isSaving
+                        enabled = canRedo && !isSaving,
+                        colors = dimmed
                     ) {
                         Icon(Icons.Default.Redo, contentDescription = "Redo")
                     }
@@ -300,46 +316,47 @@ private fun MarkupEditor(
                         .verticalScroll(rememberScrollState())
                         .padding(horizontal = 16.dp, vertical = 14.dp)
                 ) {
-                    // ## Why every cell is weighted and none of them has an icon
+                    // ## The same connected group the reader's annotate shelf uses
                     //
-                    // `SegmentedButton`'s default `icon` is `SegmentedButtonDefaults.Icon(selected)`
-                    // — the **animated tick** M3 grows into a cell when it becomes the selected
-                    // one, and it is an `AnimatedVisibility`: the cell's content gains the icon's
-                    // full width on selection and loses it again ~150 ms after deselection. This
-                    // row never passed an icon, so it had the tick. The label is `maxLines = 1`
-                    // with the *default* overflow, which is `Clip` — so for those 150 ms the
-                    // label's tail is what the tick takes, the neighbouring cells shift, and the
-                    // row re-measures on every frame of the animation. That is the "buttons
-                    // glitch and one of them disappears" report, and it is in a default argument,
-                    // which is why five rounds of fixing the surrounding layout never touched it.
+                    // These were two `SingleChoiceSegmentedButtonRow`s, i.e. the last
+                    // M3 segmented buttons left anywhere in the annotate path — and the
+                    // source of the "the annotate buttons glitch and disappear" report
+                    // that survived two rounds of fixes elsewhere:
                     //
-                    // A connected segmented row already says which cell is chosen by *filling*
-                    // it; a glyph drawn into the same space as the label is a second, worse
-                    // indicator. `weight(1f)` then makes the split explicit — each cell is a
-                    // fixed third of the row, at every font scale, whatever M3's own default
-                    // weighting does in a future version.
-                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                        MarkupTool.entries.forEachIndexed { index, option ->
-                            SegmentedButton(
+                    // - `SegmentedButton`'s default `icon` is `SegmentedButtonDefaults.Icon(selected)`,
+                    //   the **animated tick**. It is an `AnimatedVisibility`, so the
+                    //   selected cell gains the icon's full width and loses it again ~150 ms
+                    //   after deselection, and the row re-measures on every frame of that.
+                    //   The label is `maxLines = 1` with the default `Clip` overflow, so the
+                    //   part that got dropped was the label — "one of them disappears".
+                    // - M3 paints a *selected* label at a heavier weight, so the cells also
+                    //   changed width with the selection.
+                    // - and the bar is a `Scaffold` bottom bar, which is measured against
+                    //   the window: anything that makes the row wider than the window is
+                    //   drawn outside it rather than wrapped.
+                    //
+                    // This is the app's own group — the one the reader's shelf and every
+                    // per-page action already use. It has no default icon, no width
+                    // animation, no disabled alpha, and equal cells. One component, one
+                    // behaviour, on both annotate surfaces.
+                    ConnectedButtonGroup(
+                        actions = MarkupTool.entries.map { option ->
+                            ConnectedAction(
+                                label = option.label,
                                 selected = tool == option,
-                                onClick = { tool = option },
-                                shape = SegmentedButtonDefaults.itemShape(
-                                    index = index,
-                                    count = MarkupTool.entries.size
-                                ),
-                                modifier = Modifier.weight(1f),
-                                icon = {},
-                                label = {
-                                    Text(
-                                        option.label,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
+                                onClick = { tool = option }
                             )
-                        }
-                    }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        accentColor = MaterialTheme.colorScheme.primary,
+                        onAccentColor = MaterialTheme.colorScheme.onPrimary,
+                        // 40 dp, not the group's 56 dp default: this bar already carries
+                        // three rows, and the height budget is what pushed its overflow
+                        // off-screen at large font scales.
+                        cellHeight = 40.dp
+                    )
 
                     Spacer(Modifier.height(6.dp))
                     // ## The colour row is always there — it is not a child of the tool
@@ -394,44 +411,48 @@ private fun MarkupEditor(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // A second row of the same component — `SegmentedButton` only
-                        // exists inside a segmented-button row scope, which is also
-                        // what gives it the connected corners.
-                        SingleChoiceSegmentedButtonRow(modifier = Modifier.weight(1f)) {
-                            MarkupWidths.forEachIndexed { index, fraction ->
-                                SegmentedButton(
+                        // The same group as the tool row above — see the note there.
+                        ConnectedButtonGroup(
+                            actions = MarkupWidths.mapIndexed { index, fraction ->
+                                ConnectedAction(
+                                    label = MarkupWidthLabels[index],
                                     selected = widthFraction == fraction,
-                                    onClick = { widthFraction = fraction },
-                                    shape = SegmentedButtonDefaults.itemShape(
-                                        index = index,
-                                        count = MarkupWidths.size
-                                    ),
-                                    // Same two rules as the tool row: no growing tick, and an
-                                    // equal, fixed share of the row.
-                                    modifier = Modifier.weight(1f),
-                                    icon = {},
-                                    label = {
-                                        Text(
-                                            MarkupWidthLabels[index],
-                                            style = MaterialTheme.typography.labelMedium,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
+                                    onClick = { widthFraction = fraction }
                                 )
-                            }
-                        }
+                            },
+                            modifier = Modifier.weight(1f),
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            accentColor = MaterialTheme.colorScheme.primary,
+                            onAccentColor = MaterialTheme.colorScheme.onPrimary,
+                            cellHeight = 40.dp
+                        )
+                        // Enabled-looking even with nothing to clear. M3's disabled text
+                        // button is 38 % ink, which on this pale bar reads as an empty gap
+                        // — the rest of the "buttons are missing" report. It keeps a
+                        // legible ink instead; the action itself is cheap and idempotent.
                         TextButton(
                             onClick = { history.clear(); revision++ },
-                            enabled = canUndo && !isSaving
+                            enabled = canUndo && !isSaving,
+                            colors = ButtonDefaults.textButtonColors(
+                                disabledContentColor =
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.60f)
+                            )
                         ) { Text("Clear") }
                     }
 
                     Spacer(Modifier.height(10.dp))
 
                     Button(
+                        // **Never disabled while saving.** M3 paints a disabled filled
+                        // button with a 12 % container and 38 % content — and this one's
+                        // busy content is a spinner in `onPrimary`, i.e. white on a
+                        // near-white bar. So the moment the user tapped Save, the button
+                        // vanished and the spinner was invisible: the most literal form of
+                        // "the annotate buttons glitch and disappear". `save()` already
+                        // guards re-entry (`if (isSaving) return`), so the button can keep
+                        // its own colours while it works.
                         onClick = { save() },
-                        enabled = !isSaving,
                         shape = DocShapes.pill,
                         contentPadding = PaddingValues(horizontal = 20.dp),
                         modifier = Modifier
