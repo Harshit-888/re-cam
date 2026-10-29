@@ -984,9 +984,14 @@ class ScannerRepository(context: Context) {
                 signaturesDir = ImageStore.signaturesDir(appContext),
                 stagingParent = appContext.filesDir
             )
-            val merged = BackupArchive.merge(snapshotNow(), restored.snapshot)
             var committed = false
             try {
+                val local = snapshotNow()
+                val localIds = local.documents.mapTo(HashSet()) { it.id }
+                if (restored.snapshot.documents.any { it.id in localIds }) {
+                    throw IOException("Backup contains documents already in this library. Restore cancelled to protect local edits.")
+                }
+                val merged = BackupArchive.merge(local, restored.snapshot)
                 restored.commit()
                 committed = true
                 // Publish only after the pixels are in place: a page that appears in

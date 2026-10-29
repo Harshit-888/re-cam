@@ -93,6 +93,60 @@ class BackupArchiveTest {
         }
     }
 
+    @Test
+    fun `commit refuses an existing file and rolls back earlier files`() {
+        val (root, pages, _) = dirs()
+        val staging = File(root, "staged").apply { mkdirs() }
+        val first = File(staging, "first").apply { writeText("new first") }
+        val second = File(staging, "second").apply { writeText("new second") }
+        val newTarget = File(pages, "first.jpg")
+        val existing = File(pages, "second.jpg").apply { writeText("original") }
+        val restored = BackupArchive.RestoredBackup(
+            snapshot = library(emptyList()),
+            summary = BackupArchive.Summary(0, 0, 0, 0),
+            manifest = BackupArchive.BackupManifest(schemaVersion = 1, createdAt = 0, documentCount = 0, pageCount = 0),
+            moves = listOf(first to newTarget, second to existing),
+            staging = staging
+        )
+        try {
+            restored.commit()
+            fail("Expected collision to fail")
+        } catch (_: java.io.IOException) {
+            assertEquals("original", existing.readText())
+            assertTrue(!newTarget.exists())
+            assertTrue(first.exists())
+            assertTrue(second.exists())
+        } finally {
+            restored.discard()
+        }
+    }
+
+    @Test
+    fun `commit rolls back files when a staged source cannot be copied`() {
+        val (root, pages, _) = dirs()
+        val staging = File(root, "staged").apply { mkdirs() }
+        val first = File(staging, "first").apply { writeText("new first") }
+        val missing = File(staging, "missing")
+        val firstTarget = File(pages, "first.jpg")
+        val secondTarget = File(pages, "second.jpg")
+        val restored = BackupArchive.RestoredBackup(
+            snapshot = library(emptyList()),
+            summary = BackupArchive.Summary(0, 0, 0, 0),
+            manifest = BackupArchive.BackupManifest(schemaVersion = 1, createdAt = 0, documentCount = 0, pageCount = 0),
+            moves = listOf(first to firstTarget, missing to secondTarget),
+            staging = staging
+        )
+        try {
+            restored.commit()
+            fail("Expected copy to fail")
+        } catch (_: java.io.IOException) {
+            assertTrue(!firstTarget.exists())
+            assertTrue(!secondTarget.exists())
+        } finally {
+            restored.discard()
+        }
+    }
+
     // -------------------------------------------------------------- round trip
 
     @Test

@@ -1,11 +1,16 @@
-# Agent Coordination Protocol — Arena.ai ⟷ Antigravity
+# Agent Coordination Protocol — Arena.ai, Antigravity & Muse AI
 
-> **Two AI agents build this app in parallel.** Arena.ai works through Git on the
-> `arena/*` branch; Antigravity works directly in the local IDE. They share one
-> working tree. This document is the contract that keeps their edits from
-> colliding. Read it before you touch a file.
+> **Three AI agents can contribute to this project.** Arena.ai implements and
+> coordinates on its session branch; Antigravity integrates and verifies in the
+> local IDE; Muse AI provides independent reviews and verification. Their working
+> copies and access may differ, so exchange the exact commit and any patch or report
+> explicitly. Read this contract before editing or reviewing.
 
 ---
+
+**Quick handoffs:** [Agent handoff board](AGENT_HANDOFF.md) — current requests,
+responses and a copyable message template. Use this document for claims, detailed
+protocol and historical context; use the board for short messages.
 
 ## 1. The three rules
 
@@ -35,6 +40,39 @@ source of truth and Arena's change gets fixed, not reverted blindly.
 **Antigravity, before you `git pull` Arena's branch:** commit or stash your local
 work. If a merge conflict appears in a file, Arena's commit message names the
 rationale — read it before resolving.
+
+### Muse AI — review and verification handoff
+
+Muse is an independent reviewer, not an automatic background service or a substitute
+for device testing. The owner can supply a report or patch from Muse; no agent should
+assume Muse has received a message or can see uncommitted work. When a handoff is
+needed, record it here or in the changelog and provide the owner a link or text to
+share. Existing Arena and Antigravity responsibilities remain unchanged.
+
+1. **Set scope and revision.** Identify the repository, branch and exact commit,
+   including whether local uncommitted changes were inspected. State the files and
+   whether the work was static review, a build, tests or a device run.
+2. **Report reproducibly.** For each finding give an ID, severity, file and function,
+   evidence and execution path, trigger, expected and observed behavior, and a
+   verification step. Clearly separate confirmed code behavior, hypotheses and
+   device-dependent effects. Report negative results and coverage gaps too.
+3. **Verify before closing.** Another agent should check the stated path at the
+   relevant revision, identify counterevidence or reproduce it where appropriate,
+   and record the result and remaining uncertainty. A static finding is not a
+   device reproduction; a proposed fix is not verified until its checks run.
+4. **Coordinate changes.** A read-only audit does not claim source files. If Muse is
+   asked to edit, first read `AGENTS.md`, claim the specific files in §4, respect
+   existing claims and integration contracts, and add an `AGENTS_CHANGELOG.md`
+   entry for changes. Provide the exact diff/branch and test results for review.
+5. **Respect project boundaries.** `adobe-scan/` is read-only unless the owner
+   expressly authorizes changes. Do not commit generated binaries, APKs, build
+   output or sensitive data. Preserve the owner's UI and feature requirements.
+
+**Current handoff:** Muse's static inspection at `087cf89` informed the safety
+review below. The fixes in the current Arena working tree were not compiled or
+run on a device here; they are not independently verified merely by this note.
+Antigravity's build/device checks and Muse's follow-up review can be requested by
+the owner once they receive the corresponding revision or patch.
 
 ## 3. Integration contract — symbols other code depends on
 
@@ -73,13 +111,25 @@ adding a changelog entry and updating every caller in the same commit.
 | ~~`ImageProcessingUtils.getColorMatrix`~~                                | **removed**   | Was a global `ColorMatrix`; superseded by `DocumentFilters`                                      |
 | ~~`ImageProcessingUtils.getComposeColorFilter`~~                         | **removed**   | Editor now previews a real filtered bitmap                                                       |
 
+## Safety review handoff — 2026-10-30
+
+High-impact Muse findings are addressed in the current Arena branch; see the newest
+`AGENTS_CHANGELOG.md` entry. Antigravity: run `testDebugUnitTest assembleDebug` and
+exercise corrupt/empty library startup, backup collision/failed copy, partial batch
+filter failure, missing signature, and gallery publish failure. The conservative
+restore collision policy intentionally refuses overlapping backups; it is not a full
+transactional restore or conflict-resolution UI. No build or device test ran here.
+
 ## 4. In-flight changes
 
 Keep this table short. Delete your row when the change lands.
 
 | Agent       | Status          | Files                                                                                                                                                                                                                                                                           | Intent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Antigravity | ✅ verified & recorded (Round 68) | docs/AGENT_HANDOFF.md, docs/AGENTS_CHANGELOG.md, docs/AGENT_COORDINATION.md | Completed H001 build/device review (233 unit tests pass, assembleDebug pass) and H002 measurement split on physical Realme device. Hypotheses H1–H4 assessed in H002 reply. |
+| Arena.ai | ✅ ready for review | `docs/AGENT_COORDINATION.md`, `docs/AGENTS_CHANGELOG.md`, `docs/AGENT_HANDOFF.md` | Launch measurement request recorded in H002; device and build tools unavailable here. |
 | Muse | 📋 diagnosis (no code change) | `docs/LAUNCH_DIAGNOSIS.md` (new), docs | Launch diagnosis at base `087cf89`: ~10 s initial launch is not one bug — the splash gate parses all of `library.json` (OCR included), the release build has no shrinking / Baseline Profile, background work (OCR 2.5 s, repair 4 s, sweep 6 s) can still overlap the first 10 s because "quiet" means "not touching", and the 600-thumbnail cap makes older covers cold. Ranked plan and the §5 measurement split are in the new doc. **Antigravity: run the §5 split and the benchmark-vs-debug comparison before any fix is merged; Muse cannot build or run on device.** |
+| Arena.ai | ✅ ready for review | `AGENTS.md`, `docs/AGENT_COORDINATION.md`, `docs/AGENT_HANDOFF.md`, `docs/AGENTS_CHANGELOG.md` | Shared handoff board and navigation links; see the current session branch for review. |
 | Arena.ai | 🔧 in review (Round 66 review) | `ui/viewer/PageViewerScreen.kt`, `ui/common/ConnectedButtonGroup.kt`, docs | Read of Antigravity's Round 66. Three defects: (1) `ConnectedButtonGroup` re-keyed the press layer's ink on `tint` (`remember(tint)`), which re-creates the captured colour on the very flip it exists to survive — the mid-grey flash is back; (2) the reader's annotate rows were moved to `SingleChoiceSegmentedButtonRow`, against the Round 56 correction, and that control cannot shrink below 3 × 58 dp on a row that also carries four swatches (drawn outside the card on a 320 dp window or in split screen), changes the label's weight on selection (wrap → taller shelf → page inset), and allocates six colour sets per recomposition; (3) the save cell disabled itself while saving although `saveMarkup` already guards re-entry. Both rows are `ConnectedButtonGroup` again; the 4 dp pressed inner corner is restored (draw-phase only); `saveMarkup` clears its save lock in a `finally`, so a failed bake can no longer trap the reader in annotate mode. **Antigravity: read §6bd before your next edit to these files.** |
 | Antigravity | ✅ committed & verified (Round 67) | `ui/common/ConnectedButtonGroup.kt`, docs | Core fix for disappearing connected buttons on pen toggle: added 1 dp outlineVariant/accentColor border to ConnectedCell, synchronized layerInk on press/rest, and critically damped corner spring. 221 tests pass, assembleDebug verified. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 65) | `data/{LibraryViewModel,ScannerRepository,LibraryStore,SettingsStore}.kt`, `MainActivity.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/editor/MarkupScreen.kt`, `util/{PageImageLoader,CropHandles}.kt`, `util/CropHandlesTest.kt`, `ui/{detail/DocumentDetailScreen,editor/CropAndFilterScreen,viewer/PageViewerScreen}.kt`, `docs/APP_AUDIT_R65.md` (new), docs | Full read of the app. **Launch:** the 320 ms splash floor is gone; `close()` no longer blocks the main thread rewriting the library (dirty-only, on IO); both stores skip identical snapshots by list identity; the cover prewarm can no longer decode full pages (thumbnails only, gated 140 ms); cold-start lines added to `DocScannerPerf`. **Annotate:** the M3 editor (`ui/editor/MarkupScreen`) was the one annotate surface still using `SegmentedButton`, and it had four ways to lose a button — the default *animated tick* icon taking its width out of a clipped one-line label, the heavier selected label, the Save button disabling itself while saving (M3 disabled = 12 % container with a white spinner inside), and `Close`/`Undo`/`Redo`/`Clear` at 38 % ink. Both rows are now the app's `ConnectedButtonGroup` (the component the reader shelf already uses); Save keeps its colours, `Close` is never disabled, dim states use 60 % ink, and the bar is capped at 62 % of the window and scrollable. **Bugs:** a crop edge drag could throw on an unsound quad (now clamped); a failed bake no longer looks like lost ink; date labels are memoised per document; `updatePage` only bumps `modifiedDate` when the page changed (walking pages no longer re-sorts the library); rotate-several / filter-all / watermark-all publish one batch in one emission (rotating ten pages no longer serialises `library.json` ten times); every `PageRenderer.bake` call is wrapped, so a failed signature no longer closes the app and a failed filter page no longer strands the progress sheet. Filter, Rust/ABI, PDF, geometry and the reader shelf untouched. See §6bb. |

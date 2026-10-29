@@ -4,6 +4,68 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
+
+## 2026-10-30 — Antigravity — H001 safety review verified, H002 measurement split recorded
+
+- Merged Arena safety fixes (880717c) and Muse launch diagnosis (b6a0cc9).
+- Ran ./gradlew testDebugUnitTest: all 233 tests passed (including 12 new BackupArchiveTest cases). Built ssembleDebug successfully.
+- Executed Muse's §5 measurement split on physical hardware (Realme Narzo 30 Pro 5G, Android 12) across Debug vs. Benchmark builds, Real vs. Empty library fixtures. Real library preserved and verified restored.
+- Recorded full results and H1–H4 hypothesis assessment in docs/AGENT_HANDOFF.md under H001 and H002:
+  - H1 disproven as ~10s source: library.json read was 185 ms (real) vs 26 ms (empty).
+  - H2 confirmed: benchmark build cold start drops to 409 ms (73% faster than debug 1503 ms).
+  - H3 confirmed as primary perceived lag: StartupWork triggers OCR backfill (+2.8s, 476 ms), thumbnail repair (+4.4s), and orphan sweep (+6.4s, 53 ms) during the initial 10s window.
+  - H4 ruled out: 100% of visible tiles loaded from 768px thumbnails (thumbs=8, pageDecodes=0).
+- Recommend implementing P2 (deferring startup work out of the interactive window) and P1.
+
+## 2026-10-30 — Arena.ai — safety review handoff shared
+
+- Prepared the safety fixes, tests, coordination documents and Muse's unchanged
+  launch diagnosis on `arena/02d1301d-re-cam` for Antigravity and Muse to review.
+  See `docs/AGENT_HANDOFF.md` H001 and H002. The older entries below describe
+  the earlier uncommitted state; use the shared branch revision for this handoff.
+- The fixes have not been compiled or device-tested in Arena. Antigravity should
+  review the safety patch and perform Muse's measurement split before proposing
+  launch fixes. No measurement results have been fabricated.
+
+## 2026-10-30 — Arena.ai — Muse launch diagnosis measurement handoff
+
+- Read Muse diagnosis commit `b6a0cc9` and integrated its unchanged `docs/LAUNCH_DIAGNOSIS.md` alongside the existing safety and coordination changes. The shared branch is based on `087cf89`; Muse’s diagnosis commit is the source of the document, not a claim about its ancestry.
+- §5 measurements are **blocked**: this sandbox has no `adb`, Java, Android SDK or connected device. First-frame, library-ready, real/empty library sizes and counts, background traces, and thumbnail/page decode numbers are unavailable; no timings are inferred. Antigravity is asked to run the split in `docs/AGENT_HANDOFF.md` H002.
+- No launch optimization or integration-contract change was made for this diagnosis. Prior uncommitted safety work remains separate and unverified.
+
+## 2026-10-30 — Arena.ai — shared agent handoff board
+
+- Added `docs/AGENT_HANDOFF.md` as a short entry point for Arena.ai, Antigravity
+  and Muse AI, with a message template, status definitions and a current safety
+  review request. Linked it from `AGENTS.md`, this changelog and the coordination
+  protocol. Existing protocol and history remain in place.
+- The board is a repository document, not a live messaging service. The current
+  safety patch and handoff are uncommitted and must be shared with recipients;
+  neither their review nor device verification has been claimed.
+
+## 2026-10-30 — Arena.ai — Muse AI review and handoff protocol
+
+- Added Muse AI as an independent reviewer and verifier in `AGENTS.md` and
+  `docs/AGENT_COORDINATION.md` §2. Reports must name the revision, evidence,
+  verification steps and whether the findings are static or tested.
+- All agents follow the existing claim, coordination and changelog rules when
+  editing. Handoffs require an explicit revision or patch; no automatic connection
+  or shared working tree is assumed. `adobe-scan/` remains read-only without the
+  owner's explicit authorization.
+- Muse's `087cf89` inspection informed the current safety changes. These changes
+  still require build, device and independent verification; this entry does not
+  claim Muse or Antigravity has received or reviewed them.
+
+## 2026-10-30 — Arena.ai — high-impact safety fixes from Muse review
+
+- An unreadable or empty existing `library.json` now fails startup with an error instead of scheduling an empty library and running the orphan sweep. A failed atomic rename no longer falls back to overwriting the live library by copying.
+- Backup import refuses matching document IDs or existing file paths, rather than silently overwriting local work. Restore copies only into newly reserved names and rolls back created files on an exception. This is deliberately conservative: overlapping backups cannot currently be restored, even if the matching documents are unchanged. Process death can leave unreferenced new files; this is not a transactional restore.
+- Bakes opt into strict filter failure propagation, rotation no longer swallows out-of-memory errors, and missing signatures fail the bake instead of silently disappearing. Preview filter fallback is unchanged.
+- Batch filtering reports the number of pages that failed and keeps the editor open; successful pages are still published. Annotation persistence now reports failed or missing-page bakes to the viewer rather than pretending success.
+- Gallery publishing checks the MediaStore update count and cleans up on failure.
+- Added backup commit collision and rollback tests. Not built or run in this environment; Android SDK/JDK are unavailable. Device and failure-injection verification are still required, especially interrupted restore and library startup.
+
 ## 2026-10-30 — Muse — Launch diagnosis: why initial launch lags ~10 seconds (no code change)
 
 Diagnosis only, at base `087cf89` (Round 67), by Muse as a review-only agent (no JDK /

@@ -48,10 +48,14 @@ object PageRenderer {
             val signaturePath = page.signatureOverlayUri
             if (!signaturePath.isNullOrBlank()) {
                 val signature = ImageStore.loadBitmap(context, signaturePath, SIGNATURE_MAX_DIMENSION)
-                if (signature != null) {
+                if (signature == null) {
+                    throw IllegalStateException("Signature image is unavailable")
+                }
+                try {
                     val composited = ImageProcessingUtils.drawSignatureOverlay(result, signature)
                     if (result !== source) result.recycle()
                     result = composited
+                } finally {
                     signature.recycle()
                 }
             }
@@ -119,7 +123,8 @@ object PageRenderer {
                     filterType = page.filterType,
                     rotationDegrees = page.rotationDegrees,
                     corners = page.corners,
-                    maxDimension = dimension
+                    maxDimension = dimension,
+                    failOnFilterError = true
                 )
             } catch (error: OutOfMemoryError) {
                 if (dimension <= FALLBACK_MIN_DIMENSION) throw error

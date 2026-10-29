@@ -13,6 +13,9 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -115,13 +118,22 @@ class MainActivity : ComponentActivity() {
                 // already there: no splash, no re-parse, straight back to the screen
                 // the user was on.
                 val ready by library.repository.collectAsState()
+                val loadError by library.loadError.collectAsState()
 
                 Crossfade(
                     targetState = ready,
                     animationSpec = tween(durationMillis = SPLASH_FADE_MS),
                     label = "launch"
                 ) { repo ->
-                    if (repo == null) {
+                    if (repo == null && loadError != null) {
+                        DocScannerTheme(darkTheme = isSystemInDarkTheme()) {
+                            Surface(modifier = Modifier.fillMaxSize()) {
+                                Box(modifier = Modifier.padding(24.dp)) {
+                                    Text("The library could not be opened. Your existing files were not changed. Restart the app or seek help before clearing app data.")
+                                }
+                            }
+                        }
+                    } else if (repo == null) {
                         // The system bar icons follow the system theme here: the
                         // user's own override is one of the things still being read.
                         ApplySystemBarStyle(darkTheme = isSystemInDarkTheme())

@@ -344,7 +344,7 @@ fun SettingsScreen(
             item {
                 SettingsRow(
                     title = "Restore from backup",
-                    subtitle = "Merges — scans made after the backup are kept",
+                    subtitle = "Adds backups without replacing existing documents",
                     onClick = if (backupBusy) {
                         null
                     } else {
@@ -411,8 +411,7 @@ fun SettingsScreen(
         }
     }
 
-    // Restore is the one action here that can overwrite pages the user already has,
-    // so it is confirmed, with the merge rule stated plainly. The backup file itself
+    // Explain the collision policy before the restore starts. The backup file itself
     // has already been picked; this is the last chance to back out.
     pendingRestore?.let { uri ->
         AlertDialog(
@@ -427,8 +426,8 @@ fun SettingsScreen(
             },
             text = {
                 Text(
-                    "Documents in the backup are restored. Anything you have scanned " +
-                        "since is kept — restore merges, it does not replace.",
+                    "Documents are added without replacing existing scans. If the backup " +
+                        "contains documents or files already in your library, restore is cancelled.",
                     style = MaterialTheme.typography.bodyMedium
                 )
             },

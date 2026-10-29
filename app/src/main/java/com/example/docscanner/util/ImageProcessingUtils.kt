@@ -30,25 +30,22 @@ object ImageProcessingUtils {
         filterType: FilterType,
         rotationDegrees: Float,
         corners: QuadCorners? = null,
-        maxDimension: Int = DocumentFilters.MAX_PROCESS_DIMENSION
+        maxDimension: Int = DocumentFilters.MAX_PROCESS_DIMENSION,
+        failOnFilterError: Boolean = false
     ): Bitmap {
         var current = if (corners != null) PerspectiveWarp.warp(src, corners) else src
 
         val normalizedRotation = normalizeRotation(rotationDegrees)
         if (normalizedRotation != 0f) {
-            val rotated = try {
-                Bitmap.createBitmap(
-                    current,
-                    0,
-                    0,
-                    current.width,
-                    current.height,
-                    Matrix().apply { postRotate(normalizedRotation) },
-                    true
-                )
-            } catch (_: OutOfMemoryError) {
-                current
-            }
+            val rotated = Bitmap.createBitmap(
+                current,
+                0,
+                0,
+                current.width,
+                current.height,
+                Matrix().apply { postRotate(normalizedRotation) },
+                true
+            )
             if (rotated !== current) {
                 if (current !== src) current.recycle()
                 current = rotated
@@ -58,13 +55,13 @@ object ImageProcessingUtils {
         if (filterType == FilterType.ORIGINAL) return current
 
         val filtered = try {
-            DocumentFilters.apply(current, filterType, maxDimension)
+            DocumentFilters.apply(current, filterType, maxDimension, failOnFilterError)
         } catch (error: Throwable) {
             // An OutOfMemoryError must reach the caller: swallowing it here means
             // saving the *unfiltered* page, which looks like "the filter did
             // nothing" rather than "this page was too big". PageRenderer retries
             // at a lower resolution when it sees one.
-            if (error is OutOfMemoryError) throw error
+            if (error is OutOfMemoryError || failOnFilterError) throw error
             null
         }
         // DocumentFilters returns the input for ORIGINAL and on any failure, so a

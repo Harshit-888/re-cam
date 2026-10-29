@@ -8,6 +8,7 @@ import com.example.docscanner.model.ScannedPage
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.IOException
 import java.io.OutputStream
 import java.security.MessageDigest
 import java.util.zip.ZipEntry
@@ -337,15 +338,24 @@ object BackupArchive {
         private val moves: List<Pair<File, File>>,
         private val staging: File
     ) {
-        /** Moves the staged files into place. Cheap: same filesystem, so a rename. */
+        /** Install new files without overwriting live files. Roll back on an exception. */
         fun commit() {
-            moves.forEach { (from, to) ->
-                to.parentFile?.mkdirs()
-                if (to.exists()) to.delete()
-                if (!from.renameTo(to)) {
+            val created = mutableListOf<File>()
+            try {
+                // Reserve each name atomically; never replace a file that appeared
+                // after validation. A process death can leave unreferenced files,
+                // but it cannot overwrite a live page.
+                for ((from, to) in moves) {
+                    to.parentFile?.mkdirs()
+                    if (!to.createNewFile()) {
+                        throw IOException("Backup contains files already in this library. Restore cancelled to protect local scans.")
+                    }
+                    created.add(to)
                     from.copyTo(to, overwrite = true)
-                    from.delete()
                 }
+            } catch (error: Throwable) {
+                created.forEach { it.delete() }
+                throw error
             }
             staging.deleteRecursively()
         }

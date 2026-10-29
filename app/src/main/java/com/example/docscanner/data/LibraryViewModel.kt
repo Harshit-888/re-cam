@@ -43,11 +43,19 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     /** `null` until the library has been read — that is the launch screen. */
     val repository: StateFlow<ScannerRepository?> = _repository.asStateFlow()
 
+    private val _loadError = MutableStateFlow<String?>(null)
+    val loadError: StateFlow<String?> = _loadError.asStateFlow()
+
     init {
         viewModelScope.launch {
             val startedAt = SystemClock.elapsedRealtime()
-            val built = withContext(NonCancellable + Dispatchers.IO) {
-                ScannerRepository(getApplication<Application>())
+            val built = try {
+                withContext(NonCancellable + Dispatchers.IO) {
+                    ScannerRepository(getApplication<Application>())
+                }
+            } catch (error: java.io.IOException) {
+                _loadError.value = error.message ?: "The library could not be read."
+                return@launch
             }
             // Cleared while we were reading (the user backed out during launch): the
             // value would never be observed, and `onCleared` has already run, so the

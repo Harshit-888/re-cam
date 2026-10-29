@@ -78,8 +78,9 @@ object GalleryExporter {
         }
 
         val publish = ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }
-        resolver.update(uri, publish, null, null)
-        return true
+        val published = runCatching { resolver.update(uri, publish, null, null) > 0 }.getOrDefault(false)
+        if (!published) runCatching { resolver.delete(uri, null, null) }
+        return published
     }
 
     private fun saveLegacy(context: Context, source: File, displayName: String): Boolean {

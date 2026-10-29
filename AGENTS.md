@@ -1,18 +1,23 @@
 # 🤖 AGENTS.md — AI Engineering & Development Directives
 
-> **MANDATORY CONTEXT FOR ALL AI AGENTS (Antigravity, Arena.ai, Cursor, Copilot, Claude Code, etc.)**
+> **MANDATORY CONTEXT FOR ALL AI AGENTS (Antigravity, Arena.ai, Muse AI, Cursor, Copilot, Claude Code, etc.)**
 > Read this document completely before generating code, proposing architectural changes, or continuing development in this repository.
 >
-> ⚠️ **Two agents work on this repo at once.** Read §0 before touching any file.
+> ⚠️ **Multiple agents may work on this repo at once.** Read §0 before touching any file.
 
 ---
 
 ## 🤝 0. MULTI-AGENT COORDINATION PROTOCOL (READ FIRST)
 
-This repository is edited concurrently by **Antigravity** (local IDE, can build)
-and **Arena.ai** (Git branch, cannot build). They share one working tree.
+This repository is developed by **Antigravity** (local IDE, build and device
+verification) and **Arena.ai** (implementation and coordination on its session
+branch). **Muse AI** participates as an independent reviewer and verifier. Agents
+may use separate checkouts; share the exact revision, patch and test results rather
+than assuming another agent can see local changes or messages.
 
-**The full contract lives in [`docs/AGENT_COORDINATION.md`](docs/AGENT_COORDINATION.md). Non-negotiables:**
+**Start with the [Agent handoff board](docs/AGENT_HANDOFF.md)** for current
+messages, requested reviews and a reply template. The full contract lives in
+[`docs/AGENT_COORDINATION.md`](docs/AGENT_COORDINATION.md). Non-negotiables:
 
 1. **Claim before you edit.** Add a row to the *In-flight changes* table in
    `docs/AGENT_COORDINATION.md` naming the files you're about to touch, before
@@ -26,6 +31,11 @@ and **Arena.ai** (Git branch, cannot build). They share one working tree.
    without a `docs/AGENTS_CHANGELOG.md` entry and all call sites updated in the
    same commit.
 5. **Log every deletion and signature change** in `docs/AGENTS_CHANGELOG.md`.
+
+**Muse AI:** audit findings must identify the inspected commit, evidence, trigger,
+and verification steps, and distinguish static findings from tested behavior. Read
+`docs/AGENT_COORDINATION.md` §2 for handoff and edit rules. `adobe-scan/` remains
+read-only unless the owner explicitly authorizes changes.
 
 **Arena.ai has no JDK and no Android SDK.** It cannot run `./gradlew`. Any build
 result it reports is unverified. **Antigravity is the build authority**: if a

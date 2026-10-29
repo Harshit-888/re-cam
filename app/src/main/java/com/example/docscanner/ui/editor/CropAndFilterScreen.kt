@@ -2,6 +2,7 @@ package com.example.docscanner.ui.editor
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -134,6 +135,7 @@ import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -672,6 +674,7 @@ fun CropAndFilterScreen(
                 // `library.json` (recognised text included). A ten-page filter change
                 // serialised the library ten times; it now does it once.
                 val baked = LinkedHashMap<String, ScannedPage>(targets.size)
+                var failed = 0
                 targets.forEachIndexed { index, page ->
                     applyingPage = index
                     // The page in the repository carries the corners saved during the
@@ -680,20 +683,32 @@ fun CropAndFilterScreen(
                         ?.pages?.find { it.id == page.id } ?: page
                     // One page that cannot be baked is skipped, not fatal: the rest of
                     // the batch still gets the filter.
-                    val result = runCatching {
+                    val result = try {
                         PageRenderer.bake(
                             context = context,
                             page = latest.copy(filterType = selectedFilter),
                             jpegQuality = quality.jpegQuality,
                             maxDimension = dimension
                         )
-                    }.getOrNull()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        null
+                    } catch (_: OutOfMemoryError) {
+                        null
+                    }
                     if (result != null) {
                         baked[page.id] = result
+                    } else {
+                        failed++
                     }
                 }
                 repository.updatePages(docId, baked)
-                onDone()
+                if (failed == 0) {
+                    onDone()
+                } else {
+                    Toast.makeText(context, "$failed of ${targets.size} pages could not be processed. Please retry.", Toast.LENGTH_LONG).show()
+                }
             } finally {
                 applyingPage = null
                 isSaving = false
