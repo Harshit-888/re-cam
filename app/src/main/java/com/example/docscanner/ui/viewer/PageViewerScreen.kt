@@ -1084,6 +1084,11 @@ private fun AnnotateShelf(
         // per-page action in the app uses — and the one they must stay: a behaviour report
         // is answered with a behaviour fix, not by swapping the control out.
         //
+        // This is the third time that has had to be said (Round 55 swapped these rows and
+        // Round 56 put them back; Round 66 swapped them again — see `docs/AGENT_COORDINATION.md`
+        // §6as and §6bc). If a report says a button on this shelf vanishes, the answer is in
+        // `ConnectedButtonGroup`'s cell, never in a different control.
+        //
         // They were briefly M3 `SingleChoiceSegmentedButtonRow` + `SegmentedButton`, to get
         // rid of the animated tick. That traded one mechanism for three:
         //

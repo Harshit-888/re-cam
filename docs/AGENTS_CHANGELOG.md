@@ -28,6 +28,10 @@ same one the round was trying to fix:
    page's bottom inset — grow taller; and `SegmentedButtonDefaults.colors(...)` is
    constructed per call, handing six new colour objects to six cells on every recomposition.
    Both rows are `ConnectedButtonGroup` again, at `cellHeight = 44.dp` as before.
+   **This is the third time** (Round 55 swapped them, Round 56 reverted and wrote the rule
+   down in `docs/AGENT_COORDINATION.md` §6as, Round 66 swapped them again). The rule is now
+   also quoted in the code at the rows themselves, with the two section numbers, so the next
+   reader meets it before the code rather than after.
 3. **Save disabled itself while saving** (same shelf). `saveMarkup` already returns early
    when a save is running, so the dim was pure cost — and it dims the exact cell the user
    just pressed. Same rule as the full-screen editor. Cancel stays disabled while the bake
