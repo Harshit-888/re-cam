@@ -612,10 +612,18 @@ object DocumentFilters {
     fun apply(
         src: Bitmap,
         type: FilterType,
-        maxDimension: Int = MAX_PROCESS_DIMENSION
+        maxDimension: Int = MAX_PROCESS_DIMENSION,
+        failOnError: Boolean = false
     ): Bitmap {
-        if (type == FilterType.ORIGINAL || src.isRecycled) return src
-        val (w, h, pixels) = rgbaOf(src, maxDimension) ?: return src
+        if (type == FilterType.ORIGINAL) return src
+        if (src.isRecycled) {
+            if (failOnError) throw IllegalStateException("Cannot filter a recycled bitmap")
+            return src
+        }
+        val (w, h, pixels) = rgbaOf(src, maxDimension) ?: run {
+            if (failOnError) throw IllegalStateException("Could not read image pixels for filtering")
+            return src
+        }
 
         val startedAt = System.nanoTime()
         try {
@@ -632,7 +640,7 @@ object DocumentFilters {
             // A filter must never be able to take the capture down with it — but
             // an OutOfMemoryError must not be mistaken for "no change": returning
             // the unfiltered source there saves a page with no filter at all.
-            if (error is OutOfMemoryError) throw error
+            if (error is OutOfMemoryError || failOnError) throw error
             return src
         }
         // A single line, only when a filter is slow enough to be felt. This is the

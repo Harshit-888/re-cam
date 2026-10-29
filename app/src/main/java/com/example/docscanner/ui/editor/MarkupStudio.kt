@@ -260,9 +260,10 @@ internal suspend fun persistMarkup(
 ) {
     repository.updatePage(docId, pageId) { it.copy(markup = strokes) }
     val latest: ScannedPage = repository.getDocumentById(docId)
-        ?.pages?.find { it.id == pageId } ?: return
-    val baked = runCatching { PageRenderer.bake(context, latest) }.getOrNull()
-    if (baked != null) repository.updatePage(docId, pageId) { baked }
+        ?.pages?.find { it.id == pageId } ?: throw IllegalStateException("Page no longer exists")
+    val baked = PageRenderer.bake(context, latest)
+        ?: throw IllegalStateException("Could not render annotation")
+    repository.updatePage(docId, pageId) { baked }
 }
 
 /** A4's ratio, used for the first frame before the bitmap is decoded. */

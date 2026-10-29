@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.IOException
 
 /**
  * Persists the whole library as a single `library.json` snapshot.
@@ -82,12 +83,12 @@ class LibraryStore(
 
     /**
      * Reads the snapshot, or `null` when nothing has been persisted yet (fresh
-     * install) or the file is unreadable. Blocking; called once from the
+     * install). An unreadable existing file throws to prevent accidental overwrite. Blocking; called once from the
      * repository constructor.
      */
     fun load(): LibrarySnapshot? = try {
         val file = libraryFile
-        if (!file.exists() || file.length() == 0L) {
+        if (!file.exists()) {
             null
         } else {
             // Explicit serializer rather than the reified extension: no extra
@@ -99,9 +100,10 @@ class LibraryStore(
                 queuedFolders = it.folders
             }
         }
-    } catch (_: Throwable) {
-        // Corrupt or from an incompatible revision: start clean rather than crash.
-        null
+    } catch (error: Exception) {
+        // Fail closed: neither persistence nor the orphan sweep may run on an
+        // empty library when an existing snapshot cannot be read.
+        throw IOException("The library could not be read. Its files have not been changed.", error)
     }
 
     /**
@@ -170,13 +172,9 @@ class LibraryStore(
             // kill, a crash, the OS reclaiming the process — where the library was
             // simply gone and the next launch started from an empty library.
             if (!temp.renameTo(target)) {
-                // Some filesystems refuse to rename onto an existing file. Copy
-                // over the target's contents instead; still never delete first.
-                try {
-                    temp.copyTo(target, overwrite = true)
-                } finally {
-                    temp.delete()
-                }
+                // Do not fall back to truncating the live file: a failed or
+                // interrupted copy would destroy the last readable snapshot.
+                throw IOException("Could not atomically replace library snapshot")
             }
             // Only clear the flag for the snapshot that is still the queued one: a
             // write that was already in flight when a newer change arrived must not

@@ -275,8 +275,7 @@ fun PageViewerScreen(
         val strokes = markup.strokes
         scope.launch {
             // Release the save lock even if persistence unexpectedly throws.
-            // persistMarkup currently handles bake failures internally, so a normal
-            // return does not guarantee that the page was re-rendered.
+            // persistMarkup reports a missing page or failed bake as an error.
             var saved = false
             try {
                 // The bake is a full-resolution decode, warp and filter pass — off the main
@@ -289,6 +288,8 @@ fun PageViewerScreen(
                 // The screen is going away; nothing to report, and nothing to unlock.
                 throw cancelled
             } catch (_: Exception) {
+                saved = false
+            } catch (_: OutOfMemoryError) {
                 saved = false
             } finally {
                 isSavingMarkup = false
