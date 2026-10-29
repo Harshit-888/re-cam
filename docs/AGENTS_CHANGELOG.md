@@ -4,6 +4,21 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-29 — Antigravity — Round 67: Core fix for disappearing connected buttons on pen toggle
+
+Deep analysis and resolution of the disappearing connected buttons on tool/pen toggle:
+
+1. **Root cause of disappearing button containers:** In `ConnectedCell` (`ui/common/ConnectedButtonGroup.kt`), unselected cells had zero border or outline and relied entirely on `plate` (`containerColor = surfaceContainerLowest`, #FFFFFF in light theme, #0C0F12 in dark theme) placed on the card container (`surfaceContainerHigh`, #EBEFF4 in light theme, #272A2E in dark theme). Contrast ratio is 1.07:1 (imperceptible without a border). When deselected, the primary fill vanished and the cell container completely disappeared into the card. On tap-and-hold, `pressLayer` (14% alpha) rendered a visible grey pill, causing the button container to appear under the finger and disappear again on release.
+2. **Root cause of stale ink:** When deselecting a cell without touching it (e.g. tapping 'Marker' deselects 'Pen'), `layerInk` remained locked on `onAccentColor` (white) because `LaunchedEffect(pressed, tint)` was gated on `if (pressed)`.
+3. **Corner oscillation:** `innerCorner` used an underdamped spring (`dampingRatio = 0.8f`) which oscillated/bounced on touch release.
+
+**Fix:**
+- Added 1 dp boundary `border(borderStroke, shape)` to `ConnectedCell`: `accentColor` when filled, `borderColor` (`outlineVariant.copy(alpha = 0.60f)`) when unselected. Preserves button container boundaries across all selection states with 0 px layout shift.
+- Synchronized `layerInk` with `tint` safely via `LaunchedEffect(pressed, tint, pressLayer) { if (pressed || pressLayer == 0f) layerInk = tint }`. Eliminates stale white ink while preserving exit-layer ink stability during touch release.
+- Replaced underdamped corner spring with critically damped `Spring.DampingRatioNoBouncy` (stiffness 500f) to eliminate corner bounce/flutter.
+- Kept `ConnectedButtonGroup` across `PageViewerScreen.kt` and `MarkupScreen.kt` per §6as and §6bd.
+- All 221 unit tests pass (`BUILD SUCCESSFUL`); debug APK assembled cleanly.
+
 ## 2026-10-29 — Arena.ai — correction: annotation save failure reporting
 
 `persistMarkup` catches bake failures internally and returns normally for a missing page

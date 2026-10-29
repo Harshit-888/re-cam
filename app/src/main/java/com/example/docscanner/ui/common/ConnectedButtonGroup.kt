@@ -1,6 +1,9 @@
 package com.example.docscanner.ui.common
 
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -129,6 +132,7 @@ fun ConnectedButtonGroup(
     contentColor: Color = MaterialTheme.colorScheme.onSurface,
     accentColor: Color = MaterialTheme.colorScheme.primary,
     onAccentColor: Color = MaterialTheme.colorScheme.onPrimary,
+    borderColor: Color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.60f),
     cellHeight: Dp = ConnectedCellHeight,
     /**
      * Gap between two cells. The M3 token is 2 dp; a bar that floats over a page can
@@ -165,6 +169,7 @@ fun ConnectedButtonGroup(
                     contentColor = contentColor,
                     accentColor = accentColor,
                     onAccentColor = onAccentColor,
+                    borderColor = borderColor,
                     cellHeight = cellHeight,
                     // The cell whose menu is open keeps its state layer, so the control
                     // that opened the menu still looks like the control that is open.
@@ -197,6 +202,7 @@ private fun ConnectedCell(
     contentColor: Color,
     accentColor: Color,
     onAccentColor: Color,
+    borderColor: Color,
     cellHeight: Dp,
     /** This cell's menu is the one currently open. */
     menuOpen: Boolean,
@@ -223,7 +229,7 @@ private fun ConnectedCell(
             pressed -> ConnectedPressedInnerCorner
             else -> ConnectedInnerCorner
         },
-        animationSpec = spring(dampingRatio = 0.8f, stiffness = 520f),
+        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 500f),
         label = "connectedInnerCorner"
     )
 
@@ -269,6 +275,13 @@ private fun ConnectedCell(
     val tint = if (filled) onAccentColor else (action.tintColor ?: contentColor)
     val plate = if (filled) accentColor else containerColor
 
+    val borderStroke = remember(filled, accentColor, borderColor) {
+        BorderStroke(
+            width = 1.dp,
+            color = if (filled) accentColor else borderColor
+        )
+    }
+
     // ## The state layer keeps the ink it was painted with
     //
     // This is the flicker on the camera's Single/Batch switch — the one that survived
@@ -303,9 +316,6 @@ private fun ConnectedCell(
     // flash described above, back again. The value has to survive the flip; only a press
     // may set it.
     var layerInk by remember { mutableStateOf(tint) }
-    LaunchedEffect(pressed, tint) {
-        if (pressed) layerInk = tint
-    }
     val pressLayer by animateFloatAsState(
         targetValue = if (pressed || menuOpen) 0.14f else 0f,
         // Faster out than before (120 ms, was 160): the layer exists to acknowledge the
@@ -314,6 +324,11 @@ private fun ConnectedCell(
         animationSpec = tween(durationMillis = if (pressed) 80 else 120),
         label = "connectedPress"
     )
+    LaunchedEffect(pressed, tint, pressLayer) {
+        if (pressed || pressLayer == 0f) {
+            layerInk = tint
+        }
+    }
     // The *ink* dims when the cell is disabled; the plate never does.
     //
     // The old value faded the whole cell with `graphicsLayer { alpha = … }` on the Row,
@@ -354,6 +369,7 @@ private fun ConnectedCell(
                     .heightIn(min = cellHeight)
                     .clip(shape)
                     .background(plate)
+                    .border(borderStroke, shape)
                     // The press state layer: the cell's own ink at 14 %, so it darkens a
                     // light fill and lightens a dark one. Drawn *over* the plate and
                     // *under* the content, and independent of the selected state.
