@@ -34,6 +34,19 @@ class SettingsStore(
 
     private val pending = MutableStateFlow<AppSettings?>(null)
 
+    /** The settings last queued or written, so an identical emission is free. */
+    private var queued: AppSettings? = null
+
+    /**
+     * `true` while the file on disk is older than the last change.
+     *
+     * Read by `ScannerRepository.close()`: without it, closing the app rewrote
+     * `settings.json` on every exit whether or not anything had changed.
+     */
+    @Volatile
+    var isDirty: Boolean = false
+        private set
+
     val settingsFile: File
         get() = File(appContext.filesDir, FILE_NAME)
 
@@ -56,24 +69,37 @@ class SettingsStore(
         if (!file.exists() || file.length() == 0L) {
             null
         } else {
-            json.decodeFromString(AppSettings.serializer(), file.readText())
+            json.decodeFromString(AppSettings.serializer(), file.readText()).also { queued = it }
         }
     } catch (_: Throwable) {
         // Corrupt or from a newer revision: fall back to defaults rather than crash.
         null
     }
 
-    /** Queues a write. Returns immediately. */
+    /** Queues a write. Returns immediately. An unchanged value is a no-op. */
     fun schedule(settings: AppSettings) {
+        if (settings == queued) return
+        queued = settings
+        isDirty = true
         pending.value = settings
+    }
+
+    /** Writes [settings] now, skipping the debounce. Used by the final flush. */
+    suspend fun flush(settings: AppSettings) = withContext(Dispatchers.IO) {
+        if (settings == queued && !isDirty) return@withContext
+        writeNow(settings)
     }
 
     /** Writes immediately, bypassing the debounce. Used on the way out of the app. */
     suspend fun writeNowBlocking(settings: AppSettings) = withContext(Dispatchers.IO) {
+        queued = settings
         writeNow(settings)
     }
 
-    private fun writeNow(settings: AppSettings) {
+    /** Serialises writes — see the note in `LibraryStore.writeNow`. */
+    private val writeLock = Any()
+
+    private fun writeNow(settings: AppSettings) = synchronized(writeLock) {
         try {
             val target = settingsFile
             val temp = File(target.parentFile, "$FILE_NAME.tmp")
@@ -88,6 +114,8 @@ class SettingsStore(
                     temp.delete()
                 }
             }
+            // Only for the value that is still the queued one — see LibraryStore.
+            if (settings == queued) isDirty = false
         } catch (_: Throwable) {
             // A lost settings write must never crash the UI; the next change reschedules.
         }

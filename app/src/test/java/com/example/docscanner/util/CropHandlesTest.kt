@@ -133,6 +133,58 @@ class CropHandlesTest {
         assertEquals(0f, extremeLeft.bottomLeftX, 0f)
     }
 
+    /**
+     * A quad whose edges have collapsed must not throw.
+     *
+     * The edge drags clamp a delta between bounds derived from the quad, and an
+     * *unsound* quad — three corners on one line, a stored crop from an older
+     * revision, a page so skewed the detector's quad folded — makes those bounds
+     * cross. `coerceIn(low, high)` throws `IllegalArgumentException` when
+     * `low > high`, i.e. the app died **inside a drag**. The corner drags always went
+     * through the ordered `clamp`; the four edge drags did not.
+     */
+    @Test
+    fun `a collapsed quad cannot throw out of an edge drag`() {
+        // Every horizontal edge at the same y, every vertical edge at the same x:
+        // height and width are both zero, so every "max" bound is negative while
+        // every "min" bound is zero.
+        val collapsed = QuadCorners(
+            topLeftX = 0.5f, topLeftY = 0.5f,
+            topRightX = 0.5f, topRightY = 0.5f,
+            bottomRightX = 0.5f, bottomRightY = 0.5f,
+            bottomLeftX = 0.5f, bottomLeftY = 0.5f
+        )
+        for (edge in listOf(
+            CropHandles.EDGE_TOP,
+            CropHandles.EDGE_BOTTOM,
+            CropHandles.EDGE_LEFT,
+            CropHandles.EDGE_RIGHT
+        )) {
+            // Any of these used to `coerceIn(low, high)` with low > high.
+            CropHandles.move(collapsed, edge, 0.4f, -0.4f)
+            CropHandles.move(collapsed, edge, -4f, 4f)
+        }
+    }
+
+    /** The same, for a quad whose corners are past each other. */
+    @Test
+    fun `an inverted quad cannot throw out of an edge drag`() {
+        val inverted = QuadCorners(
+            topLeftX = 0.8f, topLeftY = 0.9f,
+            topRightX = 0.2f, topRightY = 0.8f,
+            bottomRightX = 0.1f, bottomRightY = 0.1f,
+            bottomLeftX = 0.9f, bottomLeftY = 0.2f
+        )
+        for (edge in listOf(
+            CropHandles.EDGE_TOP,
+            CropHandles.EDGE_BOTTOM,
+            CropHandles.EDGE_LEFT,
+            CropHandles.EDGE_RIGHT
+        )) {
+            CropHandles.move(inverted, edge, 1.5f, -1.5f)
+        }
+    }
+
     private fun QuadCorners.asList() = listOf(
         topLeftX, topLeftY, topRightX, topRightY,
         bottomRightX, bottomRightY, bottomLeftX, bottomLeftY

@@ -16,6 +16,95 @@ Resolved unit test compilation error from Arena Round 64 integration and verifie
 - **`DocumentFiltersTest.kt`**: Fixed argument type mismatch in `lightTextCurve_keepsFaintMarksAndReachesWhiteBeforePaper` by converting integer arguments in `assertEquals(message, expected, actual, delta)` to floats (`159f`, `curve[...].toFloat()`, `3f`).
 - **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.9 MB), and `testDebugUnitTest` passed 100% (25 tasks, 0 failures).
 
+## 2026-10-29 — Arena.ai — Round 65: a full read of the app — launch, jank, bugs, annotate
+
+*"rescan the whole doc scanner application find bugs and fix them … fix the major
+bottleneck … the initial lag … also the annotate m3 buttons are still glitching and
+disappearing."*
+
+Audit first, then fixes; the full write-up is **`docs/APP_AUDIT_R65.md`**. Nothing here was
+compiled or run — no SDK, NDK or Rust toolchain in the sandbox — so the audit separates code
+facts from things that need a device, and says which is which.
+
+**Launch / jank**
+
+1. **A 320 ms floor on every launch is gone** (`LibraryViewModel`). `SPLASH_MIN_MS` held the
+   splash for a third of a second even when the library was ready in 20 ms, "so a warm start
+   does not flash". The flash it prevented cannot happen: `MainActivity` crossfades the
+   splash *out* over the content for 300 ms. Pure added latency, removed.
+2. **Closing the app blocked the main thread and rewrote the library** (`ScannerRepository`).
+   `close()` ran on the UI thread of a finishing Activity and called `runBlocking` around
+   `json.encodeToString` of every page's metadata and OCR text — unconditionally, although
+   every mutation is already persisted by a 150 ms debounce. It now flushes only when
+   something is dirty, and on IO in its own scope.
+3. **Identical snapshots were re-serialised** (`LibraryStore`, `SettingsStore`). Both now
+   compare the document/folder list *instances* (a changed list is always a new instance) and
+   skip anything already queued or on disk. `load()` registers what it read, so an unchanged
+   library costs nothing to close.
+4. **The cover prewarm could decode twelve full pages in the launch window**
+   (`PageImageLoader`). Its slow path — no stored thumbnail — decodes the page, and for
+   *Clear B&W* / *Grayscale* that is a 3200 px **PNG**: ~30 MB and tens of milliseconds, per
+   cover, twelve times, on the two decode slots the visible tiles need. `load()` gained
+   `allowPageFallback`; `prefetch()` passes `false`, so speculative work reads thumbnails
+   only. The prewarm also waits 140 ms of stillness instead of `awaitQuiet(0)`, which was not
+   a gate at all.
+5. **Cold-start instrumentation**: two lines on `DocScannerPerf` now split "it takes seconds"
+   into process start → first frame → library ready, using `Process.getStartUptimeMillis()`.
+
+**Annotate buttons — the actual cause, in a default argument**
+
+6. `SegmentedButton`'s default `icon` is `SegmentedButtonDefaults.Icon(selected)` — the
+   **animated tick**, an `AnimatedVisibility` that gives the cell the icon's width on
+   selection and removes it ~150 ms after deselection. This row never passed an icon, so
+   every cell had one, and the label is `maxLines = 1` with the default `Clip` overflow: the
+   tick's space came out of the label, the neighbours shifted, and the row re-measured on
+   every frame of the animation. **Fixed:** `icon = {}` on all six cells, ellipsis on the
+   labels, and `weight(1f)` so each cell is a fixed third. A connected row says which cell is
+   chosen by filling it.
+7. **The annotate bar could be taller than the window.** Two segmented rows, a swatch row and
+   the save button are 230 dp — over 340 dp at a 2.0x font scale. A `Scaffold` measures its
+   bottom bar against the window, so the overflow was drawn off-screen with nothing to scroll
+   to. It is now capped at 62 % of the window height and scrolls.
+
+**Bugs**
+
+8. **A crop edge drag could throw `IllegalArgumentException`** (`CropHandles`). The four edge
+   drags called `dx.coerceIn(minDx, maxDx)` with bounds derived from the quad; on an unsound
+   quad (stored by an older revision, detected on a skewed page) they cross, and the throw
+   happens *inside a drag gesture*. Routed through the file's own ordered `clamp`, with two
+   new tests.
+9. **A failed bake looked like lost ink** (`MarkupScreen.save`). The strokes are saved as data
+   and replay on the next bake, but nothing said so. It now does.
+10. **Date labels were reformatted for every document on every change** (`DashboardScreen`) —
+   two `SimpleDateFormat` calls per document per bake, on the main thread. Now memoised per
+   document by `(id, modifiedDate)`.
+
+11. **Two writers could interleave inside `library.json.tmp`** (`LibraryStore`,
+   `SettingsStore`). The debounce collector and the new final flush both write a fixed temp
+   path and rename it into place; a cancelled coroutine does not stop a blocking write
+   already inside `writeText`, so the two can interleave and the rename publishes the
+   mixture — a truncated library, caused by closing the app. Both stores now serialise
+   `writeNow` on a private monitor.
+
+**Audited and sound** (do not re-fix): every `PageRenderer.bake` call site (the function is a
+`suspend` wrapper around IO), PDF export, `MarkupSession`, `ConnectedButtonGroup`,
+`ExpressiveActionBar`, `AnnotateShelf`, `ZoomablePageView`'s pan clamp, the theme's colour
+scheme memo, the image caches, the library write's temp-file-and-rename, lazy ML Kit/TFLite
+loading, and search indexing.
+
+**Changed:** `data/{LibraryViewModel,ScannerRepository,LibraryStore,SettingsStore}.kt`,
+`MainActivity.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/editor/MarkupScreen.kt`,
+`util/{PageImageLoader,CropHandles}.kt`, `util/CropHandlesTest.kt`, new
+`docs/APP_AUDIT_R65.md`.
+
+**Not changed:** the filter pipeline, the Rust crate and ABI (3), PDF output, geometry, the
+camera and the reader's shelf.
+
+**Owed:** `./gradlew testDebugUnitTest assembleDebug` and `cargo test` (neither was run), and
+the two log lines from a real launch — they decide whether the next step is a baseline
+profile (cold start) or more work in `ScannerRepository` (library read). §5 of the audit has
+the case for the profile.
+
 ## 2026-10-28 — Arena.ai — Round 64: the background, taken apart (shadows, Light Text, sharpness)
 
 *"the smart scan is still not that accurate in shadow cleaning also the light text is

@@ -121,7 +121,23 @@ object PageImageLoader {
         context: Context,
         imageUri: String?,
         reqWidth: Int,
-        reqHeight: Int
+        reqHeight: Int,
+        /**
+         * Whether a page with **no stored thumbnail** may be decoded in full.
+         *
+         * `true` for anything the user is looking at: a tile with no thumbnail has to
+         * show its page somehow, and the decode leaves a thumbnail behind.
+         *
+         * `false` for *speculative* work — the cover prewarm and the viewport
+         * prefetcher. Those run for pages nobody has asked to see yet, and a missing
+         * thumbnail means a full page decode: for a *Clear B&W* or *Grayscale* page
+         * that is a 3200 px **PNG**, ~30 MB of transient allocation, tens of
+         * milliseconds of CPU — twelve times over, in the first seconds after launch,
+         * on the same two decode slots the visible tiles need. The prewarm's own job
+         * ("the first fling finds pixels") is done by thumbnails; a page without one
+         * is the thumbnail-repair pass's business, and that runs when the list is idle.
+         */
+        allowPageFallback: Boolean = true
     ): Bitmap? {
         if (imageUri.isNullOrBlank() || reqWidth <= 0 || reqHeight <= 0) return null
 
@@ -154,11 +170,15 @@ object PageImageLoader {
             val shared = leader.await()
             // The leader was cancelled mid-decode (its tile scrolled away). Show
             // this caller the image anyway rather than a permanent placeholder.
-            return shared ?: decodeAndCache(context, thumbKey, imageUri, reqWidth, reqHeight)
+            return shared ?: decodeAndCache(
+                context, thumbKey, imageUri, reqWidth, reqHeight, allowPageFallback
+            )
         }
 
         return try {
-            val bitmap = decodeAndCache(context, thumbKey, imageUri, reqWidth, reqHeight)
+            val bitmap = decodeAndCache(
+                context, thumbKey, imageUri, reqWidth, reqHeight, allowPageFallback
+            )
             gate.complete(bitmap)
             bitmap
         } catch (t: Throwable) {
@@ -182,7 +202,8 @@ object PageImageLoader {
         if (peek(imageUri, reqWidth, reqHeight) != null) return
         if (!prefetchGate.tryAcquire()) return
         try {
-            load(context, imageUri, reqWidth, reqHeight)
+            // Thumbnails only: see `allowPageFallback`.
+            load(context, imageUri, reqWidth, reqHeight, allowPageFallback = false)
         } catch (cancellation: kotlinx.coroutines.CancellationException) {
             // Never swallow cancellation: a stale prefetch must stop the caller's
             // loop too, not quietly walk on to the next tile.
@@ -240,7 +261,8 @@ object PageImageLoader {
         thumbKey: String,
         imageUri: String,
         reqWidth: Int,
-        reqHeight: Int
+        reqHeight: Int,
+        allowPageFallback: Boolean
     ): Bitmap? = withContext(decodeDispatcher) {
         coroutineContext.ensureActive()
         val key = "$thumbKey@${reqWidth}x$reqHeight"
@@ -261,6 +283,8 @@ object PageImageLoader {
         // Slow path: no stored thumbnail (legacy or re-baked page, or a request
         // larger than a thumbnail should be). Decode the page and leave a
         // thumbnail behind so the next request — and every other screen — is fast.
+        // Speculative callers stop here: see `allowPageFallback`.
+        if (!allowPageFallback) return@withContext null
         val decoded = ImageStore.loadBitmap(context, imageUri, reqWidth, reqHeight, config)
             ?: return@withContext null
         PerfTrace.onPageDecode()

@@ -419,17 +419,16 @@ fun DashboardScreen(
         if (pruned.isEmpty()) isSelecting = false
     }
 
-    // One formatted label per document per library change, instead of one per
-    // card per frame: `SimpleDateFormat.format` allocates a String and a Date on
+    // One formatted label per document per *change to that document*, instead of one
+    // per card per frame: `SimpleDateFormat.format` allocates a String and a Date on
     // every call, and a fling asks for a dozen cards a second.
-    val dateLabels = remember(documents) {
-        val short = SimpleDateFormat("MMM d", Locale.getDefault())
-        val long = SimpleDateFormat("MMM d, yyyy · h:mm a", Locale.getDefault())
-        documents.associate { doc ->
-            val date = Date(doc.modifiedDate)
-            doc.id to DateLabels(short.format(date), long.format(date))
-        }
-    }
+    //
+    // The memo is per document, not per library. `documents` is re-emitted by every
+    // bake — a rotate, an annotate, a signature, each recognised page — and a full
+    // rebuild for each of those formatted *every* document on the main thread to
+    // produce labels that had not changed. Now a change reformats only the documents
+    // whose `modifiedDate` it actually touched.
+    val dateLabels = rememberDocumentDateLabels(documents)
 
     val gridState = rememberLazyGridState()
     val listState = rememberLazyListState()
@@ -514,7 +513,11 @@ fun DashboardScreen(
         // start it guessed short, which is why the warm-up used to land *in* the
         // first frames instead of after them.
         withFrameNanos { }
-        StartupWork.awaitQuiet(0, "cover-prewarm")
+        // Not "zero idle": the launch crossfade is still running and the first layout
+        // of the grid is what the next frame owes. 140 ms of no touch is below
+        // perception for a user who is settling in, and it keeps the prewarm out of
+        // the only two frames that decide whether the app feels quick to open.
+        StartupWork.awaitQuiet(PREWARM_QUIET_MS, "cover-prewarm")
         val perRow = if (isGridView) GRID_COLUMNS else 1
         val size = if (isGridView) coverSize else listCoverSize
         val stamp = StartupWork.interactionStamp()
@@ -532,7 +535,13 @@ fun DashboardScreen(
             val cover = activeDocs.getOrNull(index)?.pages?.firstOrNull()?.imageUri
                 ?: continue
             if (PageImageLoader.peek(cover, size.width, size.height) != null) continue
-            PageImageLoader.load(context, cover, size.width, size.height)
+            // `prefetch`, not `load`: a page with no stored thumbnail is *not*
+            // decoded in full here. Twelve full-page decodes is not a warm-up, it is
+            // the slowest thing this screen can do — and it used to do exactly that,
+            // in the first seconds after launch, for covers nobody was looking at.
+            // The thumbnail-repair pass (idle-gated, chunked) is what gives those
+            // pages a thumbnail; until then their tile decodes itself when it appears.
+            PageImageLoader.prefetch(context, cover, size.width, size.height)
         }
     }
 
@@ -1319,8 +1328,46 @@ private fun prefetchRow(
 private fun toggle(selection: List<String>, id: String): List<String> =
     if (selection.contains(id)) selection - id else selection + id
 
-/** Pre-formatted dates for one document, built once per library change. */
+/** Pre-formatted dates for one document, rebuilt only when its date moves. */
 private data class DateLabels(val short: String, val long: String)
+
+/**
+ * Formats every document's dates, reusing the previous result for documents whose
+ * `modifiedDate` did not change.
+ *
+ * Returns a **new map** every time (so the caller still recomposes), but only builds
+ * the `SimpleDateFormat` outputs that are actually new. On a two-hundred document
+ * library a bake used to cost four hundred formats; it now costs two.
+ *
+ * The formatters are created per call on purpose — `SimpleDateFormat` is not
+ * thread-safe and is only ever used here, on the main thread, for the duration of the
+ * call, which is cheaper than holding two mutable formatters for the screen's life.
+ */
+@Composable
+private fun rememberDocumentDateLabels(documents: List<Document>): Map<String, DateLabels> {
+    val previous = remember { HashMap<String, Pair<Long, DateLabels>>(documents.size) }
+    return remember(documents) {
+        val short = SimpleDateFormat("MMM d", Locale.getDefault())
+        val long = SimpleDateFormat("MMM d, yyyy · h:mm a", Locale.getDefault())
+        val next = HashMap<String, DateLabels>(documents.size * 2)
+        for (doc in documents) {
+            val cached = previous[doc.id]
+            val labels = if (cached != null && cached.first == doc.modifiedDate) {
+                cached.second
+            } else {
+                val date = Date(doc.modifiedDate)
+                DateLabels(short.format(date), long.format(date))
+            }
+            previous[doc.id] = doc.modifiedDate to labels
+            next[doc.id] = labels
+        }
+        // Drop documents that are gone, so the memo cannot grow with the trash can.
+        if (previous.size > next.size) {
+            previous.keys.retainAll(next.keys)
+        }
+        next
+    }
+}
 
 /**
  * Example queries offered when a search finds nothing.
@@ -1399,6 +1446,14 @@ private const val REPAIR_IDLE_MS = 4_000L
 
 /** Pause between thumbnail-repair chunks, so the decoder cannot saturate a core. */
 private const val PRIME_CHUNK_PAUSE_MS = 350L
+
+/**
+ * How still the app has to be before the first screens of covers are pre-warmed.
+ *
+ * Short on purpose: this is not the speculative-work gate (`OCR_IDLE_MS` is 2.5 s),
+ * it only keeps the prewarm out of the launch crossfade and the grid's first layout.
+ */
+private const val PREWARM_QUIET_MS = 140L
 
 /** Pixel box of one grid cover, derived from the window instead of guessed. */
 @Composable

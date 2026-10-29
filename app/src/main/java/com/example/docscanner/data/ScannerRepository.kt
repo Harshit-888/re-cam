@@ -38,7 +38,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 
 /**
  * Single source of truth for documents and folders.
@@ -1024,29 +1023,50 @@ class ScannerRepository(context: Context) {
     // -------------------------------------------------------- lifecycle
 
     /**
-     * Flushes the last edit and cancels the persistence scope. Call from the owning
-     * Activity's `onDestroy` only when finishing (not on configuration change).
+     * Flushes the last edit and cancels the persistence scope.
      *
-     * The flush is deliberate and blocking: every mutation is persisted through a
-     * 150 ms debounce, so without this a rename, a page move or a filter applied in
-     * the last moments before the app was closed is simply lost. It is a single
-     * small file write on the way out; the alternative is silent data loss.
+     * Two things were wrong with this and both were on the user's path out of the
+     * app, which is the worst place for them:
+     *
+     * 1. **It blocked the main thread.** `close()` runs from `ViewModel.onCleared`,
+     *    i.e. on the UI thread of an Activity that is finishing, and it called
+     *    `runBlocking` around `json.encodeToString` of the *entire* library — a
+     *    snapshot that carries every page's recognised text. On a scanned library
+     *    that is megabytes of string building while the window is trying to close.
+     * 2. **It wrote unconditionally.** Every mutation is persisted through a 150 ms
+     *    debounce, so nine times out of ten the file was already up to date and the
+     *    whole encode-and-write was pure waste.
+     *
+     * The flush now runs on IO in a scope of its own (the repository's own scope is
+     * about to be cancelled) and only when something is actually dirty. The trade is
+     * honest: an edit made in the last 150 ms of a session that is *killed*, not
+     * merely finished, can be lost. `onCleared` fires when the screen finishes, which
+     * gives the write seconds to land.
      */
     fun close() {
-        runCatching {
-            runBlocking {
-                store.writeNowBlocking(
-                    LibrarySnapshot(
-                        schemaVersion = LibraryStore.CURRENT_SCHEMA_VERSION,
-                        folders = _folders.value,
-                        documents = _documents.value
-                    )
-                )
-                settingsStore.writeNowBlocking(_settings.value)
-            }
-        }
+        val snapshot = LibrarySnapshot(
+            schemaVersion = LibraryStore.CURRENT_SCHEMA_VERSION,
+            folders = _folders.value,
+            documents = _documents.value
+        )
+        val settings = _settings.value
+        val dirty = store.isDirty || settingsStore.isDirty
         scope.cancel()
+        if (!dirty) return
+        StartupWork.trace("close: flushing the last edit")
+        finalFlush.launch {
+            runCatching { store.flush(snapshot) }
+            runCatching { settingsStore.flush(settings) }
+        }
     }
+
+    /**
+     * The one write on the way out, off the main thread.
+     *
+     * Deliberately *not* a child of [scope]: that scope is cancelled on the line
+     * above, which is the point of `close()`.
+     */
+    private val finalFlush = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private fun defaultFolders(): List<Folder> = listOf(
         Folder(id = "folder_work", name = "Work & Contracts", colorHex = 0xFF3F51B5),

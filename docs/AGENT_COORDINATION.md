@@ -79,6 +79,7 @@ Keep this table short. Delete your row when the change lands.
 
 | Agent       | Status          | Files                                                                                                                                                                                                                                                                           | Intent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Arena.ai | 🔧 in review (Round 65) | `data/{LibraryViewModel,ScannerRepository,LibraryStore,SettingsStore}.kt`, `MainActivity.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/editor/MarkupScreen.kt`, `util/{PageImageLoader,CropHandles}.kt`, `util/CropHandlesTest.kt`, `docs/APP_AUDIT_R65.md` (new), docs | Full read of the app. **Launch:** the 320 ms splash floor is gone; `close()` no longer blocks the main thread rewriting the library (dirty-only, on IO); both stores skip identical snapshots by list identity; the cover prewarm can no longer decode full pages (thumbnails only, gated 140 ms); cold-start lines added to `DocScannerPerf`. **Annotate:** `SegmentedButton`'s default *animated tick* icon (`AnimatedVisibility`, so the cell gains and loses the icon's width) took its space out of a clipped one-line label and re-measured the row on every frame of the animation — `icon = {}` + `weight(1f)` + ellipsis on all six cells, and the bar is capped at 62 % of the window and scrollable. **Bugs:** a crop edge drag could throw on an unsound quad (now clamped); a failed bake no longer looks like lost ink; date labels are memoised per document. Filter, Rust/ABI, PDF, geometry and the reader shelf untouched. See §6bb. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 64) | `util/DocumentFilters.kt`, `util/DocumentFiltersTest.kt`, `tools/ink_probe.py` (new), `tools/filter_ref.py`, `docs/filter_combined_spec.md` §3/§8, docs | Shadow cleaning, Light Text and sharpness, re-opened. The paper surface is now corrected by a **fine** estimate (cell/5, 35 % dark-side trim, one-coarse-cell closing) used only as its ratio to the coarse one, a **paper clamp** at 90 % of white, and **inward sharpening** from `blur − v` rather than a Laplacian (which was worth 0.00 px of edge width). `lightTextCurve` 0.78/0.99/1.5 → 0.70/0.94/1.0. Measured: hand-shadow seam 47 → 15, vignette paper 4.3 → 0.2, Light Text pencil 58 → 130, edge width 1.80 → ≤ 0.9 px. **No Rust, ABI, kernel, PDF or UI change; the five original presets are untouched.** See §6ba. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 63) | `util/LiveBorderTracker.kt` (new), `ui/camera/LiveBorderAnalyzer.kt` (new), `ui/camera/LiveBorderOverlay.kt` (new), `ui/camera/ScannerCameraScreen.kt`, `data/ScannerRepository.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `app/src/test/.../util/LiveBorderTrackerTest.kt` (new), `docs/LIVE_BORDER_DETECTION.md` (new), docs | Auto border detection while framing (a live page outline from a third CameraX use case, confidence/tolerance/glide smoothed in `LiveBorderTracker`) **and** after the fact: imported pages now get the same automatic border a capture gets, via `ScannerRepository.detectBordersInBackground`. `setPageCorners` gained `onlyWhereUncropped = false`. No detector, filter, PDF or Rust change; the live quad is never stored as a crop. **The two-stream bind fallback is load-bearing** (LEGACY cameras). See §6az. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 62) | `util/DocumentFilters.kt`, `util/DocumentFiltersTest.kt`, `docs/filter_combined_spec.md`, `tools/shadow_probe.py` (new), docs | `SMART`/`LIGHT_TEXT` still showed shadows in two measured cases: the absolute-threshold document/scene gate called a shadowed page a *scene* (41 %) so no shadow was removed, and the box-blurred surface smeared hard shadow edges into a 65-level band. Replaced by `surfaceIsPaper` (two ratios against the surface) and `median3Grid`. **No kernel, Rust or ABI change; the five transcribed presets keep their exact output.** See §6ay. |
@@ -2433,6 +2434,42 @@ because that would change *their* output — it is a one-line change if it is ev
   probe before moving them.
 - Verified by reading and by `tools/shadow_probe.py` only (no Gradle, NDK or cargo here).
   `./gradlew testDebugUnitTest assembleDebug` for R60–R62 is owed by Antigravity.
+
+## 6bb. Round 65: a full read of the app — launch, jank, bugs, annotate (Arena, 2026-10-29)
+
+**User report, verbatim:** *"rescan the whole doc scanner application find bugs and fix them
+accordingly, also fix the major bottleneck of the application which is the initial lag the
+application lags for about seconds to get smooth make it quick and smooth right from the
+launch there is no issue of memory, also optimize the whole app inspect the code deeply and
+fix the bugs, also the annotate m3 buttons are still glitching and disappearing."*
+
+The full audit — what was read, what was found, what is deliberately *not* fixed — is
+`docs/APP_AUDIT_R65.md`. Summary of the changes:
+
+1. **`LibraryViewModel`**: `SPLASH_MIN_MS = 320` removed. It was a fixed 320 ms of latency on
+   every launch, for a "flash" that `MainActivity`'s 300 ms `Crossfade` already prevents.
+2. **`ScannerRepository.close()`**: was `runBlocking` + a full `json.encodeToString` of the
+   library **on the main thread**, unconditionally. Now: flush only when dirty, on IO, in a
+   scope that is not the one being cancelled.
+3. **`LibraryStore` / `SettingsStore`**: identity-dedup on both queues
+   (`documents === queuedDocuments && folders === queuedFolders`), `isDirty`, and a
+   `flush()` that skips what is already persisted. `load()` registers what it read.
+4. **`PageImageLoader`**: `load(..., allowPageFallback: Boolean = true)`; `prefetch` passes
+   `false`. Speculative cover work can no longer trigger a full-page (PNG, ~30 MB) decode.
+   `DashboardScreen`'s prewarm uses `prefetch` and waits `PREWARM_QUIET_MS = 140` of stillness.
+5. **`MarkupScreen`**: `SegmentedButton(icon = {})` and `Modifier.weight(1f)` on all six cells
+   — the default icon is the animated tick, which changed each cell's width and re-measured
+   the row on every selection. Bottom bar capped at 62 % of the window height and scrollable.
+6. **`CropHandles`**: the four edge drags use the ordered `clamp` instead of `coerceIn`, so an
+   unsound quad cannot throw inside a drag. Two new tests.
+7. **`MarkupScreen.save()`**: a failed bake says so instead of closing silently.
+8. **`DashboardScreen`**: date labels memoised per `(id, modifiedDate)`.
+9. **`MainActivity` / `LibraryViewModel`**: cold-start trace
+   (`Process.getStartUptimeMillis()` → first frame → library ready).
+
+**Owed by Antigravity:** `./gradlew testDebugUnitTest assembleDebug`, `cargo test`, and the
+two `DocScannerPerf` launch lines from a real device. Those decide the next step: a baseline
+profile (if cold start dominates) or more work on the library read (if it does not).
 
 ## 6ba. Round 64: the background taken apart, and Light Text inverted (Arena, 2026-10-28)
 

@@ -2,6 +2,8 @@ package com.example.docscanner
 
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
+import android.os.Process
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -19,6 +21,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -82,6 +85,24 @@ class MainActivity : ComponentActivity() {
         PerfTrace.attachWindow(window)
 
         setContent {
+            // ## The launch clock, in one line
+            //
+            // "It lags for a few seconds when it opens" has three very different
+            // causes — the process starting, the library being read, the first frames
+            // of the dashboard — and no way to tell them apart by feel. `uptimeMillis`
+            // and `Process.getStartUptimeMillis` share a clock, so the difference is
+            // time since the process was forked: everything the system did before us
+            // included. The library line is logged by `LibraryViewModel`, the read
+            // itself by `ScannerRepository`, and every frame after this one by
+            // `PerfTrace` (debug builds).
+            //
+            //     adb logcat -s DocScannerPerf
+            LaunchedEffect(Unit) {
+                withFrameNanos { }
+                val sinceProcessStart =
+                    SystemClock.uptimeMillis() - Process.getStartUptimeMillis()
+                StartupWork.trace("launch: first frame drawn $sinceProcessStart ms after process start")
+            }
             UserActivityGate {
                 // The repository is built on an IO thread while [LaunchSplash] is on
                 // screen: `LibraryStore.load()` reads and parses `library.json`, and

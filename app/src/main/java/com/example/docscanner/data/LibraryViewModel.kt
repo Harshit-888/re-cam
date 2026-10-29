@@ -1,22 +1,19 @@
 package com.example.docscanner.data
 
 import android.app.Application
+import android.os.Process
 import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.docscanner.util.StartupWork
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-/** Shortest time the launch screen is shown, so a warm start does not flash. */
-private const val SPLASH_MIN_MS = 320L
 
 /**
  * Owns the one [ScannerRepository] and survives a configuration change with it.
@@ -59,17 +56,19 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                 built.close()
                 return@launch
             }
-            // Hold the launch screen briefly even when the read was instant, so a
-            // warm start shows a logo rather than a one-frame flash.
+            // ## Hand over as soon as the library exists
+            //
+            // There used to be a `SPLASH_MIN_MS = 320` floor here — the launch screen
+            // was held for at least a third of a second "so a warm start shows a logo
+            // rather than a one-frame flash". That traded a real third of a second of
+            // every launch for an aesthetic that `MainActivity`'s 300 ms `Crossfade`
+            // already provides: the splash is faded *out* over the content, so a warm
+            // start is a crossfade, not a flash, and no floor is needed to make it one.
             val elapsed = SystemClock.elapsedRealtime() - startedAt
-            if (elapsed < SPLASH_MIN_MS) delay(SPLASH_MIN_MS - elapsed)
-            // Time from process-visible launch to the library being on screen.
-            // Printed as one line so a "it takes ten seconds to open" report can be
-            // split into its two halves: the read (logged by `ScannerRepository`)
-            // and everything the system did before us.
+            val sinceProcessStart = SystemClock.uptimeMillis() - Process.getStartUptimeMillis()
             StartupWork.trace(
-                "launch: library ready ${SystemClock.elapsedRealtime() - startedAt} ms " +
-                    "after the ViewModel was created (read ${elapsed} ms)"
+                "launch: library ready ${elapsed} ms after the ViewModel was created, " +
+                    "$sinceProcessStart ms after process start"
             )
             _repository.value = built
         }

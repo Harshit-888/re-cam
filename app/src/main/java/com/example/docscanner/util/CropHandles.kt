@@ -91,11 +91,11 @@ object CropHandles {
                     quad.bottomRightY - MIN_GAP - quad.topRightY
                 )
                 val minDy = -minOf(quad.topLeftY, quad.topRightY)
-                val effectiveDy = dy.coerceIn(minDy, maxDy)
+                val effectiveDy = clamp(dy, minDy, maxDy)
 
                 val minDx = -minOf(quad.topLeftX, quad.topRightX)
                 val maxDx = 1f - maxOf(quad.topLeftX, quad.topRightX)
-                val effectiveDx = dx.coerceIn(minDx, maxDx)
+                val effectiveDx = clamp(dx, minDx, maxDx)
 
                 val newTLX = clamp(snap(quad.topLeftX + effectiveDx), 0f, quad.topRightX + effectiveDx - MIN_GAP)
                 val newTLY = clamp(snap(quad.topLeftY + effectiveDy), 0f, quad.bottomLeftY - MIN_GAP)
@@ -117,11 +117,11 @@ object CropHandles {
                     quad.topRightY + MIN_GAP - quad.bottomRightY
                 )
                 val maxDy = 1f - maxOf(quad.bottomLeftY, quad.bottomRightY)
-                val effectiveDy = dy.coerceIn(minDy, maxDy)
+                val effectiveDy = clamp(dy, minDy, maxDy)
 
                 val minDx = -minOf(quad.bottomLeftX, quad.bottomRightX)
                 val maxDx = 1f - maxOf(quad.bottomLeftX, quad.bottomRightX)
-                val effectiveDx = dx.coerceIn(minDx, maxDx)
+                val effectiveDx = clamp(dx, minDx, maxDx)
 
                 val newBLX = clamp(snap(quad.bottomLeftX + effectiveDx), 0f, quad.bottomRightX + effectiveDx - MIN_GAP)
                 val newBLY = clamp(snap(quad.bottomLeftY + effectiveDy), quad.topLeftY + MIN_GAP, 1f)
@@ -143,11 +143,11 @@ object CropHandles {
                     quad.bottomRightX - MIN_GAP - quad.bottomLeftX
                 )
                 val minDx = -minOf(quad.topLeftX, quad.bottomLeftX)
-                val effectiveDx = dx.coerceIn(minDx, maxDx)
+                val effectiveDx = clamp(dx, minDx, maxDx)
 
                 val minDy = -minOf(quad.topLeftY, quad.bottomLeftY)
                 val maxDy = 1f - maxOf(quad.topLeftY, quad.bottomLeftY)
-                val effectiveDy = dy.coerceIn(minDy, maxDy)
+                val effectiveDy = clamp(dy, minDy, maxDy)
 
                 val newTLX = clamp(snap(quad.topLeftX + effectiveDx), 0f, quad.topRightX - MIN_GAP)
                 val newTLY = clamp(snap(quad.topLeftY + effectiveDy), 0f, quad.bottomLeftY + effectiveDy - MIN_GAP)
@@ -169,11 +169,11 @@ object CropHandles {
                     quad.bottomLeftX + MIN_GAP - quad.bottomRightX
                 )
                 val maxDx = 1f - maxOf(quad.topRightX, quad.bottomRightX)
-                val effectiveDx = dx.coerceIn(minDx, maxDx)
+                val effectiveDx = clamp(dx, minDx, maxDx)
 
                 val minDy = -minOf(quad.topRightY, quad.bottomRightY)
                 val maxDy = 1f - maxOf(quad.topRightY, quad.bottomRightY)
-                val effectiveDy = dy.coerceIn(minDy, maxDy)
+                val effectiveDy = clamp(dy, minDy, maxDy)
 
                 val newTRX = clamp(snap(quad.topRightX + effectiveDx), quad.topLeftX + MIN_GAP, 1f)
                 val newTRY = clamp(snap(quad.topRightY + effectiveDy), 0f, quad.bottomRightY + effectiveDy - MIN_GAP)
@@ -208,7 +208,18 @@ object CropHandles {
         else -> value
     }
 
-    /** `coerceIn` throws when `low > high`; order the bounds first. */
+    /**
+     * `coerceIn` throws when `low > high`; order the bounds first.
+     *
+     * Every clamp inside [move] goes through here, including the four edge drags.
+     * Those used to call `coerceIn` directly on a pair of bounds derived from the
+     * quad — and a quad that is **unsound** (loaded from a library written by an
+     * older revision, or detected on a page so skewed that two corners ended up
+     * within [MIN_GAP] of each other) makes `maxDy` smaller than `minDy`, which is an
+     * `IllegalArgumentException` thrown *inside a drag gesture*: the app dies while
+     * the finger is on the crop handle. A degenerate quad should make the drag do
+     * nothing, not crash.
+     */
     private fun clamp(value: Float, first: Float, second: Float): Float {
         val low = minOf(first, second)
         val high = maxOf(first, second)

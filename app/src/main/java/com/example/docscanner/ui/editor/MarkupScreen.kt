@@ -1,11 +1,14 @@
 package com.example.docscanner.ui.editor
 
 import android.graphics.Bitmap
+import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +19,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -61,8 +65,10 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.example.docscanner.data.ScannerRepository
@@ -203,9 +209,21 @@ private fun MarkupEditor(
             // while this screen was open, and baking a stale copy would undo it.
             val latest = repository.getDocumentById(docId)
                 ?.pages?.find { it.id == target.id }
-            if (latest != null) {
-                val baked = runCatching { PageRenderer.bake(context, latest) }.getOrNull()
-                if (baked != null) repository.updatePage(docId, target.id) { baked }
+            // The strokes are saved as *data* first, so a failed bake costs the page
+            // its pixels, never the drawing: the next re-bake (a crop, a filter, a
+            // rotate) replays them. Saying so is the difference between "my
+            // annotation vanished" and "try again in a moment".
+            val baked = latest?.let {
+                runCatching { PageRenderer.bake(context, it) }.getOrNull()
+            }
+            if (baked != null) {
+                repository.updatePage(docId, target.id) { baked }
+            } else {
+                Toast.makeText(
+                    context,
+                    "Annotation saved; the page could not be re-rendered",
+                    Toast.LENGTH_LONG
+                ).show()
             }
             isSaving = false
             onClose()
@@ -260,14 +278,46 @@ private fun MarkupEditor(
                 shape = DocShapes.sheet,
                 shadowElevation = 14.dp
             ) {
+                // ## The bar can be taller than the screen, so it scrolls
+                //
+                // Every control on this shelf is part of one column: two segmented rows,
+                // a swatch row, and the save button — 230 dp at the default font scale,
+                // **more than 340 dp at 2.0x**. In landscape, or with large text, that is
+                // bigger than the space the Scaffold leaves for the bar, and a Column has
+                // no way to say so: `Scaffold` measures the bottom bar with the screen's
+                // own height, so the overflow is drawn *outside* the window — the save
+                // button, and then the swatch row, simply are not on screen, and there is
+                // nothing to scroll to reach them. Capping the height and making it
+                // scrollable is the fix that holds at every font scale.
+                // Two thirds of the window at most: the page being annotated still has
+                // to be the thing you are looking at.
+                val screenHeight = LocalConfiguration.current.screenHeightDp.dp
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .heightIn(max = screenHeight * 0.62f)
                         .navigationBarsPadding()
+                        .verticalScroll(rememberScrollState())
                         .padding(horizontal = 16.dp, vertical = 14.dp)
                 ) {
-                    // Material 3's segmented button: three exclusive tools, one
-                    // connected control, the system's own selected indicator.
+                    // ## Why every cell is weighted and none of them has an icon
+                    //
+                    // `SegmentedButton`'s default `icon` is `SegmentedButtonDefaults.Icon(selected)`
+                    // — the **animated tick** M3 grows into a cell when it becomes the selected
+                    // one, and it is an `AnimatedVisibility`: the cell's content gains the icon's
+                    // full width on selection and loses it again ~150 ms after deselection. This
+                    // row never passed an icon, so it had the tick. The label is `maxLines = 1`
+                    // with the *default* overflow, which is `Clip` — so for those 150 ms the
+                    // label's tail is what the tick takes, the neighbouring cells shift, and the
+                    // row re-measures on every frame of the animation. That is the "buttons
+                    // glitch and one of them disappears" report, and it is in a default argument,
+                    // which is why five rounds of fixing the surrounding layout never touched it.
+                    //
+                    // A connected segmented row already says which cell is chosen by *filling*
+                    // it; a glyph drawn into the same space as the label is a second, worse
+                    // indicator. `weight(1f)` then makes the split explicit — each cell is a
+                    // fixed third of the row, at every font scale, whatever M3's own default
+                    // weighting does in a future version.
                     SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                         MarkupTool.entries.forEachIndexed { index, option ->
                             SegmentedButton(
@@ -277,11 +327,14 @@ private fun MarkupEditor(
                                     index = index,
                                     count = MarkupTool.entries.size
                                 ),
+                                modifier = Modifier.weight(1f),
+                                icon = {},
                                 label = {
                                     Text(
                                         option.label,
                                         style = MaterialTheme.typography.labelMedium,
-                                        maxLines = 1
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             )
@@ -353,11 +406,16 @@ private fun MarkupEditor(
                                         index = index,
                                         count = MarkupWidths.size
                                     ),
+                                    // Same two rules as the tool row: no growing tick, and an
+                                    // equal, fixed share of the row.
+                                    modifier = Modifier.weight(1f),
+                                    icon = {},
                                     label = {
                                         Text(
                                             MarkupWidthLabels[index],
                                             style = MaterialTheme.typography.labelMedium,
-                                            maxLines = 1
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
                                 )
