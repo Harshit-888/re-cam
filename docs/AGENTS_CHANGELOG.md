@@ -16,6 +16,12 @@ Resolved unit test compilation error from Arena Round 64 integration and verifie
 - **`DocumentFiltersTest.kt`**: Fixed argument type mismatch in `lightTextCurve_keepsFaintMarksAndReachesWhiteBeforePaper` by converting integer arguments in `assertEquals(message, expected, actual, delta)` to floats (`159f`, `curve[...].toFloat()`, `3f`).
 - **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.9 MB), and `testDebugUnitTest` passed 100% (25 tasks, 0 failures).
 
+## 2026-10-29 — Antigravity — Round 65 build & test verification
+
+Clean-build and test verification for Arena Round 65 (launch latency removal, repository batch emissions, main-thread close fix, prewarm, and annotate button stability):
+- **Zero compiler errors**: Clean build with Kotlin 2.x and Jetpack Compose without requiring any modifications.
+- **Build & Tests**: `assembleDebug` generated `app-debug.apk` (85.5 MB), and `testDebugUnitTest` passed 100% (25 tasks, 0 failures).
+
 ## 2026-10-29 — Arena.ai — Round 65: a full read of the app — launch, jank, bugs, annotate
 
 *"rescan the whole doc scanner application find bugs and fix them … fix the major
