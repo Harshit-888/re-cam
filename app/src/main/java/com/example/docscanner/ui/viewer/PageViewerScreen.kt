@@ -64,6 +64,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
@@ -600,7 +603,11 @@ fun PageViewerScreen(
                 .navigationBarsPadding()
                 // Measured, so the page's inset above can be the *truth* rather than a
                 // guess, and so the card's frame is the same on every device.
-                .onSizeChanged { shelfHeightPx = it.height }
+                .onSizeChanged { newSize ->
+                    if (newSize.height > 0 && kotlin.math.abs(shelfHeightPx - newSize.height) > 1) {
+                        shelfHeightPx = newSize.height
+                    }
+                }
                 // One margin, used by the page inset too: the card floats 8 dp off the
                 // screen's sides and 8 dp off the navigation bar, and every gap inside
                 // it is the same 8 dp.
@@ -1085,30 +1092,31 @@ private fun AnnotateShelf(
         // ripple bounded to the label; no whole-cell alpha for the disabled state) and
         // *inside this shelf* (nothing is disabled when the eraser is chosen), so what the
         // finger sees at rest is pixel-for-pixel what it saw before.
-        ConnectedButtonGroup(
-            actions = listOf(
-                ConnectedAction(
-                    label = "Pen",
-                    selected = markup.tool == MarkupTool.PEN,
-                    onClick = { markup.tool = MarkupTool.PEN }
-                ),
-                ConnectedAction(
-                    label = "Marker",
-                    selected = markup.tool == MarkupTool.HIGHLIGHTER,
-                    onClick = { markup.tool = MarkupTool.HIGHLIGHTER }
-                ),
-                ConnectedAction(
-                    label = "Erase",
-                    selected = markup.tool == MarkupTool.WHITEOUT,
-                    onClick = { markup.tool = MarkupTool.WHITEOUT }
-                )
-            ),
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
-            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            accentColor = MaterialTheme.colorScheme.primary,
-            onAccentColor = MaterialTheme.colorScheme.onPrimary,
-            cellHeight = 44.dp
+        val tools = listOf(
+            MarkupTool.PEN to "Pen",
+            MarkupTool.HIGHLIGHTER to "Marker",
+            MarkupTool.WHITEOUT to "Erase"
         )
+        SingleChoiceSegmentedButtonRow(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            tools.forEachIndexed { index, (toolOption, label) ->
+                SegmentedButton(
+                    selected = markup.tool == toolOption,
+                    onClick = { markup.tool = toolOption },
+                    shape = SegmentedButtonDefaults.itemShape(index = index, count = tools.size),
+                    colors = shelfSegmentedColors(),
+                    icon = {},
+                    label = {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (markup.tool == toolOption) FontWeight.SemiBold else FontWeight.Medium
+                        )
+                    }
+                )
+            }
+        }
 
         Spacer(Modifier.height(ShelfPadding))
 
@@ -1158,21 +1166,29 @@ private fun AnnotateShelf(
             // A second connected group rather than a slider: three discrete weights are
             // three decisions, and a slider you cannot hit mid-drag is worse than three
             // cells you can.
-            ConnectedButtonGroup(
-                actions = MarkupWidths.mapIndexed { index, fraction ->
-                    ConnectedAction(
-                        label = MarkupWidthLabels[index],
+            SingleChoiceSegmentedButtonRow(
+                modifier = Modifier.weight(1f)
+            ) {
+                MarkupWidths.forEachIndexed { index, fraction ->
+                    SegmentedButton(
                         selected = markup.widthFraction == fraction,
-                        onClick = { markup.widthFraction = fraction }
+                        onClick = { markup.widthFraction = fraction },
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = MarkupWidths.size
+                        ),
+                        colors = shelfSegmentedColors(),
+                        icon = {},
+                        label = {
+                            Text(
+                                text = MarkupWidthLabels[index],
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (markup.widthFraction == fraction) FontWeight.SemiBold else FontWeight.Medium
+                            )
+                        }
                     )
-                },
-                modifier = Modifier.weight(1f),
-                containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
-                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                accentColor = MaterialTheme.colorScheme.primary,
-                onAccentColor = MaterialTheme.colorScheme.onPrimary,
-                cellHeight = 44.dp
-            )
+                }
+            }
         }
 
         Spacer(Modifier.height(ShelfPadding))
@@ -1236,6 +1252,18 @@ private fun AnnotateShelf(
  * a blur-and-settle. With the id on the frame, a pixel swap is a swap and a page turn is
  * a turn.
  */
+/**
+ * The palette for the annotate shelf's Material 3 segmented switches.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun shelfSegmentedColors() = SegmentedButtonDefaults.colors(
+    activeContainerColor = MaterialTheme.colorScheme.primary,
+    activeContentColor = MaterialTheme.colorScheme.onPrimary,
+    inactiveContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+    inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+)
+
 private data class PageFrame(val bitmap: ImageBitmap?, val pageId: String)
 
 /** How far the viewer magnifies a page before the pan clamp takes over. */

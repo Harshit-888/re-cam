@@ -211,12 +211,8 @@ private fun ConnectedCell(
     // corner is a `CornerSize` in dp — the 50 % token is realised as half the cell
     // height, which is exactly what 50 % of a corner resolves to on a square-ish cell.
     val innerCorner by animateDpAsState(
-        targetValue = when {
-            action.selected || action.emphasized -> cellHeight / 2
-            pressed -> ConnectedPressedInnerCorner
-            else -> ConnectedInnerCorner
-        },
-        animationSpec = spring(dampingRatio = 0.8f, stiffness = 520f),
+        targetValue = if (action.selected || action.emphasized) cellHeight / 2 else ConnectedInnerCorner,
+        animationSpec = tween(durationMillis = 150),
         label = "connectedInnerCorner"
     )
 
@@ -287,8 +283,8 @@ private fun ConnectedCell(
     // over a white pill is nothing, black over the dark glass is nothing. `tint` is still
     // what drives everything that is *visible at rest*, so the plate, the label and the
     // selected state are unchanged.
-    var layerInk by remember { mutableStateOf(tint) }
-    LaunchedEffect(pressed) {
+    var layerInk by remember(tint) { mutableStateOf(tint) }
+    LaunchedEffect(pressed, tint) {
         if (pressed) layerInk = tint
     }
     val pressLayer by animateFloatAsState(
@@ -309,7 +305,7 @@ private fun ConnectedCell(
     // (choosing the eraser used to disable the width group). A disabled control still has
     // to be a control: it keeps its shape and its place, and only its ink goes quiet.
     val inkAlpha by animateFloatAsState(
-        targetValue = if (action.enabled) 1f else 0.38f,
+        targetValue = if (action.enabled) 1f else 0.50f,
         animationSpec = Motion.fade,
         label = "connectedInkAlpha"
     )

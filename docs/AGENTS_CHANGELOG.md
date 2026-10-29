@@ -4,6 +4,20 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-29 — Antigravity — Round 66: Fix glitching & disappearing annotate M3 buttons in PageViewerScreen
+
+Root-cause fix for button disappearance and flicker on the reader's in-place `AnnotateShelf`:
+- **`ui/viewer/PageViewerScreen.kt`**:
+  - Replaced the Tool selection row ("Pen", "Marker", "Erase") and the Stroke Width row ("Thin", "Medium", "Bold") with official Material 3 `SingleChoiceSegmentedButtonRow` + `SegmentedButton`.
+  - Configured `icon = {}` to permanently eliminate the animated tick checkmark that pushed and clipped label text out of the cell.
+  - Styled with `shelfSegmentedColors()` (`primary`/`onPrimary` active, `surfaceContainerLowest`/`onSurfaceVariant` inactive) and stable `SegmentedButtonDefaults.itemShape`.
+  - Added a 1-pixel deadband to `ExpressiveActionBar.onSizeChanged` to prevent layout re-measurement oscillations and screen inset jitter when touching buttons.
+- **`ui/common/ConnectedButtonGroup.kt`**:
+  - Stabilized `innerCorner` animation so it does not collapse inner corners to 4 dp on press, eliminating corner oscillation and label clipping on quick taps.
+  - Keyed `layerInk` to `tint` and updated on press to prevent contrast loss and flash states on toggle.
+  - Increased disabled `inkAlpha` floor to 0.50f so disabled action icons (Undo, Redo, Delete) remain clearly legible as inactive controls.
+- **Build & Tests**: Verified with `./gradlew assembleDebug` (85.7 MB APK) and `./gradlew testDebugUnitTest` (100% pass, 221 tests). Verified 27 checks pass in `verify_workspace.ps1`.
+
 ## 2026-10-28 — Antigravity — Rounds 62–63 build & test verification
 
 Clean-build and test verification for Arena Rounds 62–63 (shadow removal refinement and live camera border detection/overlay):
