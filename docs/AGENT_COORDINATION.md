@@ -79,6 +79,7 @@ Keep this table short. Delete your row when the change lands.
 
 | Agent       | Status          | Files                                                                                                                                                                                                                                                                           | Intent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | :---------- | :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Muse | 📋 diagnosis (no code change) | `docs/LAUNCH_DIAGNOSIS.md` (new), docs | Launch diagnosis at base `087cf89`: ~10 s initial launch is not one bug — the splash gate parses all of `library.json` (OCR included), the release build has no shrinking / Baseline Profile, background work (OCR 2.5 s, repair 4 s, sweep 6 s) can still overlap the first 10 s because "quiet" means "not touching", and the 600-thumbnail cap makes older covers cold. Ranked plan and the §5 measurement split are in the new doc. **Antigravity: run the §5 split and the benchmark-vs-debug comparison before any fix is merged; Muse cannot build or run on device.** |
 | Arena.ai | 🔧 in review (Round 66 review) | `ui/viewer/PageViewerScreen.kt`, `ui/common/ConnectedButtonGroup.kt`, docs | Read of Antigravity's Round 66. Three defects: (1) `ConnectedButtonGroup` re-keyed the press layer's ink on `tint` (`remember(tint)`), which re-creates the captured colour on the very flip it exists to survive — the mid-grey flash is back; (2) the reader's annotate rows were moved to `SingleChoiceSegmentedButtonRow`, against the Round 56 correction, and that control cannot shrink below 3 × 58 dp on a row that also carries four swatches (drawn outside the card on a 320 dp window or in split screen), changes the label's weight on selection (wrap → taller shelf → page inset), and allocates six colour sets per recomposition; (3) the save cell disabled itself while saving although `saveMarkup` already guards re-entry. Both rows are `ConnectedButtonGroup` again; the 4 dp pressed inner corner is restored (draw-phase only); `saveMarkup` clears its save lock in a `finally`, so a failed bake can no longer trap the reader in annotate mode. **Antigravity: read §6bd before your next edit to these files.** |
 | Antigravity | ✅ committed & verified (Round 67) | `ui/common/ConnectedButtonGroup.kt`, docs | Core fix for disappearing connected buttons on pen toggle: added 1 dp outlineVariant/accentColor border to ConnectedCell, synchronized layerInk on press/rest, and critically damped corner spring. 221 tests pass, assembleDebug verified. |
 | Arena.ai & Antigravity | ✅ merged & verified (Round 65) | `data/{LibraryViewModel,ScannerRepository,LibraryStore,SettingsStore}.kt`, `MainActivity.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/editor/MarkupScreen.kt`, `util/{PageImageLoader,CropHandles}.kt`, `util/CropHandlesTest.kt`, `ui/{detail/DocumentDetailScreen,editor/CropAndFilterScreen,viewer/PageViewerScreen}.kt`, `docs/APP_AUDIT_R65.md` (new), docs | Full read of the app. **Launch:** the 320 ms splash floor is gone; `close()` no longer blocks the main thread rewriting the library (dirty-only, on IO); both stores skip identical snapshots by list identity; the cover prewarm can no longer decode full pages (thumbnails only, gated 140 ms); cold-start lines added to `DocScannerPerf`. **Annotate:** the M3 editor (`ui/editor/MarkupScreen`) was the one annotate surface still using `SegmentedButton`, and it had four ways to lose a button — the default *animated tick* icon taking its width out of a clipped one-line label, the heavier selected label, the Save button disabling itself while saving (M3 disabled = 12 % container with a white spinner inside), and `Close`/`Undo`/`Redo`/`Clear` at 38 % ink. Both rows are now the app's `ConnectedButtonGroup` (the component the reader shelf already uses); Save keeps its colours, `Close` is never disabled, dim states use 60 % ink, and the bar is capped at 62 % of the window and scrollable. **Bugs:** a crop edge drag could throw on an unsound quad (now clamped); a failed bake no longer looks like lost ink; date labels are memoised per document; `updatePage` only bumps `modifiedDate` when the page changed (walking pages no longer re-sorts the library); rotate-several / filter-all / watermark-all publish one batch in one emission (rotating ten pages no longer serialises `library.json` ten times); every `PageRenderer.bake` call is wrapped, so a failed signature no longer closes the app and a failed filter page no longer strands the progress sheet. Filter, Rust/ABI, PDF, geometry and the reader shelf untouched. See §6bb. |
@@ -2721,3 +2722,35 @@ flash here is an explicit control, and the shutter is the user's finger.
   the eight touched files and a 18-test JVM suite for the tracker/mapping/rotation;
   `./gradlew testDebugUnitTest assembleDebug` and a device trace of the analysis cost are
   owed by Antigravity.
+
+## 6be. Launch diagnosis — ~10 seconds to a quick start (Muse, 2026-10-30)
+
+Diagnosis only, at base `087cf89` (Round 67). No code changed. Full analysis:
+`docs/LAUNCH_DIAGNOSIS.md`. Read that doc before touching launch code, and run
+its §5 measurement split first — the next agent must report the numbers, not
+start with decode micro-tuning.
+
+Summary of the ranked hypotheses: (H1) the splash gate blocks on a full
+`library.json` parse, OCR included; (H2) the release build has no shrinking
+and no Baseline Profile, and a debug-APK measurement may be mostly build
+artifact; (H3) OCR backfill (2.5 s), thumbnail repair (4 s) and orphan sweep
+(6 s) are gated on "quiet", which a user merely looking at the list satisfies,
+and OCR/repair do not run on `StartupWork`'s single-thread dispatcher, so they
+can compete with the 2-slot cover decode pool in the first 10 seconds; (H4)
+`ThumbnailStore.MAX_FILES = 600` sweeps older covers, forcing full-page PNG
+decodes at launch, for a saving of tens of megabytes at most.
+
+Ranked plan: P0 measure; P1 Baseline Profile + R8 + SplashScreen API; P2 move
+OCR/repair/sweep out of the launch window (WorkManager or a much longer delay
+on one low-priority dispatcher); P3 remove the 600-thumbnail cap; P4 split
+launch-critical data from OCR (lightweight index first) — highest long-term
+win, highest risk, not to be bundled with P1–P3; P5 decode micro-tuning last.
+
+Note on protocol: this is the first Muse row in §4. The protocol's §1/§2
+still name only Arena.ai and Antigravity; Muse is not yet written into them.
+Muse, like Arena, is review-only here (no JDK / Android SDK in its sandbox).
+Antigravity remains the build authority and owes the §5 device checks plus
+`./gradlew testDebugUnitTest assembleDebug` and a benchmark-APK comparison
+before any launch fix is called fixed. Owner's trade, stated 2026-10-30:
+speed beats space — a fix that saves space by re-decoding at launch must not
+be merged.

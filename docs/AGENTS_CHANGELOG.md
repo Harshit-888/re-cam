@@ -4,6 +4,47 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-30 — Muse — Launch diagnosis: why initial launch lags ~10 seconds (no code change)
+
+Diagnosis only, at base `087cf89` (Round 67), by Muse as a review-only agent (no JDK /
+Android SDK in its sandbox, like Arena). No code, signature, or file was changed by
+this entry; the full analysis is `docs/LAUNCH_DIAGNOSIS.md`.
+
+User report: the doc scanner app lags for about 10 seconds on initial launch. Owner
+constraint: launch speed beats storage space — the app may take more space if it is quick.
+
+Ranked hypotheses, not confirmed (no device log, library size, or build type was
+available to the diagnosing agent):
+- H1, splash gate: `MainActivity` shows only `LaunchSplash` until `LibraryViewModel`
+  builds `ScannerRepository`, whose constructor synchronously parses the entire
+  `library.json` (`LibraryStore.load()`: `file.readText()` + full decode, every page's
+  OCR text included). Launch time therefore grows with library + OCR size.
+- H2, build / cold start: release has `isMinifyEnabled = false`, no Baseline Profile
+  found, no SplashScreen API; if the 10 seconds was measured on the debug APK, a large
+  share may be build artifact. The `benchmark` build type exists for exactly this comparison.
+- H3, background leak: `StartupWork` gates OCR backfill at 2.5 s, thumbnail repair at
+  4 s, and orphan sweep at 6 s on "no touch and not scrolling" — but a user just looking
+  at the list is quiet by that definition, and OCR / repair do not run on StartupWork's
+  single-thread dispatcher. They can overlap the visible tiles' 2-slot decode pool in
+  the first 10 seconds.
+- H4, covers: `ThumbnailStore.MAX_FILES = 600` sweeps the oldest half of thumbnails, so
+  libraries over 600 pages have permanently cold older covers that fall back to full-page
+  (3200 px PNG, ~30 MB) decodes at launch. At ~40 KB per thumbnail, 1,000 covers cost
+  ~40 MB — a backwards trade under the owner's space-for-speed constraint.
+
+Ranked fix plan (see `docs/LAUNCH_DIAGNOSIS.md` §3–§5 for detail and the measurement
+split that must run first): P0 measure (empty vs real library, debug vs benchmark,
+`DocScannerPerf` lines, `library.json` size, thumbnail vs page decode counts); P1
+Baseline Profile + R8 + SplashScreen API; P2 move OCR / repair / sweep out of the
+launch window (WorkManager or a much longer delay on one low-priority dispatcher);
+P3 remove the 600-thumbnail cap; P4 split launch-critical data from OCR (lightweight
+index first, full documents lazy) — highest long-term win, highest risk, do not bundle
+with P1–P3; P5 decode micro-tuning only last.
+
+Build / device verification is owed by Antigravity: the §5 measurement split, plus
+`./gradlew testDebugUnitTest assembleDebug` and a benchmark-APK cold-start comparison,
+before any of this is called fixed.
+
 ## 2026-10-29 — Antigravity — Round 67: Core fix for disappearing connected buttons on pen toggle
 
 Deep analysis and resolution of the disappearing connected buttons on tool/pen toggle:
