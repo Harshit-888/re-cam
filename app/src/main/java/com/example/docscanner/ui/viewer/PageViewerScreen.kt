@@ -815,12 +815,20 @@ fun PageViewerScreen(
                 scope.launch {
                     val latest = repository.getDocumentById(docId)
                         ?.pages?.find { it.id == targetId } ?: return@launch
-                    val baked = PageRenderer.bake(
-                        context,
-                        latest.copy(signatureOverlayUri = signaturePath)
-                    )
+                    // Same rule as the rotate path above: a failed bake must not leave
+                    // a signature that is not on the page looking applied, and it must
+                    // not escape this coroutine either (see the document screen).
+                    val baked = runCatching {
+                        PageRenderer.bake(
+                            context,
+                            latest.copy(signatureOverlayUri = signaturePath)
+                        )
+                    }.getOrNull()
                     if (baked != null) {
                         repository.updatePage(docId, targetId) { baked }
+                    } else {
+                        Toast.makeText(context, "Could not sign this page", Toast.LENGTH_SHORT)
+                            .show()
                     }
                 }
             }

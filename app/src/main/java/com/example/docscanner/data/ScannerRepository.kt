@@ -271,14 +271,87 @@ class ScannerRepository(context: Context) {
 
     // ------------------------------------------------------------- pages
 
+    /**
+     * Rewrites one page of one document.
+     *
+     * **`modifiedDate` moves only when the page actually changed.** It used to move on
+     * every call, and the library is sorted by it (newest first, the default), so any
+     * code path that re-supplied values that were already stored moved the document to
+     * the top of the home screen. There are such paths by design: the crop editor
+     * persists the geometry of the page it is leaving on every page switch, so walking
+     * through a document's pages — looking, changing nothing — re-sorted the library
+     * after every tap. "Recently modified" has to mean modified.
+     */
     fun updatePage(docId: String, pageId: String, update: (ScannedPage) -> ScannedPage) {
         _documents.update { docs ->
             docs.map { doc ->
-                if (doc.id == docId) {
-                    doc.copy(
-                        pages = doc.pages.map { page -> if (page.id == pageId) update(page) else page },
-                        modifiedDate = System.currentTimeMillis()
-                    )
+                if (doc.id != docId) return@map doc
+                var changed = false
+                val pages = doc.pages.map { page ->
+                    if (page.id != pageId) {
+                        page
+                    } else {
+                        val next = update(page)
+                        if (next != page) changed = true
+                        next
+                    }
+                }
+                if (changed) {
+                    doc.copy(pages = pages, modifiedDate = System.currentTimeMillis())
+                } else {
+                    doc
+                }
+            }
+        }
+    }
+
+    /**
+     * Publishes **several** already-baked pages of one document in one emission.
+     *
+     * Every `updatePage` replaces the whole document list, which is what the library
+     * persistence and the dashboard observe — so a loop of *n* calls is *n* list
+     * rebuilds, *n* recompositions of every page card, and *n* scheduled writes of the
+     * entire library (`library.json` carries each page's recognised text). Rotating a
+     * ten-page document costs ten bakes; it should not also cost ten serialisations of
+     * the library, and on a document with recognised text it did.
+     *
+     * The bakes themselves stay per page: that is the part with a progress bar, and
+     * batching the *emissions* must not make the screen look frozen. This is the same
+     * rule as [setPageCorners] and [setPageOcrTextsBulk] — batch the write, never the
+     * work.
+     *
+     * @param replacements page id to the page that should replace it, as returned by
+     *   `PageRenderer.bake`. Ids that are no longer in the document are ignored, so a
+     *   page deleted while its bake was in flight cannot resurrect it.
+     */
+    fun updatePages(docId: String, replacements: Map<String, ScannedPage>) {
+        if (replacements.isEmpty()) return
+        rewritePages(docId) { page -> replacements[page.id] ?: page }
+    }
+
+    /** Applies [transform] to every page of one document, in one emission. */
+    fun updateAllPages(docId: String, transform: (ScannedPage) -> ScannedPage) {
+        rewritePages(docId, transform)
+    }
+
+    /**
+     * The shared body of the two batch writes.
+     *
+     * `modifiedDate` moves only when a page actually changed, so a batch that turned
+     * out to be a no-op does not re-sort the library and re-stamp the card.
+     */
+    private fun rewritePages(docId: String, transform: (ScannedPage) -> ScannedPage) {
+        _documents.update { docs ->
+            docs.map { doc ->
+                if (doc.id != docId) return@map doc
+                var changed = false
+                val pages = doc.pages.map { page ->
+                    val next = transform(page)
+                    if (next != page) changed = true
+                    next
+                }
+                if (changed) {
+                    doc.copy(pages = pages, modifiedDate = System.currentTimeMillis())
                 } else {
                     doc
                 }
@@ -494,7 +567,11 @@ class ScannerRepository(context: Context) {
      * update for the whole pass is the difference between a single flicker and a
      * visibly busy background.
      *
-     * `modifiedDate` moves once, because the document genuinely did change.
+     * `modifiedDate` moves once — and only if a page actually changed. The background
+     * pass skips pages the user has already cropped, so on a document that was cropped
+     * by hand while the detection ran there may be nothing left to apply; bumping the
+     * date then would re-sort the library and move a card to the top of the home
+     * screen for an edit nobody made.
      */
     fun setPageCorners(
         docId: String,
@@ -516,17 +593,24 @@ class ScannerRepository(context: Context) {
                 if (doc.id != docId) {
                     doc
                 } else {
-                    doc.copy(
-                        pages = doc.pages.map { page ->
-                            val replacement = cornersByPage[page.id]
-                            when {
-                                replacement == null -> page
-                                onlyWhereUncropped && !page.corners.isFullFrame -> page
-                                else -> page.copy(corners = replacement)
+                    var changed = false
+                    val pages = doc.pages.map { page ->
+                        val replacement = cornersByPage[page.id]
+                        when {
+                            replacement == null -> page
+                            onlyWhereUncropped && !page.corners.isFullFrame -> page
+                            replacement == page.corners -> page
+                            else -> {
+                                changed = true
+                                page.copy(corners = replacement)
                             }
-                        },
-                        modifiedDate = System.currentTimeMillis()
-                    )
+                        }
+                    }
+                    if (changed) {
+                        doc.copy(pages = pages, modifiedDate = System.currentTimeMillis())
+                    } else {
+                        doc
+                    }
                 }
             }
         }

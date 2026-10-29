@@ -222,6 +222,62 @@ there at all.
 the next bake — but nothing said so, so it reads as "my annotation vanished". It now says
 what happened.
 
+### 2.10 A batch of edits was a batch of library writes — `data/ScannerRepository`
+
+The repository has always known this rule — `setPageCorners` and `setPageOcrTextsBulk`
+exist because "one snapshot per page" repaints the dashboard once per page — but four
+call sites had never been taught it:
+
+| Flow | Before |
+|---|---|
+| Rotate several pages (`DocumentDetailScreen.rotatePages`, the card's rotate and the selection bar's) | one `updatePage` per baked page |
+| Apply a filter to all pages (`CropAndFilterScreen.applyFilterToPages`) | one `updatePage` per baked page |
+| Watermark **"Apply to all pages"** (`DocumentDetailScreen`) | one `updatePage` per page, **synchronously inside the click handler on the main thread** |
+| Background border pass (`setPageCorners`) | one emission per pass (already batched), but it bumped `modifiedDate` even when it applied nothing |
+
+Each of those was a rebuild of the document list, a recomposition of every card, and a
+scheduled write of the **whole** `library.json` — which carries every page's recognised
+text. Rotating a ten-page document cost ten bakes *and* ten serialisations of the library;
+a fifty-page watermark cost fifty of them, on the main thread, before the dialog closed.
+
+**Fixed:** `updatePages(docId, replacements)` and `updateAllPages(docId) { … }` publish a
+whole batch in one emission, and the bakes stay per page — the work is not batched, only
+the write. The watermark flow is now one list traversal.
+
+### 2.11 "Modified" meant "written to" — `data/ScannerRepository.updatePage`
+
+`updatePage` moved `modifiedDate` on every call, and the library is **sorted by it**
+(newest first, the default). The crop editor persists the geometry of the page it is
+leaving on every page switch — by design, so a dragged corner survives leaving the screen
+— so walking through a document's pages and changing nothing moved that document to the
+top of the home screen, one tap at a time.
+
+**Fixed:** `updatePage` only bumps `modifiedDate` when the page it produced differs from
+the one it replaced, and `setPageCorners` does the same (with `onlyWhereUncropped` a whole
+background pass can legitimately apply nothing). A batch that turns out to be a no-op now
+does not re-sort the library at all.
+
+### 2.12 Three bake paths could crash the app, and one could strand the progress sheet
+
+`PageRenderer.bakeBlocking` can **throw** — a decode that fails inside the filter chain, an
+allocation the OOM fallback cannot absorb, a signature overlay that will not composite. Most
+call sites wrapped it (`runCatching`, or a null check that was enough for the paths that
+could only return null). Three did not:
+
+| Call site | What a throw did |
+|---|---|
+| `DocumentDetailScreen`, signature applied | escaped a `scope.launch` on the main dispatcher — **the app closed** |
+| `PageViewerScreen`, signature applied | the same, from the reader |
+| `CropAndFilterScreen.applyFilterToPages` | died between the `isSaving = true` and the reset, leaving the sheet at "applying page 3 of 9" **for the life of the screen**, with Done ignored because saving was still true |
+
+`DocumentDetailScreen.rotatePages` also only handled a `null` return, not a throw — and its
+own comment promised "a page that cannot be re-baked is skipped rather than abandoning the
+batch". One bad page abandoned the batch and published nothing.
+
+**Fixed:** every bake is wrapped; the signature paths say "Could not sign this page"; the
+filter batch skips the page that failed and resets its state in a `finally`.
+
+
 ---
 
 ## 3. Checked and found sound
@@ -255,9 +311,10 @@ Honest list — each of these is a real cost that this round did not address:
    decode) to learn its size. It is on the decode threads and a thumbnail is ~40 KB, so it
    is a few milliseconds; removing it means keeping the thumbnail's dimensions in the
    library file.
-3. **A full library write is a full serialisation.** The debounce collapses bursts, but a
-   rotate on a 1000-page library still re-encodes every page's metadata. Incremental
-   persistence (Room, or per-document files) is the real fix and is a design change.
+3. **A full library write is a full serialisation.** Batching (§2.10) means a rotate-all
+   is now *one* write instead of *n*, but that one write still re-encodes every page's
+   metadata. Incremental persistence (Room, or per-document files) is the real fix and is a
+   design change.
 4. **`LibraryViewModel` still builds the repository before anything is drawn.** Showing the
    dashboard skeleton first would need the document list, i.e. the parse — the splash is the
    honest answer.

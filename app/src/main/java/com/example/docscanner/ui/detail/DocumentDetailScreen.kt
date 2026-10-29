@@ -371,11 +371,14 @@ fun DocumentDetailScreen(
     // One page at a time, and a page that cannot be re-baked is skipped rather than
     // abandoning the batch: rotating nine pages and silently doing none because the
     // tenth has a missing file is worse than rotating nine.
-    suspend fun rotateOne(page: ScannedPage) {
+    //
+    // Returns the page to store, or `null` if it could not be baked. It does *not*
+    // store it — see `rotatePages`.
+    suspend fun bakeRotated(page: ScannedPage): ScannedPage? {
         // The bake is a full-resolution decode, warp, filter and encode. It used to run
         // on the composition's own scope, i.e. on the main thread, so rotating a page
         // from this grid froze the grid for as long as it took. Same bake, own thread.
-        val baked = withContext(Dispatchers.IO) {
+        return withContext(Dispatchers.IO) {
             val current = repository.getDocumentById(docId)
                 ?.pages?.find { it.id == page.id } ?: return@withContext null
             PageRenderer.bake(
@@ -383,20 +386,31 @@ fun DocumentDetailScreen(
                 current.copy(rotationDegrees = (current.rotationDegrees + 90f) % 360f)
             )
         }
-        if (baked != null) {
-            repository.updatePage(docId, page.id) { baked }
-        }
     }
 
     // Re-bake so the rotation is visible immediately in the grid, the viewer and the
     // PDF — not just stored as a flag. One definition, because the card's rotate
     // button, the selection bar's rotate and the viewer's rotate must not drift apart.
+    //
+    // The bakes run one page at a time, but the *result* is published once. Storing
+    // each page as it finished meant a library emission per page — every one of them a
+    // rebuild of the document list, a recomposition of every card in this grid and a
+    // scheduled write of the whole `library.json`, on a document whose pages now carry
+    // recognised text. Rotating ten pages therefore serialised the library ten times
+    // to record ten image swaps.
     fun rotatePages(pages: List<ScannedPage>) {
         if (pages.isEmpty()) return
         scope.launch {
+            val rotated = LinkedHashMap<String, ScannedPage>(pages.size)
             pages.forEach { page ->
-                rotateOne(page)
+                // `runCatching`, not just a null check: the comment above promises
+                // that one bad page is skipped, and a *throw* out of a bake (a decode
+                // failure, an OOM inside the filter chain that its own fallback could
+                // not absorb) used to abandon the rest of the batch and publish
+                // nothing — the user saw a rotation that never happened.
+                runCatching { bakeRotated(page) }.getOrNull()?.let { rotated[page.id] = it }
             }
+            repository.updatePages(docId, rotated)
         }
     }
 
@@ -1072,12 +1086,24 @@ fun DocumentDetailScreen(
                     // dialog was open, and baking a stale copy would undo that.
                     val target = repository.getDocumentById(docId)
                         ?.pages?.find { it.id == targetId } ?: return@launch
-                    val baked = PageRenderer.bake(
-                        context,
-                        target.copy(signatureOverlayUri = signaturePath)
-                    )
+                    // `runCatching`: a bake that throws (a decode failure, an OOM the
+                    // filter chain could not absorb) used to take the exception out of
+                    // this `scope.launch` on the main dispatcher, i.e. close the app —
+                    // for a stamp the user could simply retry.
+                    val baked = runCatching {
+                        PageRenderer.bake(
+                            context,
+                            target.copy(signatureOverlayUri = signaturePath)
+                        )
+                    }.getOrNull()
                     if (baked != null) {
                         repository.updatePage(docId, target.id) { baked }
+                    } else {
+                        Toast.makeText(
+                            context,
+                            "Could not sign this page",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 }
             }
@@ -1258,11 +1284,12 @@ fun DocumentDetailScreen(
                 PillButton(
                     text = "Apply to all pages",
                     onClick = {
-                        document.pages.forEach { page ->
-                            repository.updatePage(docId, page.id) {
-                                it.copy(watermarkText = watermarkText.ifBlank { null })
-                            }
-                        }
+                        // One emission, not one per page: the same text applied to a
+                        // fifty-page document used to rebuild the document list fifty
+                        // times on the main thread, inside the click handler, and queue
+                        // fifty writes of the library.
+                        val text = watermarkText.ifBlank { null }
+                        repository.updateAllPages(docId) { it.copy(watermarkText = text) }
                         showWatermarkDialog = false
                     }
                 )

@@ -656,28 +656,48 @@ fun CropAndFilterScreen(
         persistGeometry()
         isSaving = true
         scope.launch {
-            applyingTotal = targets.size
-            val quality = imageQuality
-            val dimension = PageRenderer.bakeDimension(quality)
-            targets.forEachIndexed { index, page ->
-                applyingPage = index
-                // The page in the repository carries the corners saved during the
-                // border pass; only the filter is new here.
-                val latest = repository.getDocumentById(docId)
-                    ?.pages?.find { it.id == page.id } ?: page
-                val baked = PageRenderer.bake(
-                    context = context,
-                    page = latest.copy(filterType = selectedFilter),
-                    jpegQuality = quality.jpegQuality,
-                    maxDimension = dimension
-                )
-                if (baked != null) {
-                    repository.updatePage(docId, page.id) { baked }
+            // `finally`, because this is a modal progress state: `isSaving` gates every
+            // future save on this screen, so a throw out of one page's bake (a decode
+            // failure, an OOM the filter chain could not absorb) used to leave the
+            // sheet at "applying page 3 of 9" for the life of the screen — with the
+            // done button ignored because saving was still true.
+            try {
+                applyingTotal = targets.size
+                val quality = imageQuality
+                val dimension = PageRenderer.bakeDimension(quality)
+                // Baked pages are collected and published once, after the last one.
+                // Storing each page as it finished made every page of the batch its own
+                // library emission — a rebuild of the document list, a recomposition of
+                // the page strip behind this dialog, and a scheduled write of the whole
+                // `library.json` (recognised text included). A ten-page filter change
+                // serialised the library ten times; it now does it once.
+                val baked = LinkedHashMap<String, ScannedPage>(targets.size)
+                targets.forEachIndexed { index, page ->
+                    applyingPage = index
+                    // The page in the repository carries the corners saved during the
+                    // border pass; only the filter is new here.
+                    val latest = repository.getDocumentById(docId)
+                        ?.pages?.find { it.id == page.id } ?: page
+                    // One page that cannot be baked is skipped, not fatal: the rest of
+                    // the batch still gets the filter.
+                    val result = runCatching {
+                        PageRenderer.bake(
+                            context = context,
+                            page = latest.copy(filterType = selectedFilter),
+                            jpegQuality = quality.jpegQuality,
+                            maxDimension = dimension
+                        )
+                    }.getOrNull()
+                    if (result != null) {
+                        baked[page.id] = result
+                    }
                 }
+                repository.updatePages(docId, baked)
+                onDone()
+            } finally {
+                applyingPage = null
+                isSaving = false
             }
-            applyingPage = null
-            isSaving = false
-            onDone()
         }
     }
 

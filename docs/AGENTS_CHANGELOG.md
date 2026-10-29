@@ -86,6 +86,29 @@ facts from things that need a device, and says which is which.
    mixture — a truncated library, caused by closing the app. Both stores now serialise
    `writeNow` on a private monitor.
 
+12. **A batch of edits was a batch of library writes** (`ScannerRepository`,
+   `DocumentDetailScreen`, `CropAndFilterScreen`). Rotate-several, filter-all and the
+   watermark's "apply to all pages" each called `updatePage` once per page: one document
+   list rebuild, one recomposition of every card and one scheduled write of the whole
+   `library.json` per page — and the watermark loop ran *inside the click handler on the
+   main thread*. New `updatePages(docId, replacements)` / `updateAllPages(docId)` publish a
+   batch in one emission; the bakes stay per page, because that is the part with a progress
+   bar. Same rule as the existing `setPageCorners` / `setPageOcrTextsBulk`.
+
+13. **"Modified" meant "written to"** (`ScannerRepository.updatePage`). It bumped
+   `modifiedDate` on every call and the library is sorted by that field, so the crop
+   editor's save-on-page-switch moved the document to the top of the home screen on every
+   tap, with nothing edited. `updatePage` (and `setPageCorners`, which could apply nothing
+   under `onlyWhereUncropped`) now bumps the date only when a page actually changed.
+
+14. **Three bake paths could crash the app** (`DocumentDetailScreen`, `PageViewerScreen`,
+   `CropAndFilterScreen`). `PageRenderer.bakeBlocking` can throw; the two signature flows
+   wrapped it in nothing, so a failed stamp escaped a main-dispatcher `scope.launch` and
+   closed the app. In the filter batch a throw landed between `isSaving = true` and its
+   reset, stranding the sheet at "applying page 3 of 9" for the life of the screen. Every
+   bake is now wrapped; the filter batch resets in a `finally` and skips the page that
+   failed.
+
 **Audited and sound** (do not re-fix): every `PageRenderer.bake` call site (the function is a
 `suspend` wrapper around IO), PDF export, `MarkupSession`, `ConnectedButtonGroup`,
 `ExpressiveActionBar`, `AnnotateShelf`, `ZoomablePageView`'s pan clamp, the theme's colour
@@ -94,7 +117,8 @@ loading, and search indexing.
 
 **Changed:** `data/{LibraryViewModel,ScannerRepository,LibraryStore,SettingsStore}.kt`,
 `MainActivity.kt`, `ui/dashboard/DashboardScreen.kt`, `ui/editor/MarkupScreen.kt`,
-`util/{PageImageLoader,CropHandles}.kt`, `util/CropHandlesTest.kt`, new
+`util/{PageImageLoader,CropHandles}.kt`, `util/CropHandlesTest.kt`,
+`ui/{detail/DocumentDetailScreen,editor/CropAndFilterScreen,viewer/PageViewerScreen}.kt`, new
 `docs/APP_AUDIT_R65.md`.
 
 **Not changed:** the filter pipeline, the Rust crate and ABI (3), PDF output, geometry, the
