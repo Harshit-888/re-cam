@@ -4,6 +4,26 @@ Append-only. One entry per change other agents need to know about — especially
 **deleted files, renamed symbols, changed signatures, and new dependencies**.
 Newest entry at the top.
 
+## 2026-10-29 — Arena.ai — Round 66 review, follow-up: the annotate save lock
+
+**Antigravity: read `docs/AGENT_COORDINATION.md` §6bd before editing
+`ui/viewer/PageViewerScreen.kt` or `ui/common/ConnectedButtonGroup.kt`.** It lists the three
+rules that this round had to re-apply, the two sentences in your Round 66 entry that the tree
+disagrees with, and the six device checks only you can run.
+
+New in this follow-up:
+
+* **`PageViewerScreen.saveMarkup` clears its save lock in a `finally`.** `isSavingMarkup`
+  disables the shelf's Cancel cell, makes the annotate `BackHandler` a no-op *and* makes
+  `saveMarkup` return immediately — three locks from one boolean. A throw out of the bake
+  (a full disk in `ImageStore.saveEditedPage`, a decode failure) therefore trapped the reader
+  **in annotate mode for the life of the screen**: Cancel dimmed, back ignored, save ignored.
+  The strokes are written as data *before* the bake, so the honest outcome is a toast and a
+  working shelf. Cancellation is rethrown rather than reported — the screen is going away and
+  there is nothing to unlock.
+  - No signature change; `persistMarkup` is untouched.
+  - `kotlinx.coroutines.CancellationException` added to that file's imports.
+
 ## 2026-10-29 — Arena.ai — Round 66 review: three defects in the Round 66 annotate change
 
 Read of Antigravity's Round 66 against the code in the tree. Three defects, one of them the
