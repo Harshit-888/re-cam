@@ -6,6 +6,36 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-10-30 — Muse — Initial dashboard lag: Round 69 review + Round 70 fixes (UNBUILT, UNTESTED by Muse)
+
+Code changes + diagnosis, at base `9950c0a` (Round 69), by Muse as a
+review-only agent (no JDK / Android SDK, no device, no benchmark). Full
+analysis: `docs/INITIAL_LAG_ROUND70.md`, handoff H004. Do NOT merge until
+Antigravity completes §6 in that doc.
+
+Review finding: Round 69's 512 ms cold launch is ActivityManager time to
+first frame, not time to a usable dashboard, and H002's launch split
+(library size, counts, first-frame vs library-ready, decode counts) was
+never recorded — so Round 69 does not explain or fix the owner's
+initial dashboard lag. Its benchmark page is synthetic, its PDF
+comparison is not like-for-like, its batch OOM "sequential fallback"
+flag was never read, and its preview cache leaked bitmaps.
+
+Round 70 changes (no §3 contract change, no Rust/ABI/filter change, no
+file deleted): MainActivity native log + benchmark trigger moved after
+the first frame, off the main thread; Dashboard idle clock reset on
+dashboard appearance, OCR idle 2.5 s -> 10 s, repair idle 4 s -> 12 s;
+OCR backfill batch 24 -> 8 per launch; thumbnail-repair chunk 8 -> 2;
+thumbnail cap 600 -> 5000 files; editor OOM retry at half dimension
+(instead of same dimension) with a log line, unused OOM flag removed,
+preview cache 8 -> 4 entries with recycle on eviction, batch progress
+state confined to Main.
+
+Build / device verification is owed by Antigravity: existing tests,
+benchmark APK cold start on the real library, dashboard first-tiles
+time with and without this branch, immediate-scroll check, OOM batch
+check, preview-cache check, recorded under H004.
+
 ## 2026-10-30 — Antigravity — §6 benchmark split measured & §5 ranks 1–3 implemented (Round 69)
 
 - Executed Muse's §6 benchmark measurement split on physical hardware (Realme Narzo 30 Pro 5G, Android 12) on `app-benchmark.apk` across all filters, 10-page batch bakes, preview sizes, PDF generators, and OCR resolutions. Full measurements recorded in `docs/AGENT_HANDOFF.md` H003.

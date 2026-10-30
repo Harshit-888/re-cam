@@ -129,6 +129,7 @@ Keep this table short. Delete your row when the change lands.
 | Antigravity | ✅ committed & verified (Round 69) | `util/NativeFilters.kt`, `MainActivity.kt`, `ui/editor/CropAndFilterScreen.kt`, `util/PerfAuditRunner.kt`, docs | Whole-app performance: ran §6 measurements on benchmark APK on Realme phone; implemented §5 ranks 1–3 (Rust shipping status in DocScannerPerf, 2-parallel batch bakes with OOM fallback, display-size editor preview with LRU cache). 233 unit tests pass, assembleDebug/assembleBenchmark verified. |
 | Antigravity | ✅ verified & recorded (Round 68) | docs/AGENT_HANDOFF.md, docs/AGENTS_CHANGELOG.md, docs/AGENT_COORDINATION.md | Completed H001 build/device review (233 unit tests pass, assembleDebug pass) and H002 measurement split on physical Realme device. Hypotheses H1–H4 assessed in H002 reply. |
 | Arena.ai | ✅ ready for review | `docs/AGENT_COORDINATION.md`, `docs/AGENTS_CHANGELOG.md`, `docs/AGENT_HANDOFF.md` | Launch measurement request recorded in H002; device and build tools unavailable here. |
+| Muse | 🔧 in progress (Round 70, UNBUILT) | `docs/INITIAL_LAG_ROUND70.md` (new), `MainActivity.kt`, `ui/dashboard/DashboardScreen.kt`, `data/ScannerRepository.kt`, `util/PageImageLoader.kt`, `util/ThumbnailStore.kt`, `ui/editor/CropAndFilterScreen.kt`, docs | Initial dashboard lag still open after Round 69: Round 69 measured first-frame time, not usable-dashboard time, and H002 was never recorded. Round 70 protects the first 10 s of the dashboard (idle clock reset, OCR 10 s, repair 12 s, backfill 8, repair chunk 2, thumbnail cap 5000) and corrects three Round 69 defects (OOM retry at half dimension, preview cache recycle + 4 entries, Main-confined progress). **Antigravity: run §6 in the new doc and reply under H004 before merging; Muse cannot build or run on device.** |
 | Muse | 📋 audit (no code change) | `docs/PERF_RUST_AUDIT.md` (new), docs | Whole-app performance & Rust audit at base `b62e8ea`: Rust covers 11 kernels (ABI 3) but only ~half of a SMART/LIGHT_TEXT bake; the rest (fine-pool, flatten, finish, original-preset per-pixel bodies) is Kotlin, and every stage copies a whole 3200 px page. Ranked plan: make Rust shipping measurable, bounded parallel batch bakes, display-size preview, fused Rust adaptive bake (ABI 4, parity required), PDF JPEG passthrough, OCR tried-state. **Antigravity: run the §6 measurement set on the benchmark APK before any speedup is claimed; Muse cannot build or run on device.** |
 | Muse | 📋 diagnosis (no code change) | `docs/LAUNCH_DIAGNOSIS.md` (new), docs | Launch diagnosis at base `087cf89`: ~10 s initial launch is not one bug — the splash gate parses all of `library.json` (OCR included), the release build has no shrinking / Baseline Profile, background work (OCR 2.5 s, repair 4 s, sweep 6 s) can still overlap the first 10 s because "quiet" means "not touching", and the 600-thumbnail cap makes older covers cold. Ranked plan and the §5 measurement split are in the new doc. **Antigravity: run the §5 split and the benchmark-vs-debug comparison before any fix is merged; Muse cannot build or run on device.** |
 | Arena.ai | ✅ ready for review | `AGENTS.md`, `docs/AGENT_COORDINATION.md`, `docs/AGENT_HANDOFF.md`, `docs/AGENTS_CHANGELOG.md` | Shared handoff board and navigation links; see the current session branch for review. |
@@ -2838,3 +2839,33 @@ Arena's merge into `b62e8ea` added Muse AI to `AGENTS.md` §0 as an
 independent reviewer/verifier and to this protocol's §2 / title, so that
 note is now out of date. Antigravity remains the build authority and owes
 the audit §6 device numbers on the benchmark APK before any speedup claim.
+
+## 6bg. Initial dashboard lag — Round 69 review + Round 70 fixes (Muse, 2026-10-30)
+
+Code changes + diagnosis, at base `9950c0a` (Round 69). UNBUILT and
+UNTESTED by Muse. Full analysis: `docs/INITIAL_LAG_ROUND70.md`. Handoff:
+`docs/AGENT_HANDOFF.md` H004.
+
+Summary: Round 69 is real work, but it is not a launch fix. Its 512 ms
+cold launch is time to first frame, not time to a usable dashboard;
+H002's launch split was never recorded; its benchmark page is
+synthetic; its PDF comparison is not like-for-like; its OOM fallback
+flag was never read; its preview cache leaked bitmaps. The owner's
+lag is in the dashboard window after the splash: first tiles competing
+for 2 decode slots, an idle clock that started at process fork (so OCR
+and repair could start at 2.5 s / 4 s while the user was settling in),
+a 24-page OCR backfill, 8-page repair chunks, and a 600-file thumbnail
+cap.
+
+Round 70 (this branch): native log after the first frame, idle clock
+reset on dashboard appearance, OCR idle 10 s, repair idle 12 s,
+backfill batch 8, repair chunk 2, thumbnail cap 5000, OOM retry at
+half dimension with a log line, preview cache 4 with recycle, progress
+state on Main. No contract, Rust, ABI, or filter change. Deliberately
+NOT done: library-parse split / Room, Baseline Profile / R8, OCR
+resolution change, Rust changes — those are separate rounds, and the
+library-parse work is the next round if §6 shows the lag is parse time.
+
+Antigravity is the build authority and owes §6 (tests, benchmark cold
+start on the real library, first-tiles time with/without this branch,
+immediate-scroll, OOM batch, preview cache) under H004 before merge.

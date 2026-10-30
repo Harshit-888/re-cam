@@ -379,7 +379,11 @@ object PageImageLoader {
     }
 
     /** Pages repaired per idle chunk. Small enough that one chunk is never felt. */
-    private const val PRIME_LIMIT = 8
+        // Round 70: was 8. A repair chunk is 8 full-page decodes back to back,
+    // which is a CPU burst in the dashboard's idle window. 2 pages per chunk
+    // (with the dashboard's 350 ms pause between chunks) makes repair a
+    // background trickle instead of a burst; it finishes later, not faster.
+    private const val PRIME_LIMIT = 2
 
     /**
      * A decode up to this factor above the requested box is drawn as-is.

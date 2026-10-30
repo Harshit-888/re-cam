@@ -94,6 +94,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -333,11 +334,21 @@ fun CropAndFilterScreen(
         val corners: QuadCorners,
         val rotation: Float
     )
+    // Round 70: was 8 entries. At 1080 px ARGB that is ~48 MB of preview
+    // bitmaps held alongside the grid cache and the bake pipeline — a real
+    // OOM contributor during a batch bake that starts from this screen.
+    // 4 entries still covers tap-back between the last few filters, and an
+    // evicted entry's bitmap is now recycled instead of left for the GC:
+    // accessOrder=true means the eldest is the least recently used, never
+    // the bitmap currently on screen.
     val previewCache = remember {
         java.util.Collections.synchronizedMap(
-            object : LinkedHashMap<PreviewCacheKey, ImageBitmap>(8, 0.75f, true) {
+            object : LinkedHashMap<PreviewCacheKey, ImageBitmap>(4, 0.75f, true) {
                 override fun removeEldestEntry(eldest: MutableMap.MutableEntry<PreviewCacheKey, ImageBitmap>?): Boolean {
-                    return size > 8
+                    if (size > 4 && eldest != null) {
+                        runCatching { eldest.value.asAndroidBitmap().recycle() }
+                    }
+                    return size > 4
                 }
             }
         )
@@ -709,7 +720,6 @@ fun CropAndFilterScreen(
                 val baked = java.util.Collections.synchronizedMap(LinkedHashMap<String, ScannedPage>(targets.size))
                 val failedCount = java.util.concurrent.atomic.AtomicInteger(0)
                 val completedCount = java.util.concurrent.atomic.AtomicInteger(0)
-                val oomOccurred = java.util.concurrent.atomic.AtomicBoolean(false)
                 val semaphore = kotlinx.coroutines.sync.Semaphore(2)
 
                 coroutineScope {
@@ -729,14 +739,27 @@ fun CropAndFilterScreen(
                                 } catch (cancelled: CancellationException) {
                                     throw cancelled
                                 } catch (_: OutOfMemoryError) {
-                                    oomOccurred.set(true)
+                                    // Round 70: Round 69 retried the same bake at
+                                    // the same dimension, after PageRenderer had
+                                    // already stepped its own dimension down on
+                                    // OOM — so the retry repeated work that had
+                                    // just failed, and the "sequential fallback"
+                                    // flag it set was never read anywhere. The
+                                    // retry is now once, at half dimension:
+                                    // a lower-resolution page saved is better
+                                    // than a page failed, and the log line makes
+                                    // the downgrade visible instead of silent.
+                                    android.util.Log.i(
+                                        "DocScannerPerf",
+                                        "[batch-bake] OOM for page ${page.id}, retrying at ${dimension / 2}px"
+                                    )
                                     System.gc()
                                     try {
                                         PageRenderer.bake(
                                             context = context,
                                             page = latest.copy(filterType = selectedFilter),
                                             jpegQuality = quality.jpegQuality,
-                                            maxDimension = dimension
+                                            maxDimension = dimension / 2
                                         )
                                     } catch (_: Throwable) {
                                         null
@@ -753,7 +776,14 @@ fun CropAndFilterScreen(
                             } finally {
                                 semaphore.release()
                                 val finished = completedCount.incrementAndGet()
-                                applyingPage = finished - 1
+                                // Round 70: applyingPage is Compose state and
+                                // was written from Default-dispatcher parallel
+                                // bakes. Confine the write to Main; the value
+                                // is completion order, not page order, so the
+                                // sheet shows progress, not a position.
+                                withContext(Dispatchers.Main) {
+                                    applyingPage = finished - 1
+                                }
                             }
                         }
                     }

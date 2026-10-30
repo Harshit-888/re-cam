@@ -93,14 +93,13 @@ class MainActivity : ComponentActivity() {
         // frame went.
         PerfTrace.attachWindow(window)
 
-        // Rank 1: Log native filters status unconditionally on startup
-        Log.i("DocScannerPerf", "[startup] Native filters status: ${NativeFilters.getStatusSummary()}")
-
-        if (intent?.getStringExtra("run_benchmarks") == "true") {
-            lifecycleScope.launch(Dispatchers.IO) {
-                PerfAuditRunner.runAudit(applicationContext)
-            }
-        }
+        // Round 70: do NOT touch NativeFilters here. Round 69 logged it in
+        // onCreate, which runs System.loadLibrary on the main thread before
+        // setContent — a small but real cost on the first frame, for a status
+        // nobody needs until the first filter runs. It is logged after the
+        // first frame instead, off the main thread (see the LaunchedEffect
+        // below). Same for the benchmark runner: starting it in onCreate let
+        // it compete with the splash, the library parse and the first tiles.
 
         setContent {
             // ## The launch clock, in one line
@@ -117,6 +116,17 @@ class MainActivity : ComponentActivity() {
             //     adb logcat -s DocScannerPerf
             LaunchedEffect(Unit) {
                 withFrameNanos { }
+                // Round 70: first frame is already drawn at this point, so
+                // the native-filter load and any benchmark run can no longer
+                // delay it. Both run on IO, not on the frame thread.
+                launch(Dispatchers.IO) {
+                    Log.i("DocScannerPerf", "[startup] Native filters status: ${NativeFilters.getStatusSummary()}")
+                }
+                if (intent?.getStringExtra("run_benchmarks") == "true") {
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        PerfAuditRunner.runAudit(applicationContext)
+                    }
+                }
                 val sinceProcessStart =
                     SystemClock.uptimeMillis() - Process.getStartUptimeMillis()
                 StartupWork.trace("launch: first frame drawn $sinceProcessStart ms after process start")

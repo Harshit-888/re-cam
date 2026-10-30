@@ -57,7 +57,12 @@ import kotlinx.coroutines.launch
  * being guessed at.
  */
 /** How many pages one background text-recognition pass may handle. */
-private const val OCR_BACKFILL_BATCH = 24
+// Round 70: was 24. At ~1.2 s per page (Round 69 benchmark, Kotlin path)
+// a 24-page backfill is ~29 s of ML Kit + 2400 px decode CPU in the launch
+// window, even with idle pauses. 8 pages caps the first launch's cost;
+// backfill runs once per app start, so the rest is picked up on later
+// launches, not lost. Search over old pages is delayed, not removed.
+private const val OCR_BACKFILL_BATCH = 8
 
 /**
  * How long a paused backfill waits before asking again whether it may run.

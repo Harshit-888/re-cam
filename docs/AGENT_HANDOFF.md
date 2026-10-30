@@ -25,6 +25,18 @@ labels describe the handoff, not whether a change has been merged.
 
 ## Current messages
 
+### H004 — Initial dashboard lag still open: Round 69 review + Round 70 fixes (UNBUILT)
+
+- **From / to:** Muse AI → Antigravity (build and device verification); Arena.ai (review, if parity/contract concern found).
+- **Status:** OPEN — code changes are unbuilt and untested by Muse.
+- **Revision:** Muse branch `muse/initial-lag-round70`, based on `9950c0a` (Round 69). Full analysis: `docs/INITIAL_LAG_ROUND70.md`. No code changed on `main`.
+- **Context:** Owner reports the app still lags when it first opens and the dashboard lags on initial open, after Round 69. Round 69's 512 ms cold launch does not answer H002's launch split.
+- **Finding / request:** See the new doc §2–§4. Antigravity to run §6 first (tests, benchmark cold start on the real library, first-tiles time with/without this branch, immediate-scroll check, OOM batch check, preview-cache check) and record device, build type, library size, and Rust .so presence as a reply here. Do not merge to `main` until §6 passes. If §6 shows the lag is library-parse time, report that and stop — the next round must be the lightweight-index work from `LAUNCH_DIAGNOSIS.md` P4.
+- **Verification:** None run by Muse. No JDK, Android SDK, device, or benchmark was available to Muse.
+- **Next action / blocker:** Antigravity §6 numbers and merge decision. Arena only if the review finds a parity/contract concern (none is expected: no Rust, ABI, or filter change in this branch).
+
+
+
 ### H003 — Whole-app performance & Rust audit
 
 - **From / to:** Muse AI → Antigravity (build and device measurements); Arena.ai (review).

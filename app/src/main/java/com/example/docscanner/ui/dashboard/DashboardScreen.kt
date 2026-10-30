@@ -487,6 +487,17 @@ fun DashboardScreen(
             }
     }
 
+    // Round 70: the idle clock starts when the dashboard appears, not when
+    // the process forked. Before this, StartupWork's last-interaction stamp
+    // was set at process start, so a user who opened the app and had not yet
+    // touched anything was already "idle" — OCR (2.5 s) and thumbnail repair
+    // (4 s) could start while they were still settling in, in the first
+    // seconds of the dashboard. Resetting here means those gates count from
+    // the moment the user can actually see and touch the list.
+    LaunchedEffect(Unit) {
+        StartupWork.markInteraction()
+    }
+
     // Fill the memory cache for the first screens as soon as the library exists.
     //
     // Prefetch alone is one step behind a fast flick: it only starts for a row that
@@ -1427,14 +1438,21 @@ private const val WARM_ROWS = 6
  * same cores the frame needs. Five seconds into a fresh open is also exactly when
  * people are still scrolling a library they have not seen since yesterday.
  *
- * Now the pass starts only after 2.5 s in which no pointer touched the screen and
+ * Now the pass starts only after 10 s (Round 70; was 2.5 s) in which no pointer touched the screen and
  * nothing is scrolling, and every touch resets that clock (see `StartupWork`).
  * Search over an old library is a few seconds later; the frames are never
  * interrupted by work the user did not ask for.
  */
-private const val OCR_IDLE_MS = 2_500L
+private const val OCR_IDLE_MS = 10_000L
 
 /**
+ * Round 70: OCR_IDLE_MS was 2_500 and REPAIR_IDLE_MS was 4_000. Both fired
+ * inside the first seconds of the dashboard, while the user was still
+ * settling in — exactly the window the owner reports as laggy. Search over
+ * old pages and thumbnail repair are a few seconds later now; the first
+ * 10 seconds of the dashboard are protected instead. This is a delay, not
+ * a removal: both passes still run, and both still pause on any touch.
+ *
  * How long the list must be still before pages saved without a thumbnail are
  * rebuilt.
  *
@@ -1442,7 +1460,7 @@ private const val OCR_IDLE_MS = 2_500L
  * per page than a cover load. It also has no deadline: those pages already render,
  * just slowly. Hence the longer quiet window.
  */
-private const val REPAIR_IDLE_MS = 4_000L
+private const val REPAIR_IDLE_MS = 12_000L
 
 /** Pause between thumbnail-repair chunks, so the decoder cannot saturate a core. */
 private const val PRIME_CHUNK_PAUSE_MS = 350L
@@ -1450,7 +1468,7 @@ private const val PRIME_CHUNK_PAUSE_MS = 350L
 /**
  * How still the app has to be before the first screens of covers are pre-warmed.
  *
- * Short on purpose: this is not the speculative-work gate (`OCR_IDLE_MS` is 2.5 s),
+ * Short on purpose: this is not the speculative-work gate (`OCR_IDLE_MS` is 10 s),
  * it only keeps the prewarm out of the launch crossfade and the grid's first layout.
  */
 private const val PREWARM_QUIET_MS = 140L

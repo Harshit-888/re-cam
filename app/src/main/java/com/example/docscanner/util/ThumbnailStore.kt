@@ -60,7 +60,13 @@ object ThumbnailStore {
     private const val QUALITY = 85
 
     /** Upper bound on stored thumbnails before the oldest half is swept. */
-    private const val MAX_FILES = 600
+        // Round 70: was 600. At ~40 KB per thumbnail, 600 files save at most
+    // ~24 MB, and cost every page beyond 600 a full-page decode every time
+    // it scrolls into view (3200 px PNG for Clear B&W / Grayscale). The
+    // owner trades space for speed, so the cap is 5000 (~200 MB worst case,
+    // still far below the pages themselves). It is still a bound, not
+    // unbounded growth: above 5000 the oldest half is swept as before.
+    private const val MAX_FILES = 5000
 
     fun dir(context: Context): File =
         File(context.filesDir, "thumbs").apply { if (!exists()) mkdirs() }
