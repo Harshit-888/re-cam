@@ -94,7 +94,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -334,20 +333,32 @@ fun CropAndFilterScreen(
         val corners: QuadCorners,
         val rotation: Float
     )
-    // Round 70: was 8 entries. At 1080 px ARGB that is ~48 MB of preview
-    // bitmaps held alongside the grid cache and the bake pipeline — a real
-    // OOM contributor during a batch bake that starts from this screen.
-    // 4 entries still covers tap-back between the last few filters, and an
-    // evicted entry's bitmap is now recycled instead of left for the GC:
-    // accessOrder=true means the eldest is the least recently used, never
-    // the bitmap currently on screen.
+    // Round 70.1 (Arena H004, accepted): manual recycling is REMOVED.
+    // Round 70 recycled the eldest entry's bitmap, but that bitmap could
+    // still be owned elsewhere, and recycling it is unsafe for three
+    // reasons, all confirmed against this file:
+    //  * `applyEnhancements` returns its input for ORIGINAL, for a
+    //    full-frame warp (`PerspectiveWarp.warp` returns `src`), and for
+    //    zero rotation — so a cached preview can BE `previewSource`
+    //    itself, wrapped in a new ImageBitmap. Recycling it pulls pixels
+    //    out from under the borders stage, the swatches, and any later
+    //    preview that still references `previewSource`.
+    //  * At eviction time `previewBitmap` may still hold the eldest
+    //    ImageBitmap (the new entry is put before `previewBitmap` is
+    //    reassigned), and Compose may still be drawing it on the render
+    //    thread. A recycled bitmap drawn by Compose is a crash, not a
+    //    memory saving.
+    //  * The codebase already states this rule for `filterThumbs`:
+    //    "the GC is a better owner than a manual free that can pull
+    //    pixels out from under a live ImageBitmap". That rule now applies
+    //    here too. 4 entries at 1080 px is ~24 MB held, not freed, and
+    //    the GC frees them when the screen leaves or the map is dropped.
+    //    That is the correct trade: a few MB held vs a recycled-bitmap
+    //    crash. The cache also never stores an alias: see the put site.
     val previewCache = remember {
         java.util.Collections.synchronizedMap(
             object : LinkedHashMap<PreviewCacheKey, ImageBitmap>(4, 0.75f, true) {
                 override fun removeEldestEntry(eldest: MutableMap.MutableEntry<PreviewCacheKey, ImageBitmap>?): Boolean {
-                    if (size > 4 && eldest != null) {
-                        runCatching { eldest.value.asAndroidBitmap().recycle() }
-                    }
                     return size > 4
                 }
             }
@@ -603,7 +614,14 @@ fun CropAndFilterScreen(
         previewFailed = rendered == null
         previewAspect = shown.width.toFloat() / shown.height.toFloat()
         val imageBitmap = shown.asImageBitmap()
-        if (rendered != null) {
+        // Round 70.1 (Arena H004): never cache an alias of `source`.
+        // `rendered === source` happens for ORIGINAL, full-frame corners
+        // and zero rotation (see `applyEnhancements` / `warp`), and for
+        // a filter that returns its input on failure. Caching that alias
+        // would keep a second handle to `previewSource` in the map, with
+        // no owner that can safely free it. Only a genuinely new bitmap
+        // — owned solely by this preview and the cache — is cached.
+        if (rendered != null && rendered !== source) {
             previewCache[cacheKey] = imageBitmap
         }
         previewBitmap = imageBitmap
@@ -716,9 +734,12 @@ fun CropAndFilterScreen(
                 // the page strip behind this dialog, and a scheduled write of the whole
                 // `library.json` (recognised text included). A ten-page filter change
                 // serialised the library ten times; it now does it once.
-                // Rank 2: Bounded 2-parallel batch bakes with sequential OOM fallback.
+                // Rank 2: Bounded 2-parallel batch bakes. OOM pages fail
+                // and keep their previous version; there is no sequential
+                // fallback and no downgraded bake (see the OOM catch).
                 val baked = java.util.Collections.synchronizedMap(LinkedHashMap<String, ScannedPage>(targets.size))
                 val failedCount = java.util.concurrent.atomic.AtomicInteger(0)
+                val oomCount = java.util.concurrent.atomic.AtomicInteger(0)
                 val completedCount = java.util.concurrent.atomic.AtomicInteger(0)
                 val semaphore = kotlinx.coroutines.sync.Semaphore(2)
 
@@ -739,31 +760,48 @@ fun CropAndFilterScreen(
                                 } catch (cancelled: CancellationException) {
                                     throw cancelled
                                 } catch (_: OutOfMemoryError) {
-                                    // Round 70: Round 69 retried the same bake at
-                                    // the same dimension, after PageRenderer had
-                                    // already stepped its own dimension down on
-                                    // OOM — so the retry repeated work that had
-                                    // just failed, and the "sequential fallback"
-                                    // flag it set was never read anywhere. The
-                                    // retry is now once, at half dimension:
-                                    // a lower-resolution page saved is better
-                                    // than a page failed, and the log line makes
-                                    // the downgrade visible instead of silent.
+                                    // Round 70.1 (Arena H004, accepted): NO
+                                    // retry, and NO downgraded bake published
+                                    // as an ordinary success. Round 70's
+                                    // half-dimension retry failed on four
+                                    // counts, all confirmed here:
+                                    //  * Quality: a half-dimension bake would
+                                    //    be reported as success and would
+                                    //    overwrite the previous good output
+                                    //    (see `updatePages`: only pages in
+                                    //    `baked` are replaced, so a failed
+                                    //    page keeps its old file — a
+                                    //    downgraded page would not).
+                                    //    A logcat line is not a user warning.
+                                    //  * Allocation: reducing `maxDimension`
+                                    //    only shrinks the filter pixel arrays
+                                    //    (`DocumentFilters.rgbaOf` downsamples
+                                    //    to it). It does NOT shrink the warp,
+                                    //    the rotation, the signature/markup
+                                    //    composites, or the source bitmap
+                                    //    itself (loaded at full capture
+                                    //    dimension in `PageRenderer`). An
+                                    //    OOM in those stages retries at the
+                                    //    same cost and fails again.
+                                    //  * `PageRenderer` already stepped down
+                                    //    3200 -> 2400 on OOM before throwing,
+                                    //    so this OOM is already a fallback
+                                    //    failure, not a first failure.
+                                    //  * Cancellation: Round 70's retry caught
+                                    //    `Throwable`, which would swallow a
+                                    //    `CancellationException` from the
+                                    //    retry bake and count a cancelled
+                                    //    page as merely failed.
+                                    //    So: count it, log it for diagnostics,
+                                    //    and let the user-visible toast below
+                                    //    name memory as the cause. The user
+                                    //    can retry fewer pages at a time.
+                                    oomCount.incrementAndGet()
                                     android.util.Log.i(
                                         "DocScannerPerf",
-                                        "[batch-bake] OOM for page ${page.id}, retrying at ${dimension / 2}px"
+                                        "[batch-bake] OOM for page ${page.id}, keeping previous version"
                                     )
-                                    System.gc()
-                                    try {
-                                        PageRenderer.bake(
-                                            context = context,
-                                            page = latest.copy(filterType = selectedFilter),
-                                            jpegQuality = quality.jpegQuality,
-                                            maxDimension = dimension / 2
-                                        )
-                                    } catch (_: Throwable) {
-                                        null
-                                    }
+                                    null
                                 } catch (_: Exception) {
                                     null
                                 }
@@ -791,8 +829,18 @@ fun CropAndFilterScreen(
 
                 repository.updatePages(docId, LinkedHashMap(baked))
                 val failed = failedCount.get()
+                val oomFailed = oomCount.get()
                 if (failed == 0) {
                     onDone()
+                } else if (oomFailed > 0) {
+                    // Round 70.1: the user warning Arena asked for. Logcat
+                    // alone does not tell the user why pages are missing
+                    // or that their previous versions were kept.
+                    Toast.makeText(
+                        context,
+                        "$failed of ${targets.size} pages could not be processed (device ran out of memory, $oomFailed page(s) affected). Previous versions were kept. Try fewer pages at a time.",
+                        Toast.LENGTH_LONG
+                    ).show()
                 } else {
                     Toast.makeText(context, "$failed of ${targets.size} pages could not be processed. Please retry.", Toast.LENGTH_LONG).show()
                 }

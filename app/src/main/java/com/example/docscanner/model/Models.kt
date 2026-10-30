@@ -181,6 +181,22 @@ data class ScannedPage(
     val rotationDegrees: Float = 0f,
     val corners: QuadCorners = QuadCorners(),
     val ocrText: String = "",
+    /**
+     * True once text recognition has been attempted for the current
+     * image, regardless of the result. This is what separates "never
+     * tried" from "tried and blank / failed" — `ocrText` alone cannot,
+     * because a blank page and a failed recognition both leave it
+     * blank. Round 70.1 (Arena H004): without this, the backfill
+     * queue re-selected the same blank/failing front pages on every
+     * launch and starved later pages, and Round 70's batch cut from
+     * 24 to 8 made that starvation worse. Pages loaded from an older
+     * library.json get the default `false`; pages with non-blank
+     * `ocrText` are still skipped by the backfill filter, so no
+     * already-recognised page is re-attempted on upgrade. Reset to
+     * `false` on bake (see `PageRenderer.bakeBlocking`), so a page
+     * whose pixels changed gets another chance.
+     */
+    val ocrAttempted: Boolean = false,
     val watermarkText: String? = null,
     val signatureOverlayUri: String? = null,
     /**

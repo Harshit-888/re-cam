@@ -256,3 +256,192 @@ fixes (c) and part of (b). It does not fix (a).
 > dashboard tuning. Claim your files in `docs/AGENT_COORDINATION.md`
 > §4 before editing, and do not touch `adobe-scan/` without the
 > owner's explicit authorisation.
+
+## 8. Arena review (H004) — Round 70.1 response, 2026-10-31
+
+**What Muse actually received:** the owner relayed Arena's summary of
+findings and said Arena's detailed static review is in Arena's
+working-tree `docs/AGENT_HANDOFF.md` under H004, **not yet shared to
+Muse's branch**. Muse has therefore NOT read Arena's full text, only
+the four findings as relayed. Arena's full text should be shared
+before a final merge decision, so nothing in it is missed. Arena's
+contract finding is confirmed from the diff itself: no §3 signature
+or return type changed in Round 70, and no Rust, ABI, or filter-source
+change — that part is not in dispute.
+
+**Muse's verdict on the four findings: all four accepted, all four
+fixed in this commit. None is claimed as device-verified** (see §9).
+
+### 8.1 Preview cache — ACCEPTED, recycling removed
+
+Arena: LRU eviction can recycle a bitmap still owned by
+`previewSource` or the Compose pipeline; in particular
+Original/full-frame/zero-rotation can cache the source bitmap itself.
+
+Confirmed, and stronger than stated: `PerspectiveWarp.warp` returns
+`src` for full-frame corners, `applyEnhancements` returns its input
+for ORIGINAL and for zero rotation, and `DocumentFilters.apply`
+returns `src` for ORIGINAL/failure — and the §3 table itself says
+"compare identity before recycling" for that function. Round 70's
+cache stored `shown.asImageBitmap()` whenever `rendered != null`,
+with no identity check, so a cached entry could BE `previewSource`.
+Evicting it recycled `previewSource` while the borders stage, the
+swatches, or a still-drawn `previewBitmap` could still use it, and
+while Compose's render thread could still be drawing it.
+
+Fix (Round 70.1): manual recycling is removed entirely — the
+eviction function now only returns `size > 4`. The cache also never
+stores an alias: it only caches when `rendered != null && rendered
+!== source`. Bitmaps in the cache are now GC-owned, matching the
+codebase's own rule for `filterThumbs`. Trade: ~24 MB held for 4
+entries instead of freed on eviction, vs a recycled-bitmap crash.
+That trade is correct.
+
+Unverified on device: no recycled-bitmap crash test, no preview
+regression test — see §9.
+
+### 8.2 OOM retry — ACCEPTED, retry removed, user warning added
+
+Arena: a half-dimension bake can be reported as ordinary success
+despite reducing output quality; logcat is not a user warning; check
+whether reducing `maxDimension` actually reduces the allocation that
+failed; preserve cancellation; avoid overwriting a previous good
+output silently.
+
+All four sub-points confirmed:
+
+- Quality/overwrite: a downgraded bake in `baked` would be published
+  by `updatePages` and would overwrite the previous good file in
+  place. The only warning was a logcat line.
+- Allocation: reducing `maxDimension` only shrinks the filter pixel
+  arrays (`DocumentFilters.rgbaOf` downsamples to it). It does NOT
+  shrink the warp, the rotation, the signature/markup composites, or
+  the source bitmap (loaded at full capture dimension in
+  `PageRenderer`). An OOM in those stages would fail again at the
+  same cost. `PageRenderer` had already stepped 3200 → 2400 on OOM
+  before throwing, so Round 70's retry was already a fallback failure.
+- Cancellation: Round 70's retry caught `Throwable`, which would
+  swallow a `CancellationException` from the retry bake and count a
+  cancelled page as merely failed. The outer catch order was correct;
+  the retry catch was not.
+
+Fix (Round 70.1): no retry, no downgraded bake. An OOM page is
+counted as failed, its previous version is kept (failed pages are
+not in `baked`, so `updatePages` does not replace them), a
+`DocScannerPerf` log line is kept for diagnostics, and the toast
+now names memory as the cause and says previous versions were kept
+and to try fewer pages at a time. The misleading "sequential OOM
+fallback" comment is removed.
+
+Unverified on device: no OOM batch test, no toast screenshot — see §9.
+
+### 8.3 OCR fairness — ACCEPTED, durable attempted flag added
+
+Arena: eight blank or failing pages at the front of the backfill
+queue can be selected on every launch, starving later pages.
+
+Confirmed, and Round 70 made it worse: the batch cut from 24 to 8
+means eight front blockers can consume the whole batch. The root
+cause is that `ocrText.isBlank()` cannot distinguish "never tried"
+from "tried and blank/failed" — `OcrEngine.readPage` returns `null`
+for both a truly blank page and a failed recognition, and the old
+backfill had no other state. It also had a second starvation bug:
+`setPageOcrTextsBulk` returned early when the text map was empty,
+so a batch that yielded no text advanced the queue by nothing.
+
+Fix (Round 70.1): new `ScannedPage.ocrAttempted: Boolean = false`
+(additive field, default, all in-repo callers use named arguments,
+`LibraryStore` JSON uses `ignoreUnknownKeys = true`, so old
+library.json loads with `false` and an old app reading a new file
+ignores the field). Backfill and `indexTextInBackground` now select
+only `ocrText.isBlank() && !ocrAttempted`, and both mark every
+attempted page in the same single library emission — including
+pages that yielded no text. A page is therefore attempted once, then
+skipped, so the next launch reaches later pages. Tried pages are
+deliberately NOT retried by backfill; a page whose pixels change is
+reset to `ocrAttempted = false` on bake in `PageRenderer`, so it
+gets another chance on its new image. Pages with non-blank `ocrText`
+are still skipped, so no already-recognised page is re-attempted on
+upgrade.
+
+Known limitation, stated plainly: a page that failed transiently
+(ML Kit model not ready, transient error) and was never edited will
+not be retried by backfill. That is the price of not re-trying blank
+pages every launch; the alternative is the starvation this fix
+removes. A future round could add a dated retry (e.g. retry tried
+pages only when the untried queue is empty, once per week), but it
+is not in this commit and must not be assumed.
+
+Unverified on device: no two-launch fairness test — see §9.
+
+### 8.4 Launch verification — ACCEPTED, orphan gate raised, claim softened
+
+Arena: the first ten seconds are not proven protected; the orphan
+sweep still has a six-second quiet gate. Run the measurement split
+before claiming a launch improvement.
+
+Confirmed: `ORPHAN_SWEEP_IDLE_MS` was 6_000, and the sweep is
+launched from `ScannerRepository` init (not the dashboard), so it
+could run at dashboard-appearance + 6 s, inside the claimed
+protected window, on the same IO threads as the tiles. Round 70's
+"first 10 seconds protected" claim was therefore overstated, even
+though the sweep itself is only a directory listing plus deletes.
+
+Fix (Round 70.1): `ORPHAN_SWEEP_IDLE_MS` 6_000 → 12_000, matching
+the thumbnail-repair gate. After this change, the only speculative
+work in the first 10 s is the thumbnail-only cover prewarm (140 ms
+gate, stored thumbnails only, no full-page decodes) — and that is
+now stated as the claim, not "nothing runs". The sweep's 10-minute
+grace means delaying it costs nothing.
+
+Claim correction: **Round 70.1 does NOT prove a launch improvement.**
+No device, benchmark, or first-tiles measurement has been run by
+Muse for Round 70 or Round 70.1. The gates are changed, the
+hypothesis is that the dashboard window improves, and §9 is the
+measurement that would prove or refute it. Any message that says
+Round 70 "protects" or "fixes" the launch without that measurement
+is overstating the evidence.
+
+## 9. Verification owed by Antigravity before merge (Round 70.1, supersedes §6)
+
+All of §6, plus the following, all recorded under H004 with device,
+build type, library size, and Rust .so presence. **Muse ran no
+tests and no device checks for Round 70 or Round 70.1 — no JDK,
+Android SDK, device, or benchmark in its sandbox. `git diff --check`
+passed on the changed files; that is a whitespace check, not a
+build, and must not be reported as verification.**
+
+1. `./gradlew testDebugUnitTest assembleDebug assembleBenchmark` —
+   expect the existing 233 tests to pass. Pay attention to any test
+   that constructs `ScannedPage` positionally (none found in-repo;
+   all in-repo callers use named arguments, but Antigravity's local
+   tree may differ).
+2. Preview cache: open the editor on an ORIGINAL, full-frame,
+   zero-rotation page, tap through 5+ filters and back, and scroll
+   pages. No recycled-bitmap crash, no blank preview, no preview
+   showing the wrong page. Check logcat for a recycled-bitmap
+   exception.
+3. OOM batch: force a low-memory batch (or a device that OOMs on a
+   10-page SMART batch). The toast must name memory, previous
+   versions must be kept (check the page files / viewer after the
+   failed batch), and cancelling the batch mid-bake must actually
+   cancel (no partial publish, no toast claiming success).
+4. OCR fairness: build a library with 8 blank pages at the front
+   and 1 text page later. Launch twice. The later page must be
+   recognised by the second launch (not starved), and the blank
+   front pages must not be re-attempted on the second launch
+   (check `ocr-backfill` log lines / library.json `ocrAttempted`).
+   Also check a library.json written by an older version loads
+   correctly (all `ocrAttempted` defaulting to `false`) and that a
+   re-baked blank page is attempted again.
+5. Launch split (H002, still owed): benchmark APK, real library,
+   cold start — `library.json` size, doc/page counts, first-frame
+   vs library-ready times, thumbnail vs page decode counts, and
+   timestamps for orphan-sweep, OCR-backfill, and thumbnail-repair
+   relative to dashboard appearance. No OCR, repair, or sweep line
+   should appear within 10 s of dashboard appearance; only the
+   thumbnail prewarm may. If any does, report it — do not merge
+   on the basis of the gate constants alone.
+6. If any check fails, do NOT merge to `main`. Report the failure
+   under H004 and let Muse revise — do not silently fix it on
+   `main` and diverge the branches.

@@ -6,6 +6,42 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-10-31 — Muse — Arena H004 review response: Round 70.1 fixes (UNBUILT, UNTESTED by Muse)
+
+Response to Arena's H004 review of Round 70 (`d42d77d`), as relayed by
+the owner; Arena's detailed working-tree H004 text was not yet shared
+to Muse's branch at review time, so this reply is against the four
+findings as relayed, not against Arena's full text. Full analysis:
+`docs/INITIAL_LAG_ROUND70.md` §8–§9. Do NOT merge until Antigravity
+completes §9 in that doc.
+
+All four Arena findings accepted and fixed in this commit, none
+claimed as device-verified: (1) preview-cache manual recycling
+removed, and the cache never stores a bitmap aliasing `previewSource`
+(ORIGINAL / full-frame / zero-rotation / filter-failure aliasing
+confirmed in `applyEnhancements` / `warp` / `DocumentFilters.apply`);
+(2) batch OOM half-dimension retry removed — no downgraded bake
+published as success, previous versions kept, user toast names
+memory, cancellation no longer swallowed by a `Throwable` retry
+catch, and the "sequential fallback" comment removed (reducing
+`maxDimension` only shrinks filter pixel arrays, not warp/rotate/
+source allocations, and `PageRenderer` had already stepped down to
+2400 px); (3) OCR fairness via new additive `ScannedPage.ocrAttempted`
+field (default `false`, named-argument callers only, JSON
+`ignoreUnknownKeys = true`), backfill and new-document indexing now
+select only untried pages and mark every attempted page in one
+emission, with `ocrAttempted` reset on bake; (4) orphan-sweep idle
+gate 6 s -> 12 s, and the "first 10 s protected" claim corrected to
+"only thumbnail-only prewarm in the first 10 s, unmeasured".
+
+No §3 signature or return type changed; the new `ocrAttempted` field
+is additive and is added to the §3 table in this commit. No Rust,
+ABI, or filter-source change. Build / device verification is owed by
+Antigravity (§9): existing tests, preview-cache alias test, OOM
+batch + cancellation test, two-launch OCR fairness test, and the
+H002 launch split with pass timestamps relative to dashboard
+appearance.
+
 ## 2026-10-30 — Muse — Initial dashboard lag: Round 69 review + Round 70 fixes (UNBUILT, UNTESTED by Muse)
 
 Code changes + diagnosis, at base `9950c0a` (Round 69), by Muse as a

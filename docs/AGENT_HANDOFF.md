@@ -35,6 +35,22 @@ labels describe the handoff, not whether a change has been merged.
 - **Verification:** None run by Muse. No JDK, Android SDK, device, or benchmark was available to Muse.
 - **Next action / blocker:** Antigravity §6 numbers and merge decision. Arena only if the review finds a parity/contract concern (none is expected: no Rust, ABI, or filter change in this branch).
 
+**Reply — Muse, 2026-10-31 (Round 70.1, against Arena H004 as relayed):**
+
+- **Exact revision reviewed:** Muse branch `muse/initial-lag-round70`, Round 70 commit `d42d77ddd76ef3789415dd97352e921c1fefbc41`, against base `9950c0a` (Round 69). Arena's detailed working-tree H004 text was NOT in Muse's branch at review time; this reply is against the four findings as relayed by the owner, and Arena's full text should be shared before a final merge decision.
+- **Arena findings — all four accepted, all four fixed in this commit (Round 70.1, on the same branch):**
+  1. Preview cache: manual recycling removed; cache never stores a bitmap aliasing `previewSource` (ORIGINAL / full-frame / zero-rotation / filter-failure aliasing confirmed in `applyEnhancements`, `PerspectiveWarp.warp`, `DocumentFilters.apply`). GC owns cached bitmaps, as for `filterThumbs`.
+  2. OOM retry: half-dimension retry removed; no downgraded bake published as success, previous versions kept, toast names memory as the cause, cancellation no longer swallowed by a `Throwable` retry catch. Reducing `maxDimension` only shrinks filter pixel arrays, not warp/rotate/source allocations, and `PageRenderer` had already stepped down to 2400 px.
+  3. OCR fairness: new additive `ScannedPage.ocrAttempted` field (default `false`, named-argument callers only, JSON `ignoreUnknownKeys = true`); backfill and new-document indexing select only untried pages and mark every attempted page in one emission; `ocrAttempted` resets on bake. Tried pages are not retried by backfill — a transient failure on an unedited page will not be retried, which is stated as a known limitation in the doc.
+  4. Launch verification: orphan-sweep idle gate 6 s -> 12 s; the "first 10 s protected" claim is corrected to an unmeasured hypothesis (only thumbnail-only prewarm in the first 10 s), with the H002 split and pass timestamps required in the doc §9.
+- **Contract / Rust / ABI:** No §3 signature or return type changed in Round 70 or Round 70.1; the new `ocrAttempted` field is additive and is added to the §3 table. No Rust, ABI, or filter-source change. This agrees with Arena's contract finding for Round 70.
+- **Changes in this commit:** `ui/editor/CropAndFilterScreen.kt` (cache + OOM), `model/Models.kt` (`ocrAttempted`), `data/ScannerRepository.kt` (orphan gate, OCR attempted tracking), `util/PageRenderer.kt` (reset on bake), plus `docs/INITIAL_LAG_ROUND70.md` §8–§9, changelog, coordination §4/§6bh/§3 table, and this H004 reply.
+- **Tests run by Muse:** None. No JDK, Android SDK, device, or benchmark in Muse's sandbox. `git diff --check` passed; that is not a build and not a test.
+- **Device results:** None. No device result is claimed for Round 70 or Round 70.1.
+- **Remaining uncertainty (must be resolved by Antigravity, not assumed):** whether the code compiles and the 233 existing tests pass; whether the preview-cache change actually prevents recycled-bitmap crashes on device; whether the OOM toast and previous-version preservation behave as described under a real OOM and on cancellation; whether the two-launch OCR fairness test passes and old library.json loads correctly; whether any OCR, repair, or sweep pass appears within 10 s of dashboard appearance on the real library; and whether Arena's full H004 text contains any finding beyond the four relayed here. **Do NOT merge to `main` until Antigravity completes doc §9 and records it here.**
+- **Next action / blocker:** Antigravity §9 verification and merge decision. Arena to confirm, once its full H004 text is shared, that Round 70.1 addresses it and that no additional finding was missed.
+
+
 
 
 ### H003 — Whole-app performance & Rust audit

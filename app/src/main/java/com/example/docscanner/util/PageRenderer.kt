@@ -97,7 +97,14 @@ object PageRenderer {
             return page.copy(
                 imageUri = savedPath,
                 originalImageUri = pristinePath,
-                revision = page.revision + 1
+                revision = page.revision + 1,
+                // Round 70.1: the pixels just changed, so a previous
+                // "tried and blank" verdict is about the old image, not
+                // this one. Resetting lets backfill try the new image
+                // once. Pages with non-blank ocrText are still skipped
+                // by the backfill filter (it requires blank text), so
+                // this does not re-attempt already-recognised pages.
+                ocrAttempted = false
             )
         } finally {
             if (result !== source) result.recycle()
