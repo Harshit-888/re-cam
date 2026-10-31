@@ -2894,3 +2894,31 @@ and is recorded in the §3 table above. No Rust, ABI, or filter
 change. **Nothing in Round 70.1 is device-verified by Muse.**
 Antigravity owes §9 (tests, preview alias, OOM + cancellation,
 two-launch OCR fairness, H002 split) under H004 before merge.
+
+## 6bi. Arena follow-up investigation — Round 70.2 (Muse, 2026-10-31)
+
+Arena's complete original H004 review was provided by the owner and
+checked against Round 70.1 at `5fd010b`. Original four findings are
+confirmed as addressed in code (cache recycling removal + alias
+check, OOM failure-retention + toast + cancellation, OCR attempted
+flag, orphan gate 12 s), with Arena's device tests still owed.
+Contract/parity: no §3 signature or return type changed in Round 70,
+70.1, or 70.2; no Rust, ABI, or filter change.
+
+New investigation, full text in `docs/INITIAL_LAG_ROUND70.md` §10:
+inner OOM fallback covers only warp/rotate/filter, at most one step,
+and cannot help warp/rotation/ORIGINAL — NOT fixed here, needs a
+Round 71 proposal + per-stage tests. OCR revision race confirmed
+and FIXED in Round 70.2 (apply skips pages whose imageUri/revision
+changed since recognition started). Transient-failure retry confirmed
+as unresolved (null conflates no-text, decode failure, and
+recognition failure) — design recorded, not implemented. Non-atomic
+edited-page writes confirmed and FIXED in Round 70.2 (unique temp +
+rename, compress check, signatures unchanged). Native/benchmark
+scheduling confirmed as not proof of presented pixels and
+triggerable via an exported intent extra — NOT fixed here, needs a
+separate benchmark entry point design.
+
+**Nothing in Round 70.2 is device-verified by Muse. Do NOT merge
+solely on this static review.** Antigravity owes §11 under H004
+before merge.

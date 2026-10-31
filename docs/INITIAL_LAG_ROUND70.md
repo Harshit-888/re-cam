@@ -445,3 +445,368 @@ build, and must not be reported as verification.**
 6. If any check fails, do NOT merge to `main`. Report the failure
    under H004 and let Muse revise — do not silently fix it on
    `main` and diverge the branches.
+
+## 10. Arena follow-up investigation — Round 70.2 (Muse, 2026-10-31, static only)
+
+**Exact revision investigated:** `muse/initial-lag-round70` at
+`5fd010b` (Round 70.1), against Round 70 at `d42d77d` and base
+`9950c0a`. **This time Arena's complete original H004 review was
+provided by the owner, so the four findings below are checked
+against Arena's own text, not a relayed summary.** Arena's text
+states it is a static review only, with no build or device test —
+and so is this investigation. **Nothing in this section is
+device-verified, and nothing in it, on its own, justifies merging.**
+
+### 10.1 Original four findings — are they addressed by 5fd010b?
+
+Yes, as far as static code review can tell, with the exact
+mechanisms Arena asked for:
+
+1. **Preview cache (P1, Arena lines: cache 317–318, 344–350,
+   534–553, 568–609).** Arena's mechanism is precise: LRU order
+   records map accesses, not ownership; an ORIGINAL / full-frame /
+   zero-rotation preview wraps `previewSource` itself; inserting a
+   fifth entry evicts and recycles it while `previewSource` still
+   refers to it; and insertion at line 607 happened before
+   `previewBitmap` was replaced at 609, so even the formerly visible
+   image could still be in the pipeline. Round 70.1 chose Arena's
+   first option — "remove manual eviction recycling" — and also
+   added the identity check Arena's mechanism implies: a cached
+   entry is now only stored when `rendered !== source`. With no
+   recycling, eviction only drops a map reference; a bitmap still
+   held by `previewBitmap` stays alive until `previewBitmap` is
+   replaced, which is exactly the ownership rule that was missing.
+   The remaining device check is still owed (Arena's test:
+   ORIGINAL / full-frame / zero-rotation, through at least four
+   other filters, back to Original and Borders, watching for
+   recycled-bitmap exceptions, blank previews, crashes).
+
+2. **Half-resolution retry (P1, Arena lines: editor 741–765,
+   792–797; PageRenderer 40–46, 117–131; ImageProcessingUtils
+   28–56).** Arena's two options were "report failure and retain
+   the previous output, OR explicitly disclose per-page dimensions
+   and get approval". Round 70.1 chose the first: no retry, no
+   downgraded bake, previous version kept (failed pages are not in
+   the publish map), and a toast that names memory. Cancellation
+   is preserved because the retry — whose `catch (Throwable)`
+   would have swallowed it — no longer exists; the outer catch
+   still rethrows `CancellationException` first. Arena's
+   allocation point is also confirmed: `maxDimension` applies to
+   the filter, not to the initial full-resolution load or to
+   warp/rotation, and ORIGINAL returns before filtering, so
+   halving it was never guaranteed to reduce the allocation that
+   failed or the saved dimensions. The outer retry was also not a
+   sequential fallback, as Arena notes: the other semaphore holder
+   could still bake concurrently. What Round 70.1 did NOT fix is
+   the *inner* fallback in `PageRenderer` — see §10.2.
+
+3. **OCR starvation (P1/P2, Arena lines: repository 58–64,
+   778–785, 803–805; OcrEngine 50–61).** Round 70.1's durable
+   `ocrAttempted` flag does break the front-of-queue loop for
+   blank pages, and it does so in the way Arena asked for
+   ("durable tried/no-text/retry state or fair resumable
+   scheduling"). The claim that "all remaining pages are picked up
+   on subsequent launches" is now true for *untried* pages, with
+   one stated exception: a page that was attempted and then never
+   edited is not retried (see §10.3 on transient failures). The
+   device test Arena asked for — eight blank/failing pages
+   followed by a text page, across restarts — is still owed, and
+   is now in §9 as check 4. It has not been run by Muse.
+
+4. **First ten seconds (P2).** Round 70.1 raised the orphan gate
+   to 12 s and softened the claim to an unmeasured hypothesis.
+   Arena's second point in this finding — that native/benchmark
+   work launched after `withFrameNanos` is not proof of presented
+   pixels — was NOT fully addressed by Round 70.1, and is
+   investigated in §10.5. The before/after launch split is still
+   owed and still not run.
+
+**Contract / parity, re-checked against Arena's own wording:**
+Arena says the `9950c0a..d42d77d` diff does not rename, change
+signatures or return types of listed §3 symbols, and no Rust, ABI,
+or filter source is changed, so a Rust pixel-parity run is not
+required *solely* by that patch — but that "does not establish
+runtime output equivalence", because the lower-resolution retry
+could change saved pixels/dimensions. Muse agrees, and notes the
+corollary for Round 70.1: removing that retry *removes* the
+output-equivalence risk Arena flagged, and Round 70.1's new
+`ocrAttempted` field is additive only (no signature or return
+type changed, §3 table updated). Round 70.2 below adds no §3
+signature change either: the OCR guard adds optional parameters
+with defaults to two repository functions, and the atomic-write
+change keeps `writeJpeg` / `writePng` signatures unchanged.
+
+### 10.2 Inner OOM fallback — investigated, NOT fixed in this round
+
+`PageRenderer.renderEnhanced` (the fallback Arena's follow-up
+asks about) works like this, confirmed in code:
+
+- It starts at `maxDimension` (3200 for High, 2000 for Medium) and,
+  on `OutOfMemoryError` from `applyEnhancements`, steps down by
+  3/4 to a floor of 2400, then throws. For High that is at most
+  one retry (3200 → 2400); for Medium, a first OOM throws
+  immediately (2000 is already below the floor). The comment
+  "at 2400 px (~225 DPI)" therefore describes only the High path.
+- It covers **only** `applyEnhancements` (warp → rotate → filter).
+  It does NOT cover: the source load (always at
+  `MAX_CAPTURE_DIMENSION` = 3200, ~30 MB for an ARGB page, before
+  any fallback can run); the signature overlay (a new full-size
+  bitmap plus a 1200 px signature decode); the markup copy (a full
+  copy if the result is immutable); or the save/encode stage.
+  An OOM in any of those stages propagates out of `bakeBlocking`
+  with no fallback at all.
+- For ORIGINAL, and for any OOM in warp or rotation, the retry
+  cannot help even inside `applyEnhancements`: warp output size
+  is set by the quad, rotation output size is the source size —
+  neither scales with `maxDimension`. Only the filter pixel arrays
+  scale, via `rgbaOf` downsampling to `maxDimension`. So a warp /
+  rotation OOM is retried at the same allocation and fails again,
+  after doing the warp work twice.
+- On a failed first attempt, intermediate bitmaps are not
+  recycled before the retry: if warp succeeded and rotation OOMs,
+  the warped bitmap is a local in `applyEnhancements` and is only
+  freed by the GC, so the retry starts under *more* memory
+  pressure, not less.
+
+**Why this is not fixed here:** fixing it properly means
+downsampling the source *before* warp/rotation (so those stages
+scale with the fallback dimension), or adding a separate fallback
+for signature/markup/save. Either change alters saved pixels and
+dimensions for every bake that hits the fallback, which is a
+quality / parity decision that Arena and Antigravity must agree
+on, with a device test at decode, warp, filter, and output stages
+(including ORIGINAL) — exactly the test Arena specified. A
+static, untested change to that pipeline in this round would
+repeat the mistake Round 70's outer retry made. **Recommended
+next step, not implemented:** a Round 71 proposal (Arena +
+Antigravity) for a dimension-aware warp/rotate path, with
+per-stage OOM tests and a disclosed fallback dimension in the
+user-visible failure message, rather than a silent downgrade.
+
+**What Round 70.2 does fix in the same area:** the *save* stage
+can no longer corrupt the previous output on failure — see §10.4.
+That removes one OOM-adjacent data-loss path without changing
+any bake pixels.
+
+### 10.3 OCR revision races and transient-failure retry — investigated, race fixed, retry design recorded (not implemented)
+
+**Revision race — confirmed, and fixed in Round 70.2.**
+
+`backfillTextInBackground` and `indexTextInBackground` both
+snapshot pages at call time, then spend seconds (ML Kit +
+2400 px decode per page, with idle pauses) before applying
+results by page ID only, in `setPageOcrTexts` /
+`setPageOcrTextsBulk`. Nothing in those functions checks whether
+the page still is the image that was recognised. Concretely:
+
+- A page re-baked during backfill gets a new record with
+  `revision + 1` and `ocrAttempted = false` (Round 70.1's reset).
+  The in-flight backfill then applies the *old* image's text and
+  sets `ocrAttempted = true` on the *new* record, because it
+  matches by ID. The new image is then never recognised, and
+  search shows the old image's text for new pixels. The same
+  applies to `indexTextInBackground` for a page edited while its
+  new-document indexing is running.
+- The same ID-only apply also ignores a move to trash during the
+  pass (the snapshot filtered trash, the apply does not), so a
+  trashed page can still be indexed after it was trashed.
+- Concurrent backfill + index for the same document can both
+  attempt the same untried pages (duplicate ML Kit work) and
+  apply in either order; with the same image that is harmless
+  (same text), with different images it is the race above.
+
+Fix in Round 70.2 (no model change): both apply functions now
+take an optional expected map, `pageId -> (imageUri, revision)`,
+built from the snapshot. A page whose current `imageUri` or
+`revision` differs is skipped entirely — neither text nor
+attempted flag is applied — so the new image remains untried
+and is picked up on the next launch. The single-page helper
+keeps the old no-guard behaviour via its default (it has no
+caller in main code, and no snapshot to guard against).
+
+**Transient-failure retry — confirmed as an unresolved gap,
+design recorded, not implemented in this round.**
+
+`OcrEngine.readPage` returns `null` for three indistinguishable
+cases: the page truly has no text, the image cannot be decoded,
+and recognition threw (including Play Services / model-not-ready
+failures). The docstring says so explicitly: "or `null` when the
+page has no text, the image cannot be decoded, or recognition
+fails. Never throws." Round 70.1 marks *all* of those as
+attempted, so a transient failure — model not yet downloaded on
+first launch, a file briefly unavailable because a concurrent
+bake was writing it (non-atomic, before §10.4), a transient
+Play Services error — is permanently treated as "tried and
+blank" for an unedited page. That is the exact opposite of the
+fairness fix for blank pages, and it cannot be solved by
+re-trying tried pages blindly: re-trying every tried page every
+launch reintroduces the original starvation, just for a
+different reason.
+
+Recommended design (for Arena + Antigravity to agree on, not
+implemented here because it changes the OCR API and, if a
+counter is used, the page model again):
+
+1. `OcrEngine` returns a result type, not just text-or-null:
+   `Success(text)`, `NoText` (decoded and recognised, empty),
+   `Failure(cause)` (decode failed or recognition threw).
+   `readPage` is kept as a compatibility wrapper for the
+   benchmark runner.
+2. Backfill marks attempted only for `Success` and `NoText`.
+   `Failure` pages are NOT marked attempted, but are retried
+   only after all untried pages in that launch have been taken
+   — i.e. untried-first scheduling — and with a bounded attempt
+   count (e.g. a per-page `ocrAttempts` counter, max 3, after
+   which the page is marked attempted-final). Without the cap,
+   a persistently corrupt file starves the queue forever; with
+   the cap, a transient model failure gets up to 3 launches to
+   succeed.
+3. A page that is re-baked already resets its state (Round 70.1),
+   so a transient failure on an old image does not need a
+   separate retry path once the image changes.
+
+Until that design is implemented and tested, the honest statement
+is: **Round 70.1 + 70.2 guarantee that untried pages are reached,
+but do NOT guarantee that a transiently failed page is ever
+retried.** That limitation must be in the merge decision, not
+buried.
+
+**Persistence note, checked:** an attempted flag is only durable
+once the repository's debounced `library.json` write runs
+(150 ms debounce, plus the final flush on close). If the app is
+killed mid-backfill, before the bulk emission, nothing is marked
+— which is safe (the pages are retried next launch, not
+starved). If it is killed after the bulk emission but before
+the write, the same applies. The dangerous window is the
+opposite: a flag written, then a later kill, does not lose the
+flag. No additional persistence work is needed for fairness.
+
+### 10.4 Non-atomic edited-page writes — confirmed, fixed in Round 70.2
+
+`ImageStore.writeJpeg` and `writePng` wrote directly to the
+target with `FileOutputStream(target)`, and ignored
+`bitmap.compress`'s Boolean return. That is confirmed, and it
+contradicts the codebase's own atomicity rule, which both
+`LibraryStore` (temp + rename, with a writeLock, and an explicit
+"do not fall back to truncating the live file" comment) and
+`ThumbnailStore` (temp + rename) follow.
+
+Why it matters for edited pages specifically, and not just for
+imports: `saveEditedPage` writes to `_edited.jpg` / `_edited.png`,
+the same path the repository already points at for a previously
+baked page. A kill, crash, OOM, or failed compress mid-write
+therefore truncated the *previous good output*, even though
+`saveEditedPage` returned `null` and the caller (correctly, after
+Round 70.1) treated the page as "failed, previous kept". The
+previous file was not kept; it was already truncated, and the
+viewer would then try to decode a partial file. For imports the
+risk is lower (a new UUID page file, not yet referenced, becomes
+an orphan and is swept), but the same write functions are used,
+so the fix covers both.
+
+Fix in Round 70.2 (signatures of `writeJpeg` / `writePng`
+unchanged): a shared `writeAtomically` helper writes to a
+uniquely-named temp file in the same directory (UUID suffix, so
+two concurrent bakes for the same page cannot interleave in a
+fixed `.tmp` file — the mixture bug `LibraryStore`'s lock
+prevents for `library.json`), checks `compress`'s return value
+and throws on `false`, deletes the temp on any failure, and
+only then renames to the target. On rename failure the temp is
+deleted and the previous file is untouched. The mtime bump
+(`nextStamp`) now happens after the rename, so thumbnail cache
+keys still advance exactly once per successful bake.
+
+Unverified on device: no kill-mid-write test, no compress-failure
+test — see §11.
+
+### 10.5 Native / benchmark scheduling — investigated, not fixed in this round
+
+Arena's point is confirmed: `withFrameNanos { }` in
+`MainActivity`'s first `LaunchedEffect` waits for the next frame
+callback, not for pixels to be presented, and the frame it waits
+for is the *splash* frame (the repository is still `null` at
+that point; the dashboard has not composed yet). Round 70 moved
+the native log and the benchmark trigger from `onCreate` to
+after that callback, which removes them from the process-start
+and splash-composition window, but it does **not** move them
+after the dashboard is visible, and it does not isolate them
+from the work they compete with:
+
+- `NativeFilters.getStatusSummary()` triggers `System.loadLibrary`
+  on IO, on every launch, even if the user never uses a filter,
+  while the library is still parsing and tiles are about to load.
+  The cost is small (typically a few ms, more on a low-end
+  device), but it is not zero and it is not gated on filter use.
+- `PerfAuditRunner.runAudit` (triggered by the `run_benchmarks`
+  intent extra) runs a full synthetic benchmark — 3200 px bitmap,
+  all filters, batch, preview, PDF, OCR — on Default/IO while
+  the library parse, tile decodes, OCR backfill, and repair are
+  also running. Its numbers are therefore polluted by dashboard
+  work, and it pollutes any launch measurement taken in the same
+  run. It is also triggered by an intent extra on an
+  `exported = true` launcher activity, so any other app could
+  launch it and start heavy CPU/ML work without user consent.
+  Gating it on "debuggable" would break Antigravity's benchmark
+  workflow (the benchmark build is non-debuggable by design),
+  and `buildConfig = false` in `app/build.gradle.kts`, so there
+  is no `BuildConfig.DEBUG` to gate on — that is why no gating
+  change is made in this round.
+
+Recommended next step (not implemented): move the benchmark
+trigger out of the normal launch path entirely — e.g. a
+separate benchmark entry point, or a trigger that only runs
+after the repository is ready *and* the dashboard has been idle
+for a full quiet window, with a clear log line that benchmark
+numbers were taken with dashboard work quiesced — and gate it
+on something stronger than a guessable intent extra. Until then,
+benchmark numbers from a `run_benchmarks` launch must be
+reported with the caveat that dashboard work was concurrent.
+
+## 11. Verification owed by Antigravity before merge (Round 70.2, supersedes §9)
+
+All of §9, plus the following, all recorded under H004 with
+device, build type, library size, and Rust .so presence.
+**Muse ran no tests and no device checks for Round 70, 70.1, or
+70.2 — no JDK, Android SDK, device, or benchmark in its
+sandbox. `git diff --check` passed; that is not a build and not
+a test. Do NOT merge solely on this static review, or on any
+previous static review in this document.**
+
+1. `./gradlew testDebugUnitTest assembleDebug assembleBenchmark` —
+   expect the existing 233 tests to pass, plus any new tests for
+   the atomic write and the OCR guard if Antigravity adds them
+   (Muse added none, because it cannot run them).
+2. Atomic write: kill the app mid-bake (or force a compress
+   failure), then reopen the page. The previous edited output
+   must be intact and viewable, not truncated, and the library
+   must still point at a decodable file. Repeat for a JPEG bake
+   and a PNG (Clear B&W / Grayscale) bake.
+3. OCR race: start a backfill on a library with untried pages,
+   re-bake one of those pages mid-pass, then check that the
+   re-baked page is NOT stamped with the old image's text and
+   is NOT marked attempted for its new image, and that it is
+   recognised on a later launch.
+4. OCR transient failure: simulate a recognition failure on
+   first launch (e.g. model unavailable), then a successful
+   second launch. Record whether the page is ever recognised
+   under the current code (expected, per §10.3: NO, unless the
+   page is edited) — and do not merge on the assumption that it
+   will be, until the §10.3 design is implemented.
+5. Inner OOM: force OOM at decode, warp, filter, and output
+   stages, including ORIGINAL, on a low-memory device or with a
+   large page. Record the saved dimensions (or failure) at each
+   stage, and whether the previous output is preserved. Do not
+   accept a silent downgrade.
+6. Native/benchmark: launch with `run_benchmarks` from adb and
+   from another app (if possible), and record whether the
+   benchmark runs, what dashboard work was concurrent, and
+   whether the first-frame and library-ready log lines are
+   affected. If the benchmark is triggerable by another app,
+   record that as a security finding for the next round.
+7. Launch split (H002, still owed): benchmark APK, real and
+   empty libraries, cold start, with pass timestamps relative to
+   dashboard appearance. No OCR, repair, or sweep line within
+   10 s of dashboard appearance (only thumbnail prewarm may).
+8. If any check fails, do NOT merge to `main`. Report the
+   failure under H004 and let Muse revise — do not silently fix
+   it on `main` and diverge the branches.

@@ -305,15 +305,59 @@ object ImageStore {
      * For *Clear B&W* and *Grayscale* this is both more faithful and smaller than a
      * JPEG: binary glyphs are exactly what DEFLATE is good at, and it cannot ring.
      */
-    fun writePng(bitmap: Bitmap, target: File) {
+    /**
+     * Writes [bitmap] to [target] atomically, via a uniquely-named temp
+     * file in the same directory followed by a rename.
+     *
+     * Round 70.2 (Arena H004 follow-up): the old code wrote directly to
+     * [target] with `FileOutputStream(target)`. That is NOT atomic: a
+     * kill, a crash, an OOM, or a failed `compress` mid-write left the
+     * target truncated, and for an edited page that target is the file
+     * the repository already points at — so a failed re-bake corrupted
+     * the previous good output, even though `saveEditedPage` returned
+     * `null` and the caller treated the page as "failed, previous kept".
+     * The previous file was NOT kept; it was already truncated.
+     * This is inconsistent with the codebase's own rule, which
+     * `LibraryStore` and `ThumbnailStore` both follow (temp + rename,
+     * never truncate the live file).
+     *
+     * Two details matter here, not just "use a temp file":
+     *  * The temp name is unique per write (UUID), not a fixed
+     *    `<name>.tmp`. Two concurrent bakes for the same page would
+     *    otherwise interleave in the same temp file and rename a
+     *    mixture — the exact bug `LibraryStore`'s writeLock exists to
+     *    prevent for `library.json`. With unique temps, the last
+     *    rename wins and the file is always one complete bake, never
+     *    a mixture.
+     *  * `compress` returning `false` is treated as failure: the temp
+     *    is deleted and an exception is thrown, instead of renaming a
+     *    partial file into place. The old code ignored that return
+     *    value and reported success for a partial file.
+     */
+    private fun writeAtomically(bitmap: Bitmap, target: File, format: Bitmap.CompressFormat, quality: Int) {
         target.parentFile?.let { if (!it.exists()) it.mkdirs() }
-        FileOutputStream(target).use { out ->
-            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-            out.flush()
+        val temp = File(target.parentFile, target.name + ".tmp." + java.util.UUID.randomUUID())
+        try {
+            FileOutputStream(temp).use { out ->
+                if (!bitmap.compress(format, quality, out)) {
+                    throw java.io.IOException("Bitmap compress failed for ${target.name}")
+                }
+                out.flush()
+            }
+            if (!temp.renameTo(target)) {
+                throw java.io.IOException("Could not atomically replace ${target.name}")
+            }
+        } catch (error: Throwable) {
+            runCatching { temp.delete() }
+            throw error
         }
         // Bitmap and thumbnail cache keys include the file's mtime; make sure it
         // strictly advances (see [nextStamp]).
         target.setLastModified(nextStamp())
+    }
+
+    fun writePng(bitmap: Bitmap, target: File) {
+        writeAtomically(bitmap, target, Bitmap.CompressFormat.PNG, 100)
     }
 
     /**
@@ -324,14 +368,11 @@ object ImageStore {
      * the new bytes happen to be identical.
      */
     fun writeJpeg(bitmap: Bitmap, target: File, quality: Int = JPEG_QUALITY) {
-        target.parentFile?.let { if (!it.exists()) it.mkdirs() }
-        FileOutputStream(target).use { out ->
-            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
-            out.flush()
-        }
-        // Bitmap and thumbnail cache keys include the file's mtime; make sure it
-        // strictly advances (see [nextStamp]).
-        target.setLastModified(nextStamp())
+        // Same atomic rule as writePng above: never truncate the live
+        // file. For imports this writes a new page file (low risk), but
+        // for edited pages it overwrites a previous good bake, so the
+        // same temp + rename + compress-check applies.
+        writeAtomically(bitmap, target, Bitmap.CompressFormat.JPEG, quality)
     }
 
     /**

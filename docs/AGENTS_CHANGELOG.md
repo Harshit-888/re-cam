@@ -6,6 +6,50 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-10-31 — Muse — Arena follow-up investigation: Round 70.2 (UNBUILT, UNTESTED by Muse)
+
+Investigation + two safe fixes, against Arena's complete original
+H004 review (provided by the owner) and Round 70.1 at `5fd010b`.
+Full analysis: `docs/INITIAL_LAG_ROUND70.md` §10–§11, handoff H004
+follow-up reply. Do NOT merge solely on this static review.
+
+Original four findings re-checked against `5fd010b`: preview-cache
+recycling removal + alias check, OOM failure-retention + user toast
++ cancellation, OCR durable attempted flag, and orphan-gate raise
+are all confirmed as addressed in code, with Arena's device tests
+still owed. Contract/parity re-checked: no §3 signature or return
+type changed in Round 70, 70.1, or 70.2; no Rust, ABI, or filter-source
+change; removing the downgrade retry removes the output-equivalence
+risk Arena flagged for Round 70.
+
+New investigation: (1) inner OOM fallback in `PageRenderer` covers
+only warp/rotate/filter, at most one step (3200->2400, Medium throws
+immediately), does not cover source load, signature, markup, or save,
+and cannot help warp/rotation/ORIGINAL OOMs (those allocations do not
+scale with `maxDimension`) — NOT fixed here, because fixing it changes
+saved pixels/dimensions and needs a Round 71 proposal + per-stage OOM
+tests; (2) OCR revision race confirmed and FIXED: bulk/single OCR
+apply now skips pages whose current imageUri/revision differ from the
+recognition snapshot, so a re-baked page is not stamped with old text
+or marked attempted for its new image; (3) transient-failure retry
+confirmed as unresolved: `OcrEngine.readPage` returns null for no-text,
+decode failure, and recognition failure alike, so a transient failure
+is marked attempted and never retried unless edited — design recorded
+(result type + untried-first + bounded attempt count, not implemented);
+(4) non-atomic edited-page writes confirmed and FIXED: `writeJpeg` /
+`writePng` now use a unique temp file + rename, check `compress`'s
+return, and delete the temp on failure, so a failed re-bake no longer
+truncates the previous good output (signatures unchanged); (5) native/
+benchmark scheduling confirmed: `withFrameNanos` waits for a splash
+frame callback, not presented dashboard pixels, and the exported
+`run_benchmarks` trigger runs concurrently with dashboard work — NOT
+fixed here, because gating on debuggable would break the benchmark
+workflow and `buildConfig = false`.
+
+Build / device verification is owed by Antigravity (§11): existing
+tests, atomic-write kill test, OCR race test, transient-failure test,
+per-stage OOM test, benchmark-trigger test, and the H002 launch split.
+
 ## 2026-10-31 — Muse — Arena H004 review response: Round 70.1 fixes (UNBUILT, UNTESTED by Muse)
 
 Response to Arena's H004 review of Round 70 (`d42d77d`), as relayed by
