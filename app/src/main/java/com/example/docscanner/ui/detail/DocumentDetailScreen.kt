@@ -372,19 +372,21 @@ fun DocumentDetailScreen(
     // abandoning the batch: rotating nine pages and silently doing none because the
     // tenth has a missing file is worse than rotating nine.
     //
-    // Returns the page to store, or `null` if it could not be baked. It does *not*
-    // store it — see `rotatePages`.
-    suspend fun bakeRotated(page: ScannedPage): ScannedPage? {
+    // Returns the baked page and its pre-bake token, or `null` if it could not be baked.
+    // It does *not* store it — see `rotatePages`.
+    suspend fun bakeRotated(page: ScannedPage): Pair<ScannedPage, com.example.docscanner.model.PageToken>? {
         // The bake is a full-resolution decode, warp, filter and encode. It used to run
         // on the composition's own scope, i.e. on the main thread, so rotating a page
         // from this grid froze the grid for as long as it took. Same bake, own thread.
         return withContext(Dispatchers.IO) {
             val current = repository.getDocumentById(docId)
                 ?.pages?.find { it.id == page.id } ?: return@withContext null
-            PageRenderer.bake(
+            val token = com.example.docscanner.model.PageToken.of(current)
+            val baked = PageRenderer.bake(
                 context,
                 current.copy(rotationDegrees = (current.rotationDegrees + 90f) % 360f)
-            )
+            ) ?: return@withContext null
+            Pair(baked, token)
         }
     }
 
@@ -402,15 +404,26 @@ fun DocumentDetailScreen(
         if (pages.isEmpty()) return
         scope.launch {
             val rotated = LinkedHashMap<String, ScannedPage>(pages.size)
+            val tokens = LinkedHashMap<String, com.example.docscanner.model.PageToken>(pages.size)
             pages.forEach { page ->
                 // `runCatching`, not just a null check: the comment above promises
                 // that one bad page is skipped, and a *throw* out of a bake (a decode
                 // failure, an OOM inside the filter chain that its own fallback could
                 // not absorb) used to abandon the rest of the batch and publish
                 // nothing — the user saw a rotation that never happened.
-                runCatching { bakeRotated(page) }.getOrNull()?.let { rotated[page.id] = it }
+                runCatching { bakeRotated(page) }.getOrNull()?.let { (baked, token) ->
+                    rotated[page.id] = baked
+                    tokens[page.id] = token
+                }
             }
-            repository.updatePages(docId, rotated)
+            val result = repository.updatePages(docId, rotated, expectedTokens = tokens)
+            if (result.rejectedIds.isNotEmpty()) {
+                Toast.makeText(
+                    context,
+                    "${result.rejectedIds.size} of ${pages.size} pages could not be rotated due to concurrent edits",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
         }
     }
 
@@ -1090,14 +1103,24 @@ fun DocumentDetailScreen(
                     // filter chain could not absorb) used to take the exception out of
                     // this `scope.launch` on the main dispatcher, i.e. close the app —
                     // for a stamp the user could simply retry.
+                    val current = repository.getDocumentById(docId)
+                        ?.pages?.find { it.id == target.id } ?: target
+                    val token = com.example.docscanner.model.PageToken.of(current)
                     val baked = runCatching {
                         PageRenderer.bake(
                             context,
-                            target.copy(signatureOverlayUri = signaturePath)
+                            current.copy(signatureOverlayUri = signaturePath)
                         )
                     }.getOrNull()
                     if (baked != null) {
-                        repository.updatePage(docId, target.id) { baked }
+                        val published = repository.updatePage(docId, target.id, expectedToken = token) { baked }
+                        if (!published) {
+                            Toast.makeText(
+                                context,
+                                "Could not sign this page: page was modified concurrently",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
                     } else {
                         Toast.makeText(
                             context,

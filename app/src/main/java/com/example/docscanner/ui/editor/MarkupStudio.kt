@@ -261,9 +261,13 @@ internal suspend fun persistMarkup(
     repository.updatePage(docId, pageId) { it.copy(markup = strokes) }
     val latest: ScannedPage = repository.getDocumentById(docId)
         ?.pages?.find { it.id == pageId } ?: throw IllegalStateException("Page no longer exists")
+    val token = com.example.docscanner.model.PageToken.of(latest)
     val baked = PageRenderer.bake(context, latest)
         ?: throw IllegalStateException("Could not render annotation")
-    repository.updatePage(docId, pageId) { baked }
+    val published = repository.updatePage(docId, pageId, expectedToken = token) { baked }
+    if (!published) {
+        throw IllegalStateException("Could not publish annotation: page was modified concurrently")
+    }
 }
 
 /** A4's ratio, used for the first frame before the bitmap is decoded. */

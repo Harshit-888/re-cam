@@ -6,6 +6,17 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-11-01 — Antigravity — Round 70.3 Corrective Fix & Full §15 Hardware Verification
+
+Reviewed corrective change on `main` following Arena H004 review:
+1. **Versioned Page Copy Regression (`ImageStore.kt`):** `copyPageFiles` now checks if the source page is edited (`imageUri != originalImageUri` or contains `_edited`) and copies the actual referenced pixels from `source.imageUri` to a fresh versioned file (`<newPageId>_edited_<ts>_<uuid>.<ext>`), pointing `newUri` to the new versioned file, `originalImageUri` to `pristineTarget.absolutePath`, preserving metadata, and generating a new thumbnail. Unedited pages start from pristine capture with `originalImageUri = null` and `revision = 0`.
+2. **Stale Publication & Snapshot Token (`Models.kt`, `ScannerRepository.kt`, Callers):** Added `PageToken` snapshot token validating `revision`, `imageUri`, `rotationDegrees`, `corners`, `markup`, and `signatureOverlayUri`. `updatePage` returns `Boolean` (`true` if applied, `false` if rejected). `updatePages` returns `BatchUpdateResult(publishedIds, rejectedIds)`. Wired across all callers (`CropAndFilterScreen`, `MarkupStudio`, `MarkupScreen`, `PageViewerScreen`, `DocumentDetailScreen`). On batch rejection, `failedCount` is incremented and `onDone()` is prevented from running while warning the user via Toast that previous versions were kept.
+3. **Benchmark Manifest & Security Boundary:** Corrected documentation in `AndroidManifest.xml` and `BenchmarkAuditActivity.kt` explaining why `android:exported="true"` with `android.permission.DUMP` is required for adb shell execution while preventing unprivileged third-party app starts with `SecurityException`.
+4. **Fixture Counts Reconciled:** Verified that 51,387 bytes corresponds to identical 22 documents / 34 pages total (18 active documents / 28 pages + 4 documents / 6 pages in trash with `isTrash == true`).
+5. **Controlled OCR Comparison:** Repeated on Realme Narzo 30 Pro 5G under warmed-up device state: 2400 px at 1430 ms vs 1600 px at 926 ms (100.0% word accuracy, 649/649 words).
+6. **Observable Startup Instrumentation:** `StartupWork.trace` now logs unconditionally under `DocScannerPerf` so that benchmark builds emit observable startup timing and idle gate tracing.
+7. **Verification:** 241 unit tests pass (`./gradlew testDebugUnitTest`), `assembleDebug` and `assembleBenchmark` build cleanly, `./scripts/verify_workspace.ps1` passes (27 passed, 0 failed).
+
 
 ## 2026-11-01 — Antigravity — Round 70.3 Implementation & Hardware Verification (Realme Narzo 30 Pro 5G)
 

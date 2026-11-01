@@ -12,6 +12,7 @@ import com.example.docscanner.model.Document
 import com.example.docscanner.model.FilterType
 import com.example.docscanner.model.Folder
 import com.example.docscanner.model.LibrarySnapshot
+import com.example.docscanner.model.PageToken
 import com.example.docscanner.model.QuadCorners
 import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.util.BackupArchive
@@ -117,7 +118,10 @@ private const val CARD_SOURCE_DIMENSION = 1600
  */
 private const val AUTO_BORDER_DETECT_DIMENSION = 900
 
-class ScannerRepository(context: Context) {
+class ScannerRepository(
+    context: Context,
+    private val ocrReader: suspend (String) -> OcrResult = { OcrEngine.readPageResult(it) }
+) {
 
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -296,12 +300,33 @@ class ScannerRepository(context: Context) {
      * through a document's pages — looking, changing nothing — re-sorted the library
      * after every tap. "Recently modified" has to mean modified.
      */
+    data class BatchUpdateResult(
+        val publishedIds: Set<String>,
+        val rejectedIds: Set<String>
+    )
+
+    /**
+     * Rewrites one page of one document.
+     *
+     * **`modifiedDate` moves only when the page actually changed.** It used to move on
+     * every call, and the library is sorted by it (newest first, the default), so any
+     * code path that re-supplied values that were already stored moved the document to
+     * the top of the home screen. There are such paths by design: the crop editor
+     * persists the geometry of the page it is leaving on every page switch, so walking
+     * through a document's pages — looking, changing nothing — re-sorted the library
+     * after every tap. "Recently modified" has to mean modified.
+     *
+     * @return `true` if the page was found and successfully updated; `false` if rejected
+     *   due to stale revision or snapshot token mismatch, or if not found.
+     */
     fun updatePage(
         docId: String,
         pageId: String,
         expectedRevision: Int? = null,
+        expectedToken: PageToken? = null,
         update: (ScannedPage) -> ScannedPage
-    ) {
+    ): Boolean {
+        var published = false
         _documents.update { docs ->
             docs.map { doc ->
                 if (doc.id != docId) return@map doc
@@ -315,9 +340,16 @@ class ScannerRepository(context: Context) {
                             "[publish] Discarding stale bake for page $pageId: current rev ${page.revision} != expected $expectedRevision"
                         )
                         page
+                    } else if (expectedToken != null && !expectedToken.matches(page)) {
+                        android.util.Log.i(
+                            "DocScannerPerf",
+                            "[publish] Discarding stale bake for page $pageId: current state does not match expected token"
+                        )
+                        page
                     } else {
                         val next = update(page)
                         if (next != page) changed = true
+                        published = true
                         next
                     }
                 }
@@ -328,6 +360,7 @@ class ScannerRepository(context: Context) {
                 }
             }
         }
+        return published
     }
 
     /**
@@ -348,26 +381,41 @@ class ScannerRepository(context: Context) {
      * @param replacements page id to the page that should replace it, as returned by
      *   `PageRenderer.bake`. Ids that are no longer in the document are ignored, so a
      *   page deleted while its bake was in flight cannot resurrect it.
+     * @return [BatchUpdateResult] containing the set of published page IDs and rejected page IDs.
      */
     fun updatePages(
         docId: String,
         replacements: Map<String, ScannedPage>,
-        expectedRevisions: Map<String, Int> = emptyMap()
-    ) {
-        if (replacements.isEmpty()) return
+        expectedRevisions: Map<String, Int> = emptyMap(),
+        expectedTokens: Map<String, PageToken> = emptyMap()
+    ): BatchUpdateResult {
+        if (replacements.isEmpty()) return BatchUpdateResult(emptySet(), emptySet())
+        val published = mutableSetOf<String>()
+        val rejected = mutableSetOf<String>()
         rewritePages(docId) { page ->
             val replacement = replacements[page.id] ?: return@rewritePages page
-            val expected = expectedRevisions[page.id]
-            if (expected != null && page.revision != expected) {
+            val expRev = expectedRevisions[page.id]
+            val expToken = expectedTokens[page.id]
+            val isStale = (expRev != null && page.revision != expRev) ||
+                (expToken != null && !expToken.matches(page))
+            if (isStale) {
                 android.util.Log.i(
                     "DocScannerPerf",
-                    "[publish] Discarding stale bake for page ${page.id}: current rev ${page.revision} != expected $expected"
+                    "[publish] Discarding stale bake for page ${page.id}: current rev ${page.revision}, matchesToken=${expToken?.matches(page)}"
                 )
+                rejected.add(page.id)
                 page
             } else {
+                published.add(page.id)
                 replacement
             }
         }
+        replacements.keys.forEach { id ->
+            if (!published.contains(id) && !rejected.contains(id)) {
+                rejected.add(id)
+            }
+        }
+        return BatchUpdateResult(published, rejected)
     }
 
     /** Applies [transform] to every page of one document, in one emission. */
@@ -879,7 +927,7 @@ class ScannerRepository(context: Context) {
             val texts = LinkedHashMap<String, String>()
             val attempted = LinkedHashSet<String>()
             for (page in pending) {
-                val res = OcrEngine.readPageResult(page.imageUri)
+                val res = ocrReader(page.imageUri)
                 results[page.id] = res
                 when (res) {
                     is OcrResult.Success -> {
@@ -960,7 +1008,7 @@ class ScannerRepository(context: Context) {
                 for (page in pages) {
                     // Before every *page*, not every document.
                     while (isBusy()) delay(OCR_PAUSE_POLL_MS)
-                    val res = OcrEngine.readPageResult(page.imageUri)
+                    val res = ocrReader(page.imageUri)
                     docResults[page.id] = res
                     when (res) {
                         is OcrResult.Success -> {

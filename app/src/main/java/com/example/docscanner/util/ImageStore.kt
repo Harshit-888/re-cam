@@ -222,7 +222,8 @@ object ImageStore {
         source: ScannedPage,
         newPageId: String
     ): ScannedPage? {
-        val pristine = resolveFile(context, source.originalImageUri ?: source.imageUri)
+        val pristine = (source.originalImageUri?.let { resolveFile(context, it) }
+            ?: resolveFile(context, source.imageUri))
             ?: return null
         val pristineTarget = pageFile(context, newPageId)
         return runCatching {
@@ -230,21 +231,33 @@ object ImageStore {
             pristine.copyTo(pristineTarget, overwrite = true)
             pristineTarget.setLastModified(nextStamp())
         }.mapCatching {
-            // The baked file may be absent (a page never edited) — then there is
-            // nothing to copy and the new page starts from its pristine capture.
-            val edited = listOf(editedFile(context, source.id), editedLosslessFile(context, source.id))
-                .firstOrNull { it.isFile }
+            // Round 70.3 corrective fix (Arena H004 follow-up):
+            // Check if the source page is edited. If so, copy the current referenced
+            // pixels (which in Round 70.3 uses a versioned path `<pageId>_edited_<ts>_<uuid>.<ext>`),
+            // falling back to legacy fixed names (`_edited.jpg` / `_edited.png`) if present.
+            // If the baked file is absent (a page never edited), the new page starts
+            // from its pristine capture with originalImageUri = null.
+            val isEdited = (source.originalImageUri != null && source.imageUri != source.originalImageUri) ||
+                source.imageUri.contains("_edited")
+            val edited = if (isEdited) {
+                resolveFile(context, source.imageUri)
+                    ?: listOf(editedFile(context, source.id), editedLosslessFile(context, source.id)).firstOrNull { it.isFile }
+            } else {
+                null
+            }
             var newUri = pristineTarget.absolutePath
+            var newOriginalUri: String? = null
             var revision = 0
-            if (edited != null) {
-                val target = if (edited.extension.equals("png", true)) {
-                    editedLosslessFile(context, newPageId)
-                } else {
-                    editedFile(context, newPageId)
-                }
+            if (edited != null && edited.isFile) {
+                val ext = if (edited.extension.equals("png", true)) "png" else "jpg"
+                val target = File(
+                    pagesDir(context),
+                    "${newPageId}_edited_${System.currentTimeMillis()}_${java.util.UUID.randomUUID().toString().take(8)}.$ext"
+                )
                 edited.copyTo(target, overwrite = true)
                 target.setLastModified(nextStamp())
                 newUri = target.absolutePath
+                newOriginalUri = pristineTarget.absolutePath
                 revision = source.revision
             }
             // A fresh cover for the fresh page: the source's thumbnail key belongs to
@@ -262,7 +275,7 @@ object ImageStore {
             source.copy(
                 id = newPageId,
                 imageUri = newUri,
-                originalImageUri = pristineTarget.absolutePath,
+                originalImageUri = newOriginalUri,
                 revision = revision
             )
         }.getOrNull()

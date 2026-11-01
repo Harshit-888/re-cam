@@ -41,8 +41,14 @@
         </activity>
 
         <!--
-          Round 70.3: Dedicated benchmark activity. android:exported="false" ensures
-          third-party apps cannot trigger heavy benchmark workloads.
+          Round 70.3 corrective fix (Arena H004 review): Dedicated benchmark activity.
+          android:exported="true" combined with android:permission="android.permission.DUMP".
+          Why DUMP permission instead of exported="false": on physical Android 12+ devices
+          running non-debuggable benchmark builds, adb shell am start (UID 2000) cannot launch
+          an exported="false" activity without run-as (which fails on non-debuggable builds).
+          Declaring android:permission="android.permission.DUMP" allows adb shell (which holds
+          the signatureOrSystem/development DUMP permission) to launch the benchmark, while
+          strictly blocking unprivileged third-party applications with a SecurityException.
           Invoked via adb: am start -n com.example.docscanner/.util.BenchmarkAuditActivity
         -->
         <activity

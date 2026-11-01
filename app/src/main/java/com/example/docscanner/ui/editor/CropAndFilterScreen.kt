@@ -110,6 +110,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.docscanner.data.ScannerRepository
 import com.example.docscanner.model.FilterType
+import com.example.docscanner.model.PageToken
 import com.example.docscanner.model.QuadCorners
 import com.example.docscanner.model.ScannedPage
 import com.example.docscanner.theme.DocShapes
@@ -738,11 +739,11 @@ fun CropAndFilterScreen(
                 // and keep their previous version; there is no sequential
                 // fallback and no downgraded bake (see the OOM catch).
                 val baked = java.util.Collections.synchronizedMap(LinkedHashMap<String, ScannedPage>(targets.size))
+                val bakedTokens = java.util.Collections.synchronizedMap(LinkedHashMap<String, com.example.docscanner.model.PageToken>(targets.size))
                 val failedCount = java.util.concurrent.atomic.AtomicInteger(0)
                 val oomCount = java.util.concurrent.atomic.AtomicInteger(0)
                 val completedCount = java.util.concurrent.atomic.AtomicInteger(0)
                 val semaphore = kotlinx.coroutines.sync.Semaphore(2)
-                val startedRevisions = targets.associate { it.id to it.revision }
 
                 coroutineScope {
                     targets.forEach { page ->
@@ -751,6 +752,7 @@ fun CropAndFilterScreen(
                             try {
                                 val latest = repository.getDocumentById(docId)
                                     ?.pages?.find { it.id == page.id } ?: page
+                                val token = com.example.docscanner.model.PageToken.of(latest)
                                 val result = try {
                                     PageRenderer.bake(
                                         context = context,
@@ -809,6 +811,7 @@ fun CropAndFilterScreen(
 
                                 if (result != null) {
                                     baked[page.id] = result
+                                    bakedTokens[page.id] = token
                                 } else {
                                     failedCount.incrementAndGet()
                                 }
@@ -828,7 +831,14 @@ fun CropAndFilterScreen(
                     }
                 }
 
-                repository.updatePages(docId, LinkedHashMap(baked), startedRevisions)
+                val updateResult = repository.updatePages(
+                    docId = docId,
+                    replacements = LinkedHashMap(baked),
+                    expectedTokens = LinkedHashMap(bakedTokens)
+                )
+                if (updateResult.rejectedIds.isNotEmpty()) {
+                    failedCount.addAndGet(updateResult.rejectedIds.size)
+                }
                 val failed = failedCount.get()
                 val oomFailed = oomCount.get()
                 if (failed == 0) {

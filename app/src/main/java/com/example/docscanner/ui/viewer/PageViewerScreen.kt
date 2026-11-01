@@ -380,17 +380,19 @@ fun PageViewerScreen(
                 // 2. Bake, on the untouched pipeline, off the main thread.
                 val bakedOk = withContext(Dispatchers.IO) {
                     val latest = repository.getDocumentById(docId)
-                        ?.pages?.find { it.id == page.id }
-                    val baked = latest?.let {
-                        runCatching {
-                            PageRenderer.bake(
-                                context,
-                                it.copy(rotationDegrees = (it.rotationDegrees + 90f) % 360f)
-                            )
-                        }.getOrNull()
+                        ?.pages?.find { it.id == page.id } ?: return@withContext false
+                    val token = com.example.docscanner.model.PageToken.of(latest)
+                    val baked = runCatching {
+                        PageRenderer.bake(
+                            context,
+                            latest.copy(rotationDegrees = (latest.rotationDegrees + 90f) % 360f)
+                        )
+                    }.getOrNull()
+                    if (baked != null) {
+                        repository.updatePage(docId, page.id, expectedToken = token) { baked }
+                    } else {
+                        false
                     }
-                    if (baked != null) repository.updatePage(docId, page.id) { baked }
-                    baked != null
                 }
                 if (!bakedOk) {
                     // A failed bake must not leave a turned preview on screen for ever:
@@ -845,6 +847,7 @@ fun PageViewerScreen(
                     // Same rule as the rotate path above: a failed bake must not leave
                     // a signature that is not on the page looking applied, and it must
                     // not escape this coroutine either (see the document screen).
+                    val token = com.example.docscanner.model.PageToken.of(latest)
                     val baked = runCatching {
                         PageRenderer.bake(
                             context,
@@ -852,7 +855,14 @@ fun PageViewerScreen(
                         )
                     }.getOrNull()
                     if (baked != null) {
-                        repository.updatePage(docId, targetId) { baked }
+                        val published = repository.updatePage(docId, targetId, expectedToken = token) { baked }
+                        if (!published) {
+                            Toast.makeText(
+                                context,
+                                "Could not sign this page: page was modified concurrently",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
                     } else {
                         Toast.makeText(context, "Could not sign this page", Toast.LENGTH_SHORT)
                             .show()
