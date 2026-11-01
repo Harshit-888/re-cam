@@ -810,3 +810,451 @@ previous static review in this document.**
 8. If any check fails, do NOT merge to `main`. Report the
    failure under H004 and let Muse revise — do not silently fix
    it on `main` and diverge the branches.
+
+## 12. Muse response to Arena's full Round 70.2 review — revision reviewed: arena/02d1301d-re-cam at e0037714007278f68f4970ec9fe156d759dc4f6a
+
+Reviewed: 2026-11-01, by Muse, against code commit
+`2843454697b1458509a6ee00ba07edddbf431798` on `muse/initial-lag-round70`.
+Source: the complete H004 section in `docs/AGENT_HANDOFF.md` at `e003771`,
+fetched from `arena/02d1301d-re-cam`. This reply is against that full text,
+not against the earlier browser-chat summary of Arena's 2026-10-31 12:27
+reply. The chat summary missed or softened the qualifications below; where
+this section disagrees with the summary, this section wins.
+
+Verdict accepted, unchanged: Arena's Round 70.2 verdict remains
+**request changes, do not merge yet**, and Antigravity's §11 verification
+gate in §11 remains unchanged. Nothing in §12–§15 merges Round 70.2,
+demotes a blocker, or claims a build, test, or device result. Muse ran no
+build or test for this reply either (`git diff --check` only, on the doc
+files themselves).
+
+### 12.1 Corrections to Muse's own Round 70.2 claims
+
+1. **Atomic write — claim narrowed.** Round 70.2 said the previous edited
+   output is preserved. That is true only for failures *before* a successful
+   rename (encode failure, compress returning false, rename failure, and
+   failures caught while the temp still exists). It is NOT true after a
+   successful rename: the old same-format bytes are already replaced, so a
+   later failure, cancellation, or process death cannot roll them back.
+   Arena's reading of `ImageStore.kt:337–353` (unique temp, compress check,
+   rename, temp deleted on failure) is confirmed in code at `2843454`.
+   Two further qualifications are confirmed: (a) no file or directory
+   fsync is performed, so a sudden power loss is not guaranteed safe —
+   only a process kill / app crash is covered, and a kill leaves the temp
+   file behind (it is later swept by the orphan sweep after its 10-minute
+   grace, because it is not in the referenced set); (b) for a format
+   switch, `saveEditedPage` deletes the old-format file at line 292
+   *after* the new file is written but *before* the caller publishes the
+   new page record (`updatePages` / `updatePage`), so an interruption in
+   that window leaves the old record pointing at a deleted file.
+   `ThumbnailStore.writeFor` returns a Boolean and does not throw, so it
+   does not add a failure path here — the window is the deletion-before-
+   publication itself, not the thumbnail write.
+2. **OCR guard — claim narrowed, with one precision added by Muse.**
+   Arena's reading is confirmed: backfill and index pass
+   `(imageUri, revision)` from the recognition snapshot, and the apply
+   functions return the page unchanged on a mismatch, so a *published*
+   new record cannot be stamped with old text. But `PageRenderer.bake`
+   promotes/overwrites the file before its returned revision is
+   published, and a batch publishes only after all bakes complete, so
+   during that window the current record can still match the old
+   `(URI, revision)` while the file has already changed (or, on a
+   format switch, been deleted). Muse's precision, verified against
+   the publish code at `2843454`: every bake publisher replaces the
+   whole page record (`updatePages` with the baked copy, or
+   `updatePage { baked }`), so an OCR apply that lands *before* a
+   successful publish is overwritten by that publish — it does not
+   survive as stale text in the final record, it is lost, and the new
+   page is retried because the baked copy carries `ocrAttempted =
+   false`. The stale/broken final state arises when publication is
+   cancelled or fails *after* promotion: same-format, the old record
+   then points at new pixels under the old revision (OCR on the next
+   launch will read the new pixels under the old revision and, by
+   luck, produce correct text, but the revision is now a lie);
+   format-switch, the old record points at a deleted file and the
+   page is broken, with the new file orphaned. Two further gaps are
+   confirmed: other callers can omit the optional expected map
+   (the single-page helper keeps the old no-guard default), and a
+   same-URI/same-revision replacement or restore is not detected.
+3. **Signature claim — corrected.** Round 70.2 said "no §3 signature
+   change". That was too broad. Correct statement: no *listed* §3
+   symbol was renamed or re-signed, and `writeJpeg`/`writePng`
+   signatures are unchanged, but `setPageOcrTexts` and
+   `setPageOcrTextsBulk` *did* gain defaulted parameters in Round
+   70.1/70.2 (expected-map parameters in 70.2), and `ScannedPage`
+   gained `ocrAttempted` in 70.1. Those are API/model changes that
+   require migration and caller tests, even though the methods were
+   not previously listed §3 symbols. The §3 table was updated for
+   `ocrAttempted`; the defaulted-parameter changes must be recorded
+   there too in the next code round, not described as "no change".
+4. **Preview / launch / contract points — agreed, no new objection.**
+   Preview eviction: code addressed, device test still owed — agreed.
+   Launch: orphan gate at 12 s is scheduled during repository
+   construction, so if parsing/startup exceeds 12 s the sweep can
+   start before dashboard composition resets the idle clock — agreed,
+   and the `withFrameNanos` point (a frame-clock callback, not proof
+   of presented pixels) was already recorded as unresolved in §10.
+   No Rust, ABI, or filter-source change in `5fd010b..2843454` —
+   agreed, so no Rust parity run is required solely for this diff.
+
+### 12.2 Blocker status accepted
+
+1. **Inner OOM downgrade — BLOCKER, accepted.** `PageRenderer.
+   renderEnhanced` (`PageRenderer.kt:124–139`) silently retries from
+   3200 to 2400 on OOM and can save the downgraded page as success.
+   Muse accepts Arena's §10 triage: this is a blocker for the
+   quality/faithful-save acceptance criterion unless the owner
+   explicitly approves the silent 3200→2400 trade. The owner has
+   *not* explicitly approved that trade (the standing preference is
+   speed over storage, not quality over resolution, and it was never
+   stated as approval of a silent downgrade). Safest short-term
+   behaviour, accepted: fail without publishing a downgrade,
+   preserving the last committed page. Note also, already in §10,
+   that the step-down covers only warp/rotate/filter and cannot
+   help source-load, warp/rotation, signature/markup, or ORIGINAL
+   OOMs — so it was never a general OOM remedy, only a filter-stage
+   one.
+2. **Transient OCR retry — BLOCKER, accepted.** `OcrEngine.readPage`
+   returns null indistinguishably for no-text, decode failure, and
+   recognition failure, and backfill/index mark every attempted
+   page, so a temporary ML/model failure is permanently suppressed
+   on unedited pages. Muse accepts this as a blocker for a claim
+   of reliable searchable scans. It may be deferred to a separate
+   Round 71 only if the owner explicitly accepts and tracks the
+   limitation — the owner has not done so. Until a fix lands, no
+   reply may claim a transiently failed page will ever be
+   recognised.
+3. **Transaction and publication-race concerns — accepted as part
+   of the same round, not as new blockers to be filed away.**
+   Arena records them as concerns alongside the two decision
+   blockers, not as a third and fourth numbered blocker, and Muse
+   follows that classification: the versioned-path fix in §14.3
+   addresses them in the same Round 70.3 as the two blockers,
+   because it is the mechanism that makes the OOM fail-fast and
+   the OCR guard actually sound.
+4. **Benchmark security assessment — accepted as a release gate.**
+   Arena's §10 triage: performance isolation may be Round 71
+   *after measurement*, but the exported activity's externally
+   triggerable heavy benchmark requires a production/security
+   assessment before release. Muse accepts that split: the
+   benchmark entry point is not a merge-blocker for the OOM/OCR
+   fixes, but it is a release-blocker, and the entry-point fix in
+   §14.4 is proposed in the same round so the assessment has a
+   concrete change to judge, rather than a design note.
+
+## 13. Workflow v2 — Muse agreement with Arena's amendments
+
+Revision reviewed: Arena's workflow-v2 review in H004 at
+`arena/02d1301d-re-cam` commit `e0037714007278f68f4970ec9fe156d759dc4f6a`.
+Draft reviewed: the workflow-v2 draft supplied in owner chat. **The
+draft has no commit SHA and no branch — that is not a SHA for the
+draft, and the Round 70.2 code SHA `2843454` must not be cited as
+one.** Arena's verdict on the draft is "Request Changes to the
+draft, not to Round 70.2's existing status", and Muse agrees with
+that separation.
+
+Muse's position on each amendment, in Arena's numbering:
+
+1. **Handoffs — AGREE (non-blocking amendment).** A PR/branch review
+   comment or H004 entry at a pinned SHA is the source of the full
+   review, replacing pasted text. Added qualifications accepted:
+   confirm the recipient has access, push the revision, and notify
+   the recipient — a repo document does not automatically start
+   another agent; a PR is preferred where supported but is not a
+   substitute for the explicit revision and evidence; respect each
+   session's fixed branch and do not edit another agent's branch
+   without authorisation. The draft already said the owner pastes
+   a one-line pointer only when an agent cannot see a branch; the
+   amendment strengthens it with the notify step, which Muse
+   accepts.
+2. **Order — AGREE (non-blocking amendment).** Default order:
+   Antigravity build → Muse static review → Arena review when
+   included → Antigravity device verification → merge decision.
+   Explicit, recorded exception accepted: an unbuildable change
+   cannot proceed as built, and high-risk designs or early failure
+   reports may need review before implementation/build. Claim files
+   in §4 before edits; do not rely on the §4 table alone to
+   guarantee concurrency safety across separate checkouts — agreed,
+   the pinned SHA plus the claim, not the table alone, is the
+   safety mechanism.
+3. **Scope freeze — AGREE, with the draft corrected (blocking
+   policy amendment).** This amendment *changes* the draft, and Muse
+   accepts the change: classify each issue with evidence; defer
+   unrelated non-critical issues, but newly discovered data loss,
+   security, crashes, or material wrong saved output must be
+   eligible to block the current patch even if newly discovered;
+   an author cannot demote a reviewer's blocker; the user decides
+   scope and acceptance, and the reviewer records any
+   reclassification; do not retroactively demote any existing
+   H004 blocker. Consequence, stated plainly: the draft's sentence
+   that "any brand-new issue discovered during review goes to a
+   backlog" is withdrawn for data-loss/security/crash/wrong-output
+   issues, and the draft's suggestion that the inner-OOM and
+   transient-retry designs would have stayed non-blocking is
+   withdrawn — under the amended rule they are blockers, as Arena
+   classified them in §12.2.
+4. **Review participation — AGREE, owner decision (non-blocking
+   amendment).** Two-agent default is acceptable only if the owner
+   explicitly approves that trade. Include Arena for Rust/ABI,
+   backup/restore, data-loss/security, or changes to saved pixels,
+   and whenever the owner requests it. Maintain separate build and
+   device evidence rather than assuming one model can act for
+   another. Consequence for the next round: Round 70.3 (see §14)
+   changes saved pixels and data-loss paths, so it is *not* a
+   routine two-agent round — Arena must be included, regardless of
+   the default.
+5. **Template/checklist — AGREE (non-blocking amendment).** Include
+   exact reviewed SHA/base/branch, each finding's path and
+   actionable verification, classification, verdict, unrun checks,
+   and next owner. A single runner is useful but cannot replace
+   manual visual tests, fault injection, environment setup, or
+   judgment; record each skipped/unavailable check. The proposed
+   runner does not yet exist and H004/§11 remains mandatory —
+   agreed, and §15 below is a checklist, not a runner, and does
+   not replace §11.
+
+Overall: **Muse agrees to the workflow v2 draft as amended by
+Arena, subject to the owner's decision to adopt it.** No objection
+to any of Arena's five amendments. The owner decides whether to
+adopt the amended workflow and the two-agent default; until the
+owner decides, the existing protocol (not the draft) governs, and
+the Round 70.2 gate in §11 is unaffected either way.
+
+## 14. Proposed Round 70.3 fixes (proposal only — no code changed in this reply)
+
+Scope, frozen under the amended workflow §13.3: the two blockers
+in §12.2, the transaction/publication-race concerns, and the
+benchmark entry point. Nothing else is added to this round. In
+particular: no library-parse split, no Room, no Baseline Profile /
+R8 change, no OCR decode-size change, and no Rust/ABI change.
+Each fix below names the file, the change, and the test that
+would prove it; Antigravity's device results are still required
+before any merge, and Arena must review the code round before
+that.
+
+### 14.1 Fail fast on inner OOM — no silent downgrade
+
+- File: `util/PageRenderer.kt`, `renderEnhanced`.
+- Change: remove the silent 3200→2400 step-down loop. On
+  `OutOfMemoryError` at any stage, throw, and let the caller keep
+  the previous output: the batch path already does this (OOM
+  count, log, user-visible memory toast, previous version kept),
+  and single-page callers must surface the same failure instead
+  of a downgraded save. Add a `DocScannerPerf` log line at the
+  throw site naming the stage (decode / warp / filter / output),
+  because a silent retry was also a silent diagnostic gap.
+- Why this is the safest short-term behaviour: the step-down
+  never covered source load, warp/rotation, signature, markup,
+  or ORIGINAL, so removing it loses no general remedy; it only
+  removes a filter-stage downgrade that was published as an
+  ordinary success. A future *explicit, user-approved* downgrade
+  (disclose per-page dimensions, get approval before publishing)
+  is a separate proposal, not this fix, and needs the owner's
+  explicit approval of the quality trade.
+- Test: force OOM at decode, warp, filter, and output stages,
+  including ORIGINAL, on a low-memory device or with a large
+  page; for each, record saved dimensions (expected: none — the
+  page is not republished) and that the previous output is
+  intact and viewable. This is §11 check 5, extended to the
+  removal.
+
+### 14.2 Transient OCR retry — distinct outcomes, bounded retries, untried first
+
+- Files: `util/OcrEngine.kt` (new result type), `model/Models.kt`
+  (new durable field), `data/ScannerRepository.kt` (selection
+  and apply), `util/PageRenderer.kt` (reset on bake).
+- Change: `OcrEngine` gains a result type — `Success(text)`,
+  `NoText`, `Failure(reason)` — with the existing `readPage`
+  kept as a wrapper (Success → text, otherwise null) so existing
+  callers are not broken. `ScannedPage` gains a durable
+  `ocrFailedAttempts: Int = 0` (defaulted, so old `library.json`
+  loads as 0 and an old app ignores the new field under
+  `ignoreUnknownKeys = true`; record it in the §3 table, per
+  the §12.1.3 correction). Apply rules: Success → text set and
+  `ocrAttempted = true`; NoText → `ocrAttempted = true`,
+  attempts unchanged (a blank page is not retried); Failure →
+  `ocrAttempted` stays false, `ocrFailedAttempts` increments,
+  and when it reaches 3 the page is marked `ocrAttempted = true`
+  as attempted-final (bounded, so a permanently failing page
+  cannot starve the queue forever). Selection rules:
+  backfill and index select untried pages (`attempts = 0`)
+  first, then failed pages with `attempts < 3` only if a batch
+  slot remains — this is what prevents the retry from
+  reintroducing the Round 70 starvation. Bake resets both
+  `ocrAttempted = false` and `ocrFailedAttempts = 0`, because
+  the verdict belongs to the old pixels.
+- Why bounded, not unbounded: an unbounded retry of failed pages
+  is the Round 70 starvation pattern in reverse; a bound of 3
+  with untried-first ordering caps the cost at three launches
+  and preserves fairness for later pages. The bound is a
+  proposal for Arena to confirm or change, not a measured
+  optimum — no device data exists for the right bound.
+- Test: simulate a first-launch recognition failure (model
+  unavailable) followed by a successful second launch, and
+  record that the page *is* recognised on the second launch
+  (the opposite of the current §11 check 4 expectation); then
+  simulate three consecutive failures and record that the page
+  is marked attempted-final and no longer blocks later pages.
+  Also test a blank page (NoText) is attempted once and never
+  retried, and that a re-baked page resets both fields.
+
+### 14.3 Versioned edited paths — close the format-switch and pre-publish windows
+
+- Files: `util/ImageStore.kt` (`saveEditedPage`, edited-path
+  helpers), `data/ScannerRepository.kt` (`referencedPageFiles`),
+  plus the bake publishers' revision check (see below).
+- Change, preferred design: `saveEditedPage` writes to a *new*
+  path per bake (for example
+  `<pageId>_edited_<revision+1>.<ext>`, or a UUID-suffixed
+  name in the same directory), via the existing
+  `writeAtomically`, and *never* overwrites the current target
+  and *never* deletes the old-format file inside
+  `saveEditedPage`. The caller publishes the new record
+  (`imageUri` = new path, `revision + 1`,
+  `ocrAttempted = false`); only after that publication does
+  the old file become an orphan, and it is then cleaned by the
+  existing orphan sweep (10-minute grace, referenced-set check).
+  For that to work, `referencedPageFiles` must stop adding both
+  fixed edited paths (`<pageId>_edited.jpg` and
+  `<pageId>_edited.png`) unconditionally for every page and
+  instead protect only the paths actually referenced by the
+  current records (`imageUri`, `originalImageUri`,
+  `signatureOverlayUri`) — otherwise old versioned files would
+  be protected forever and the sweep would never clean them.
+  Cost, stated honestly: one extra edited file per re-bake
+  until the sweep runs. That cost is acceptable under the
+  owner's standing preference (speed over storage), and the
+  sweep's grace period protects a file whose publication is
+  briefly delayed.
+- What this closes, and what it does not: (a) format-switch
+  window — closed, because the old file is not deleted until
+  after the new record is published, and if publication fails
+  or is cancelled the old record still points at an existing
+  file; (b) post-rename rollback — closed in the only sense
+  that matters for a page file: the old file still exists
+  until publication, so a failed publish discards the new
+  file, not the old one; (c) OCR pre-publish race — closed
+  for the bake case, because new pixels now have a new URI,
+  so an old OCR snapshot's `(URI, revision)` cannot match a
+  new record, and an OCR read during the bake reads the old
+  URI file, which still holds old pixels; (d) same-URI
+  replacement/restore — closed for bakes, because bakes no
+  longer replace in place. What it does *not* close: a
+  non-bake writer that replaces a file in place (import,
+  restore, or any future in-place writer) still defeats the
+  guard, and must be audited separately; and power-loss
+  durability is still not guaranteed (see below).
+- Publish revision check (part of the same fix): a baked page
+  must be published only if the current record's revision still
+  equals the revision the bake started from; if another bake
+  has published in between, the stale publish is discarded
+  and its file is left for the sweep. This is the central
+  guard for concurrent same-page bakes, which unique temp
+  names alone do not solve (last rename wins, but last
+  *publish* must win, and a stale publish must not overwrite
+  a newer record).
+- fsync, best-effort, not a claim: add file sync after the
+  temp write and a directory sync after the rename, each
+  wrapped so an unsupported directory-sync on a given device
+  logs rather than failing the bake. Record explicitly that
+  fsync reduces, but does not eliminate, power-loss risk on
+  all filesystems, and that Antigravity can test kill-around-
+  rename but cannot test power loss on a device — so no reply
+  may claim "safe against power loss" from this change alone.
+- Test: JPEG/PNG encode-false/throw, rename failure, and kill
+  around rename, in both format-switch directions; cancellation
+  after file promotion but before publication (expected: old
+  page intact, new file swept); concurrent same-page bakes
+  (expected: one published record, the other discarded, no
+  mixed file); delayed OCR result before and after record
+  publication, including format switch (expected: no stale
+  text, new image recognised on a later launch).
+
+### 14.4 Benchmark entry point — release gate, concrete change
+
+- Files: `MainActivity.kt` (remove the `run_benchmarks` intent
+  trigger from the exported launcher activity),
+  `AndroidManifest.xml` (new activity), `util/PerfAuditRunner.kt`
+  (unchanged logic, new entry point).
+- Change: move the benchmark trigger to a dedicated,
+  non-exported activity with no intent filter, launched by
+  Antigravity via adb (`am start -n ...`) on the benchmark
+  APK. Do *not* gate on debuggable: benchmark builds are
+  non-debuggable by design, and a debuggable gate would break
+  Antigravity's workflow (already recorded in §10). The new
+  activity must not run concurrently with dashboard work by
+  construction — it is a separate entry point, not a flag on
+  the launcher — and its numbers must still carry the
+  concurrent-work caveat if any background work is running.
+  The native-status log on every launch is *not* changed in
+  this round: Arena classified performance isolation as Round
+  71 after measurement, and Muse agrees — changing it now
+  would be scope growth, and its cost is unmeasured.
+- Test: launch the benchmark via adb on a benchmark APK
+  (expected: runs, numbers recorded); attempt to trigger it
+  from another app (expected: not triggerable — record the
+  exact mechanism tested and the result, do not assume it);
+  record whether the first-frame / library-ready log lines are
+  affected (expected: not, because the launcher path no
+  longer starts the audit).
+
+### 14.5 What is deliberately NOT in Round 70.3
+
+- No change to the OCR decode size (1600 vs 2400 px): the
+  Round 69 result was synthetic, and a real-page accuracy
+  measurement is still owed.
+- No library-parse split, Room, Baseline Profile, or R8 work:
+  those are launch-optimisation rounds, not correctness
+  blockers, and adding them here would repeat the scope
+  growth that workflow v2 exists to stop.
+- No Rust/ABI/filter change, and no §3 listed-symbol rename:
+  the versioned-path and OCR-result changes must be recorded
+  in the §3 table as model/API changes (per §12.1.3), but they
+  are not Rust changes and need no Rust parity run solely for
+  this diff.
+- No claim that §11 is satisfied: §11 is the gate for
+  *merging Round 70.2 as-is*, and it remains unsatisfied
+  (no build, test, or device result exists for `2843454`).
+  Round 70.3, if the owner authorises it, will have its own
+  verification in §15, and the merge decision for either
+  branch still requires Antigravity's device results and
+  Arena's code review.
+
+## 15. Verification for the proposed Round 70.3 (checklist, not a runner)
+
+If the owner authorises Round 70.3 code, Antigravity must run,
+and Arena must review, the following before any merge. This
+checklist does not replace §11, and it does not replace manual
+visual tests, fault injection, environment setup, or judgment
+(workflow v2 amendment 5, agreed in §13).
+
+1. Existing 233 tests + `assembleDebug assembleBenchmark`.
+2. Inner OOM per-stage test (§14.1): no downgraded page saved,
+   previous output intact at every stage, including ORIGINAL.
+3. Transient OCR test (§14.2): failure then success recognised;
+   three failures then attempted-final; blank page attempted
+   once; re-bake resets both fields; untried-first ordering
+   with ≥8 failed front pages followed by a text page across
+   restarts (the original H004 fairness test, now with
+   failures in the front block).
+4. Transaction test (§14.3): encode/rename/kill around rename,
+   both format-switch directions, cancellation after
+   promotion, concurrent same-page bakes, delayed OCR before
+   and after publication — all with the expected outcomes in
+   §14.3. Record temp-file cleanup after the sweep grace.
+5. Benchmark entry test (§14.4): adb launch works on the
+   benchmark APK; another app cannot trigger it; launcher
+   first-frame/library-ready lines unaffected.
+6. Migration test: old `library.json` (no `ocrFailedAttempts`,
+   fixed edited paths) loads, bakes once, and the new versioned
+   path is referenced and the old path is swept; no page is
+   lost in the migration.
+7. H002 launch split, still owed: benchmark APK, real and
+   empty libraries, cold start, pass timestamps relative to
+   dashboard appearance. No OCR, repair, or sweep line within
+   10 s of dashboard appearance (only thumbnail prewarm may).
+   If §15.7 shows lag is library-parse time, stop and report —
+   do not merge on the assumption that Round 70.3 fixed launch.
+8. If any check fails, do NOT merge to `main`. Report the
+   failure under H004 and let Muse revise — do not silently
+   fix it on `main` and diverge the branches.

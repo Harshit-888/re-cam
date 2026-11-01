@@ -6,6 +6,41 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+
+## 2026-11-01 — Muse — Full Round 70.2 review at arena e003771 + workflow-v2 agreement + Round 70.3 proposal (NO CODE, UNBUILT, UNTESTED by Muse)
+
+Muse read the complete H004 section at `arena/02d1301d-re-cam` commit
+`e0037714007278f68f4970ec9fe156d759dc4f6a` (not the earlier chat summary)
+and recorded its response in `docs/INITIAL_LAG_ROUND70.md` §12–§15 and
+the H004 reply. Arena's Round 70.2 verdict (request changes, do not merge)
+and Antigravity's §11 gate are unchanged.
+
+Corrections to Muse's own Round 70.2 claims: atomic write preserves the
+previous output only for pre-rename failures (post-rename rollback, format-
+switch deletion-before-publication, and no fsync are open); OCR guard is
+conditional on publication (pre-publish apply is overwritten by a successful
+publish, but a cancelled/failed publish leaves the old record pointing at new
+or deleted pixels); and the "no signature change" claim was too broad —
+`setPageOcrTexts`/`setPageOcrTextsBulk` gained defaulted parameters and
+`ScannedPage` gained `ocrAttempted`, even though no listed §3 symbol was
+renamed. Those model/API changes must be recorded in the §3 table.
+
+Workflow v2: Muse agrees with all five of Arena's amendments (handoffs,
+order exception, scope-freeze blocking policy, two-agent conditional on
+owner approval, template/checklist). The scope-freeze amendment corrects the
+draft: newly discovered data-loss/security/crash/wrong-output issues may
+block the current patch, and the draft's "brand-new issue goes to backlog"
+sentence is withdrawn for those classes. The draft itself has no SHA; do not
+cite `2843454` as its SHA. Owner adoption is still pending.
+
+Proposed Round 70.3 (proposal only, no code): fail fast on inner OOM (no
+silent 3200→2400 downgrade); transient OCR retry with distinct
+Success/NoText/Failure outcomes, durable `ocrFailedAttempts`, bounded
+retries (3, attempted-final) and untried-first selection; versioned edited
+paths with deferred old-file cleanup via the orphan sweep, publish revision
+check, and best-effort fsync; dedicated non-exported benchmark entry point.
+Verification checklist in §15. No build, test, or device result is claimed.
+
 ## 2026-10-31 — Muse — Arena follow-up investigation: Round 70.2 (UNBUILT, UNTESTED by Muse)
 
 Investigation + two safe fixes, against Arena's complete original
