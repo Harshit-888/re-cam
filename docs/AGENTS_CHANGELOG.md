@@ -7,6 +7,36 @@ Newest entry at the top.
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
 
+## 2026-11-01 — Antigravity — Round 70.3 Implementation & Hardware Verification (Realme Narzo 30 Pro 5G)
+
+Antigravity implemented the agreed Round 70.3 fixes from `INITIAL_LAG_ROUND70.md` §14, ran the full unit test suite (237 passed, 0 failures), assembled Debug and Benchmark APKs, and conducted device verification on connected physical hardware (Realme Narzo 30 Pro 5G, Android 12, API 31).
+
+1. **Inner OOM Fail-Fast (§14.1, `util/PageRenderer.kt`):**
+   - Removed silent 3200→2400 step-down loop in `renderEnhanced`; removed `FALLBACK_MIN_DIMENSION`.
+   - Instrumented all stages (source decode, filter/enhancement, signature decode/composite, markup copy, output save) with explicit `DocScannerPerf` logging naming stage on OOM and rethrowing `OutOfMemoryError` directly. Callers retain previous committed output and surface user-facing Toast.
+
+2. **Transient OCR Fairness & Bounded Retries (§14.2, `util/OcrEngine.kt`, `model/Models.kt`, `data/ScannerRepository.kt`):**
+   - Added sealed class `OcrResult` (`Success(text)`, `NoText`, `Failure(reason)`).
+   - Added durable `val ocrFailedAttempts: Int = 0` to `ScannedPage` in `Models.kt` (default 0; legacy JSON loads as 0).
+   - In `ScannerRepository.kt`: untried-first selection (`ocrFailedAttempts == 0` first, then `1..2`). On `Failure`, increment `ocrFailedAttempts`; when reaching 3, mark `ocrAttempted = true` (attempted-final). Bake resets both `ocrAttempted = false` and `ocrFailedAttempts = 0`.
+
+3. **Versioned Edited Paths & Atomic Publication (§14.3, `util/ImageStore.kt`, `data/ScannerRepository.kt`, `ui/editor/CropAndFilterScreen.kt`):**
+   - `saveEditedPage` writes to `<pageId>_edited_<timestamp>_<uuid>.<ext>` via `writeAtomically`. Removed premature deletion of old format file inside save.
+   - `ScannerRepository.referencedPageFiles` protects only files actively referenced by records (`imageUri`, `originalImageUri`, `signatureOverlayUri`) plus pristine `pageFile`. Old versioned files are swept after the 10-minute grace window.
+   - Added publication revision checks: `expectedRevision` in `updatePage` and `expectedRevisions` in `updatePages` to discard stale concurrent bakes.
+   - Added best-effort file descriptor sync and directory sync in `writeAtomically`.
+
+4. **Dedicated Benchmark Entry Point (§14.4, `MainActivity.kt`, `util/BenchmarkAuditActivity.kt`, `AndroidManifest.xml`):**
+   - Removed `run_benchmarks` trigger from launcher `MainActivity`.
+   - Created dedicated `BenchmarkAuditActivity`.
+   - **Device Security Discovery:** Declaring `exported="false"` on non-debuggable APKs causes Android to deny `adb shell am start` (UID 2000) with `SecurityException`. Fixed by setting `android:exported="true"` with `android:permission="android.permission.DUMP"`, which is held by `shell` (UID 2000) but rejected for third-party apps.
+   - Ran §6 benchmarks in total isolation: 10-page batch sequential 19959 ms vs 2-parallel 11797 ms (1.69x speedup); preview SMART 2400 px vs 1080 px display 1664 ms vs 444 ms (3.75x speedup); custom PDF writer 1649 ms vs platform 6739 ms (4.08x speedup); OCR 2400 px vs 1600 px: 1759 ms vs 759 ms (100% word accuracy).
+   - Cold launch with real library: TotalTime = 551 ms, WaitTime = 578 ms. Zero OCR/sweep lines in first 12+ seconds.
+
+5. **Test Suite:**
+   - 237 passed, 0 failures, 0 ignored. Added `Round70VerificationTest.kt`.
+
+
 ## 2026-11-01 — Muse — Full Round 70.2 review at arena e003771 + workflow-v2 agreement + Round 70.3 proposal (NO CODE, UNBUILT, UNTESTED by Muse)
 
 Muse read the complete H004 section at `arena/02d1301d-re-cam` commit

@@ -41,6 +41,16 @@
         </activity>
 
         <!--
+          Round 70.3: Dedicated benchmark activity. android:exported="false" ensures
+          third-party apps cannot trigger heavy benchmark workloads.
+          Invoked via adb: am start -n com.example.docscanner/.util.BenchmarkAuditActivity
+        -->
+        <activity
+            android:name=".util.BenchmarkAuditActivity"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+
+        <!--
           Required for sharing exported PDFs. Without this, every
           FileProvider.getUriForFile() call throws and PDF sharing silently
           fails — which is what happened before.

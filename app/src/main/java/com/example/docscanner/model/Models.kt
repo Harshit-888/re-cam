@@ -197,6 +197,15 @@ data class ScannedPage(
      * whose pixels changed gets another chance.
      */
     val ocrAttempted: Boolean = false,
+    /**
+     * Number of times text recognition has failed transiently for the current image.
+     * Round 70.3 (Arena H004 follow-up): bounded transient OCR retry. 0 = untried
+     * or reset on bake. Increments on OcrResult.Failure; when it reaches 3,
+     * [ocrAttempted] is marked true as attempted-final so a persistently failing
+     * page cannot starve the queue forever. Reset to 0 on bake alongside [ocrAttempted].
+     * Old library.json files default to 0.
+     */
+    val ocrFailedAttempts: Int = 0,
     val watermarkText: String? = null,
     val signatureOverlayUri: String? = null,
     /**

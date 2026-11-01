@@ -742,6 +742,7 @@ fun CropAndFilterScreen(
                 val oomCount = java.util.concurrent.atomic.AtomicInteger(0)
                 val completedCount = java.util.concurrent.atomic.AtomicInteger(0)
                 val semaphore = kotlinx.coroutines.sync.Semaphore(2)
+                val startedRevisions = targets.associate { it.id to it.revision }
 
                 coroutineScope {
                     targets.forEach { page ->
@@ -827,7 +828,7 @@ fun CropAndFilterScreen(
                     }
                 }
 
-                repository.updatePages(docId, LinkedHashMap(baked))
+                repository.updatePages(docId, LinkedHashMap(baked), startedRevisions)
                 val failed = failedCount.get()
                 val oomFailed = oomCount.get()
                 if (failed == 0) {

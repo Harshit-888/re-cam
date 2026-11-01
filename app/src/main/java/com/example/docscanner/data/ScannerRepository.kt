@@ -20,6 +20,7 @@ import com.example.docscanner.util.DocumentDetector
 import com.example.docscanner.util.ImageStore
 import com.example.docscanner.util.PageImageLoader
 import com.example.docscanner.util.OcrEngine
+import com.example.docscanner.util.OcrResult
 import com.example.docscanner.util.StartupWork
 import com.example.docscanner.util.ThumbnailStore
 import java.io.File
@@ -74,6 +75,7 @@ private const val OCR_BACKFILL_BATCH = 8
  * not by the dashboard.
  */
 private const val OCR_PAUSE_POLL_MS = 250L
+private const val MAX_OCR_FAILURES = 3
 
 /**
  * How long the app must be untouched before the orphan sweep runs.
@@ -294,13 +296,24 @@ class ScannerRepository(context: Context) {
      * through a document's pages — looking, changing nothing — re-sorted the library
      * after every tap. "Recently modified" has to mean modified.
      */
-    fun updatePage(docId: String, pageId: String, update: (ScannedPage) -> ScannedPage) {
+    fun updatePage(
+        docId: String,
+        pageId: String,
+        expectedRevision: Int? = null,
+        update: (ScannedPage) -> ScannedPage
+    ) {
         _documents.update { docs ->
             docs.map { doc ->
                 if (doc.id != docId) return@map doc
                 var changed = false
                 val pages = doc.pages.map { page ->
                     if (page.id != pageId) {
+                        page
+                    } else if (expectedRevision != null && page.revision != expectedRevision) {
+                        android.util.Log.i(
+                            "DocScannerPerf",
+                            "[publish] Discarding stale bake for page $pageId: current rev ${page.revision} != expected $expectedRevision"
+                        )
                         page
                     } else {
                         val next = update(page)
@@ -336,9 +349,25 @@ class ScannerRepository(context: Context) {
      *   `PageRenderer.bake`. Ids that are no longer in the document are ignored, so a
      *   page deleted while its bake was in flight cannot resurrect it.
      */
-    fun updatePages(docId: String, replacements: Map<String, ScannedPage>) {
+    fun updatePages(
+        docId: String,
+        replacements: Map<String, ScannedPage>,
+        expectedRevisions: Map<String, Int> = emptyMap()
+    ) {
         if (replacements.isEmpty()) return
-        rewritePages(docId) { page -> replacements[page.id] ?: page }
+        rewritePages(docId) { page ->
+            val replacement = replacements[page.id] ?: return@rewritePages page
+            val expected = expectedRevisions[page.id]
+            if (expected != null && page.revision != expected) {
+                android.util.Log.i(
+                    "DocScannerPerf",
+                    "[publish] Discarding stale bake for page ${page.id}: current rev ${page.revision} != expected $expected"
+                )
+                page
+            } else {
+                replacement
+            }
+        }
     }
 
     /** Applies [transform] to every page of one document, in one emission. */
@@ -705,7 +734,7 @@ class ScannerRepository(context: Context) {
      */
     fun setPageOcrTexts(
         docId: String,
-        texts: Map<String, String>,
+        texts: Map<String, String> = emptyMap(),
         attemptedPageIds: Set<String> = emptySet(),
         // Round 70.2: expected (imageUri, revision) per page, from the
         // snapshot taken when recognition started. A page whose current
@@ -715,9 +744,10 @@ class ScannerRepository(context: Context) {
         // attempted would also block the new image from ever being
         // recognised. Empty map = no guard (the old behaviour, kept for
         // the single-page helper below).
-        expectedByPage: Map<String, Pair<String, Int>> = emptyMap()
+        expectedByPage: Map<String, Pair<String, Int>> = emptyMap(),
+        resultsByPage: Map<String, OcrResult> = emptyMap()
     ) {
-        if (texts.isEmpty() && attemptedPageIds.isEmpty()) return
+        if (texts.isEmpty() && attemptedPageIds.isEmpty() && resultsByPage.isEmpty()) return
         _documents.update { docs ->
             docs.map { doc ->
                 if (doc.id != docId) {
@@ -727,15 +757,27 @@ class ScannerRepository(context: Context) {
                         pages = doc.pages.map { page ->
                             val text = texts[page.id]
                             val attempted = page.id in attemptedPageIds
-                            // Round 70.2 race guard: do not apply stale
-                            // recognition to a page that has since been
-                            // re-baked. `revision` bumps on every bake
-                            // and `imageUri` changes on a format switch,
-                            // so either mismatch means "not the image
-                            // that was recognised".
+                            val ocrRes = resultsByPage[page.id]
                             val expected = expectedByPage[page.id]
                             if (expected != null && (page.imageUri != expected.first || page.revision != expected.second)) {
                                 page
+                            } else if (ocrRes != null) {
+                                when (ocrRes) {
+                                    is OcrResult.Success -> page.copy(
+                                        ocrText = ocrRes.text,
+                                        ocrAttempted = true
+                                    )
+                                    is OcrResult.NoText -> page.copy(
+                                        ocrAttempted = true
+                                    )
+                                    is OcrResult.Failure -> {
+                                        val newAttempts = page.ocrFailedAttempts + 1
+                                        page.copy(
+                                            ocrFailedAttempts = newAttempts,
+                                            ocrAttempted = newAttempts >= MAX_OCR_FAILURES
+                                        )
+                                    }
+                                }
                             } else if (text != null || attempted) {
                                 page.copy(
                                     ocrText = text ?: page.ocrText,
@@ -758,25 +800,45 @@ class ScannerRepository(context: Context) {
      * instead of one per document. See `backfillTextInBackground`.
      */
     fun setPageOcrTextsBulk(
-        textsByDoc: Map<String, Map<String, String>>,
+        textsByDoc: Map<String, Map<String, String>> = emptyMap(),
         attemptedByDoc: Map<String, Set<String>> = emptyMap(),
-        expectedByDoc: Map<String, Map<String, Pair<String, Int>>> = emptyMap()
+        expectedByDoc: Map<String, Map<String, Pair<String, Int>>> = emptyMap(),
+        resultsByDoc: Map<String, Map<String, OcrResult>> = emptyMap()
     ) {
-        if (textsByDoc.isEmpty() && attemptedByDoc.isEmpty()) return
+        if (textsByDoc.isEmpty() && attemptedByDoc.isEmpty() && resultsByDoc.isEmpty()) return
         _documents.update { docs ->
             docs.map { doc ->
                 val texts = textsByDoc[doc.id]
                 val attempted = attemptedByDoc[doc.id].orEmpty()
-                if (texts.isNullOrEmpty() && attempted.isEmpty()) {
+                val docResults = resultsByDoc[doc.id].orEmpty()
+                if (texts.isNullOrEmpty() && attempted.isEmpty() && docResults.isEmpty()) {
                     doc
                 } else {
                     doc.copy(
                         pages = doc.pages.map { page ->
                             val text = texts?.get(page.id)
                             val wasAttempted = page.id in attempted
+                            val ocrRes = docResults[page.id]
                             val expected = expectedByDoc[doc.id]?.get(page.id)
                             if (expected != null && (page.imageUri != expected.first || page.revision != expected.second)) {
                                 page
+                            } else if (ocrRes != null) {
+                                when (ocrRes) {
+                                    is OcrResult.Success -> page.copy(
+                                        ocrText = ocrRes.text,
+                                        ocrAttempted = true
+                                    )
+                                    is OcrResult.NoText -> page.copy(
+                                        ocrAttempted = true
+                                    )
+                                    is OcrResult.Failure -> {
+                                        val newAttempts = page.ocrFailedAttempts + 1
+                                        page.copy(
+                                            ocrFailedAttempts = newAttempts,
+                                            ocrAttempted = newAttempts >= MAX_OCR_FAILURES
+                                        )
+                                    }
+                                }
                             } else if (text != null || wasAttempted) {
                                 page.copy(
                                     ocrText = text ?: page.ocrText,
@@ -801,22 +863,45 @@ class ScannerRepository(context: Context) {
      * result.
      */
     fun indexTextInBackground(docId: String) {
-        val pending = _documents.value
+        val candidates = _documents.value
             .firstOrNull { it.id == docId }
             ?.pages
             ?.filter { it.ocrText.isBlank() && !it.ocrAttempted && it.imageUri.isNotBlank() }
             ?: return
+        if (candidates.isEmpty()) return
+        // Round 70.3: untried first (ocrFailedAttempts == 0), then bounded retries (1..2)
+        val untried = candidates.filter { it.ocrFailedAttempts == 0 }
+        val failed = candidates.filter { it.ocrFailedAttempts in 1..2 }
+        val pending = untried + failed
         if (pending.isEmpty()) return
         scope.launch {
-            val texts = pending.mapNotNull { page ->
-                OcrEngine.readPage(page.imageUri)?.let { page.id to it }
-            }.toMap()
-            // Round 70.1: mark every attempted page, not just the ones
-            // that yielded text. Otherwise a blank/failed page is
-            // re-selected on every launch (see backfill below).
+            val results = LinkedHashMap<String, OcrResult>()
+            val texts = LinkedHashMap<String, String>()
+            val attempted = LinkedHashSet<String>()
+            for (page in pending) {
+                val res = OcrEngine.readPageResult(page.imageUri)
+                results[page.id] = res
+                when (res) {
+                    is OcrResult.Success -> {
+                        texts[page.id] = res.text
+                        attempted.add(page.id)
+                    }
+                    is OcrResult.NoText -> {
+                        attempted.add(page.id)
+                    }
+                    is OcrResult.Failure -> {
+                        if (page.ocrFailedAttempts + 1 >= MAX_OCR_FAILURES) {
+                            attempted.add(page.id)
+                        }
+                    }
+                }
+            }
             setPageOcrTexts(
-                docId, texts, pending.map { it.id }.toSet(),
-                pending.associate { it.id to (it.imageUri to it.revision) }
+                docId = docId,
+                texts = texts,
+                attemptedPageIds = attempted,
+                expectedByPage = pending.associate { it.id to (it.imageUri to it.revision) },
+                resultsByPage = results
             )
         }
     }
@@ -848,59 +933,61 @@ class ScannerRepository(context: Context) {
         // deliberately NOT retried by backfill (retrying blank pages
         // every launch is the same waste in reverse); a page whose
         // pixels change is reset on bake (see PageRenderer).
-        val pending = _documents.value
+        // Round 70.3 (Arena H004 follow-up): untried first (ocrFailedAttempts == 0),
+        // then bounded retries for transient failures (ocrFailedAttempts in 1..2).
+        val allCandidates = _documents.value
             .filterNot { it.isTrash }
             .flatMap { doc ->
                 doc.pages
                     .filter { it.ocrText.isBlank() && !it.ocrAttempted && it.imageUri.isNotBlank() }
                     .map { doc.id to it }
             }
-            .take(limit)
+        val untried = allCandidates.filter { it.second.ocrFailedAttempts == 0 }
+        val failed = allCandidates.filter { it.second.ocrFailedAttempts in 1..2 }
+        val pending = (untried + failed).take(limit)
         if (pending.isEmpty()) return
-        StartupWork.trace("ocr-backfill: ${pending.size} page(s) queued")
+        StartupWork.trace("ocr-backfill: ${pending.size} page(s) queued (untried=${untried.size}, retry=${failed.size})")
         scope.launch {
             val startedAt = System.nanoTime()
             var done = 0
+            val results = LinkedHashMap<String, MutableMap<String, OcrResult>>()
             val recognised = LinkedHashMap<String, MutableMap<String, String>>()
             val attempted = LinkedHashMap<String, MutableSet<String>>()
             pending.groupBy({ it.first }, { it.second }).forEach { (docId, pages) ->
+                val docResults = results.getOrPut(docId) { LinkedHashMap() }
                 val texts = recognised.getOrPut(docId) { LinkedHashMap() }
                 val attemptedIds = attempted.getOrPut(docId) { LinkedHashSet() }
                 for (page in pages) {
                     // Before every *page*, not every document.
-                    //
-                    // This is the difference between "recognition politely waits"
-                    // and "recognition runs straight through a scroll": one page
-                    // is an ML Kit inference plus a 2400 px decode, so a batch of
-                    // eight pages belonging to one document used to spend several
-                    // seconds of CPU that the next frame needed, having checked for
-                    // a gesture only once, at the start.
                     while (isBusy()) delay(OCR_PAUSE_POLL_MS)
-                    OcrEngine.readPage(page.imageUri)?.let { texts[page.id] = it }
-                    attemptedIds.add(page.id)
+                    val res = OcrEngine.readPageResult(page.imageUri)
+                    docResults[page.id] = res
+                    when (res) {
+                        is OcrResult.Success -> {
+                            texts[page.id] = res.text
+                            attemptedIds.add(page.id)
+                        }
+                        is OcrResult.NoText -> {
+                            attemptedIds.add(page.id)
+                        }
+                        is OcrResult.Failure -> {
+                            if (page.ocrFailedAttempts + 1 >= MAX_OCR_FAILURES) {
+                                attemptedIds.add(page.id)
+                            }
+                        }
+                    }
                     done++
                 }
             }
             // One library update for the whole batch, not one per document.
-            //
-            // `documents` is what the dashboard collects, so every emission re-sorts
-            // the library, rebuilds the date labels and re-runs every visible card.
-            // Applying per document meant up to twenty-four of those inside ten
-            // seconds — each one a full list repaint during the exact window this
-            // round exists to keep quiet. The text is only useful once it is
-            // searchable anyway, and there is nothing to show in the meantime.
-            //
-            // The cost of batching: a process killed mid-pass loses the pages it had
-            // already recognised, and they are picked up on the next launch. That is
-            // the right trade for a background pass nobody is waiting for.
-            // One emission for both text and attempted flags, so a
-            // batch that yields no text still advances the queue.
-            // Round 70.2: pass the snapshot's imageUri/revision so a
-            // page re-baked during the pass is skipped, not stamped
-            // with old text and marked attempted for its new image.
             val expected = pending.groupBy({ it.first }, { it.second })
                 .mapValues { (_, pages) -> pages.associate { it.id to (it.imageUri to it.revision) } }
-            setPageOcrTextsBulk(recognised, attempted, expected)
+            setPageOcrTextsBulk(
+                textsByDoc = recognised,
+                attemptedByDoc = attempted,
+                expectedByDoc = expected,
+                resultsByDoc = results
+            )
             val ms = (System.nanoTime() - startedAt) / 1_000_000
             StartupWork.trace(
                 "ocr-backfill finished: $done page(s) in ${recognised.size} doc(s), $ms ms"
@@ -1005,9 +1092,11 @@ class ScannerRepository(context: Context) {
         val paths = HashSet<String>()
         _documents.value.forEach { doc ->
             doc.pages.forEach { page ->
+                // Round 70.3: keep the pristine capture file protected, but do not
+                // unconditionally add the old fixed edited paths. Only files actually
+                // referenced by records (imageUri, originalImageUri, signatureOverlayUri)
+                // are protected, allowing old versioned bakes to be swept after grace.
                 paths += ImageStore.pageFile(appContext, page.id).absolutePath
-                paths += ImageStore.editedFile(appContext, page.id).absolutePath
-                paths += ImageStore.editedLosslessFile(appContext, page.id).absolutePath
                 listOfNotNull(page.imageUri, page.originalImageUri, page.signatureOverlayUri)
                     .filterNot { it.startsWith("content://") }
                     .filter { it.contains('/') }

@@ -122,11 +122,6 @@ class MainActivity : ComponentActivity() {
                 launch(Dispatchers.IO) {
                     Log.i("DocScannerPerf", "[startup] Native filters status: ${NativeFilters.getStatusSummary()}")
                 }
-                if (intent?.getStringExtra("run_benchmarks") == "true") {
-                    lifecycleScope.launch(Dispatchers.IO) {
-                        PerfAuditRunner.runAudit(applicationContext)
-                    }
-                }
                 val sinceProcessStart =
                     SystemClock.uptimeMillis() - Process.getStartUptimeMillis()
                 StartupWork.trace("launch: first frame drawn $sinceProcessStart ms after process start")

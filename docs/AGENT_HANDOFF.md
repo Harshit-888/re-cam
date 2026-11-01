@@ -127,6 +127,59 @@ labels describe the handoff, not whether a change has been merged.
   round, before any merge decision. Antigravity's §11 work for Round 70.2
   as-is remains owed in parallel and is not replaced by §15.
 
+**Reply — Antigravity, 2026-11-01 (Round 70.3 Implementation & Device Verification):**
+
+- **Status:** IMPLEMENTED & DEVICE-VERIFIED on physical hardware (`main` at `0e62bfe` + Round 70.3 commits).
+- **Device & Environment:**
+  - Device: Realme Narzo 30 Pro 5G (Model `RMX2117`, Android 12, API 31).
+  - Build Types: `assembleDebug` and `assembleBenchmark` (`isDebuggable = false`, signed with debug key).
+  - Toolchain status: JDK 21.0.9, Rust .so absent (cargo/cargo-ndk absent; Kotlin pipeline active).
+  - Real Library Fixture: preserved intact (`files/library.json`, 51,387 bytes, 18 documents, 28 pages).
+
+#### 1. Code Implementation Summary (§14.1–§14.4):
+1. **§14.1 Fail Fast on Inner OOM (`PageRenderer.kt`):**
+   - Removed silent 3200→2400 step-down loop in `renderEnhanced`; removed `FALLBACK_MIN_DIMENSION`.
+   - Instrumented all stages (source decode, enhancements/filter, signature decode & composite, markup copy, output save) with explicit `DocScannerPerf` logging naming stage on OOM and throwing `OutOfMemoryError` directly. Callers (`CropAndFilterScreen`, etc.) catch OOM, keep previous output, log, and notify the user via Toast.
+2. **§14.2 Transient OCR Retry & Fairness (`OcrEngine.kt`, `Models.kt`, `ScannerRepository.kt`):**
+   - Added sealed class `OcrResult`: `Success(text: String)`, `NoText`, `Failure(reason: String)`. Kept `readPage(path): String?` as backward-compatible wrapper.
+   - Added durable `ocrFailedAttempts: Int = 0` to `ScannedPage` in `Models.kt` (default 0; legacy JSON loads as 0).
+   - In `ScannerRepository.kt`: updated `backfillTextInBackground` and `indexTextInBackground` to select untried pages (`ocrFailedAttempts == 0`) first, then transient failures (`ocrFailedAttempts in 1..2`). On `Failure`, increment `ocrFailedAttempts`; when count reaches 3, mark `ocrAttempted = true` (attempted-final). Reset both `ocrAttempted = false` and `ocrFailedAttempts = 0` on bake in `PageRenderer.bakeBlocking`.
+3. **§14.3 Versioned Edited Paths (`ImageStore.kt`, `ScannerRepository.kt`, `CropAndFilterScreen.kt`):**
+   - `ImageStore.saveEditedPage` writes to `<pageId>_edited_<timestamp>_<uuid>.<ext>` via `writeAtomically`. Removed premature deletion of stale format file in save.
+   - `ScannerRepository.referencedPageFiles` stops adding static edited paths unconditionally; protects only paths actually referenced in current records (`imageUri`, `originalImageUri`, `signatureOverlayUri`) plus pristine `pageFile`. Old versioned files become orphans only after publication and are swept after 10-minute grace.
+   - Added publication revision checks: `expectedRevision` in `updatePage` and `expectedRevisions` in `updatePages`. Stale bakes are discarded without corrupting current records.
+   - Added best-effort file `fd.sync()` and directory sync in `writeAtomically`.
+4. **§14.4 Dedicated Benchmark Entry Point (`MainActivity.kt`, `BenchmarkAuditActivity.kt`, `AndroidManifest.xml`):**
+   - Removed `run_benchmarks` trigger from launcher `MainActivity`.
+   - Created dedicated `BenchmarkAuditActivity` in `util/`.
+
+#### 2. Device Findings & Android Security Verification:
+- **Critical Security Finding on Physical Hardware (Android 12, non-root):**
+  - Statically, §14.4 proposed `android:exported="false"`. On real hardware with non-debuggable benchmark APKs, running `adb shell am start -n com.example.docscanner/.util.BenchmarkAuditActivity` threw `java.lang.SecurityException: Permission Denial ... not exported from uid 10737` because `shell` is UID 2000, not the application UID or root. `run-as` also refused to execute because `benchmark` has `isDebuggable = false`.
+  - **Resolution:** Declared `android:exported="true"` protected by `android:permission="android.permission.DUMP"`. `android.permission.DUMP` is a signature/privileged permission held by `shell` (UID 2000), allowing adb to start the audit while third-party apps without the DUMP permission are rejected by the system with `SecurityException`.
+- **Isolated §6 Benchmark Results on Benchmark APK:**
+  - Original: 0 ms
+  - Lighten: 153 ms
+  - Grayscale: 1076 ms
+  - Magic Color: 1714 ms
+  - Clear B&W: 640 ms
+  - Smart Scan: 3065 ms
+  - Light Text: 2235 ms
+  - 10-page Batch Sequential: 19959 ms
+  - 10-page Batch 2-Parallel: 11797 ms (1.69x speedup)
+  - Editor Preview SMART (2400 px vs 1080 px display): 1664 ms vs 444 ms (3.75x speedup)
+  - PDF Export (Balanced custom vs platform): 1649 ms (14 MB) vs 6739 ms (25 MB) (4.08x speedup)
+  - OCR (2400 px vs 1600 px): 1759 ms vs 759 ms with 100.0% word accuracy (649/649 words)
+- **Cold Launch Measurements on Benchmark APK (Real Library):**
+  - LaunchState: COLD
+  - AM TotalTime: 551 ms, WaitTime: 578 ms
+  - First 12+ seconds: ZERO lines for OCR backfill, repair, or orphan sweep (quiet idle gate held). Benchmark work did not pollute launch.
+
+#### 3. Test Suite Verification:
+- `./gradlew testDebugUnitTest`: **237 passed, 0 failures, 0 ignored** in 0.572s.
+- Added `Round70VerificationTest.kt` verifying legacy JSON deserialization compatibility, round-trip serialization of `ocrFailedAttempts`, bounded retry state machine transitions (cap at 3), and versioned file orphan sweep grace window.
+- `./scripts/verify_workspace.ps1`: **27 passed, 0 failed**, root directory pristine.
+
 
 ### H003 — Whole-app performance & Rust audit
 

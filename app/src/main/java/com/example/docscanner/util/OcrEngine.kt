@@ -26,6 +26,18 @@ import kotlin.math.max
  * or returns nothing, the page simply has no text: search skips it, the rest of
  * the app is unaffected, and the capture is never at risk. Nothing waits on OCR.
  */
+/**
+ * Distinct outcome of an OCR attempt.
+ *
+ * Round 70.3: enables fair transient-failure retries by separating blank pages
+ * ([NoText], attempted-once) from ML/decode errors ([Failure], bounded retry up to 3).
+ */
+sealed class OcrResult {
+    data class Success(val text: String) : OcrResult()
+    data object NoText : OcrResult()
+    data class Failure(val reason: String) : OcrResult()
+}
+
 internal object OcrEngine {
 
     private const val TAG = "OcrEngine"
@@ -51,17 +63,40 @@ internal object OcrEngine {
      *   when the page has no text, the image cannot be decoded, or recognition
      *   fails. Never throws.
      */
-    suspend fun readPage(imagePath: String): String? = withContext(Dispatchers.Default) {
-        val bitmap = decode(imagePath) ?: return@withContext null
+    /**
+     * Recognises the text of one page with distinct outcome states.
+     *
+     * Round 70.3 (Arena H004 follow-up): distinguishes [OcrResult.Success] from
+     * [OcrResult.NoText] (page decoded and recognised, but blank) and [OcrResult.Failure]
+     * (image could not be decoded or recognition threw). Never throws.
+     */
+    suspend fun readPageResult(imagePath: String): OcrResult = withContext(Dispatchers.Default) {
+        val bitmap = decode(imagePath) ?: return@withContext OcrResult.Failure("DecodeFailed")
         try {
             val text = recognizer.process(InputImage.fromBitmap(bitmap, 0)).await().text
-            text.trim().takeIf { it.isNotEmpty() }
+            val trimmed = text.trim()
+            if (trimmed.isNotEmpty()) {
+                OcrResult.Success(trimmed)
+            } else {
+                OcrResult.NoText
+            }
         } catch (error: Throwable) {
-            Log.i(TAG, "No text for ${imagePath.substringAfterLast('/')}: ${error.javaClass.simpleName}")
-            null
+            Log.i(TAG, "OCR failure for ${imagePath.substringAfterLast('/')}: ${error.javaClass.simpleName}")
+            OcrResult.Failure(error.javaClass.simpleName)
         } finally {
             if (!bitmap.isRecycled) bitmap.recycle()
         }
+    }
+
+    /**
+     * Recognises the text of one page.
+     *
+     * Compatibility wrapper over [readPageResult] for existing callers and benchmarks.
+     * Returns recognised text or null if blank or failed. Never throws.
+     */
+    suspend fun readPage(imagePath: String): String? = when (val res = readPageResult(imagePath)) {
+        is OcrResult.Success -> res.text
+        else -> null
     }
 
     /** Decodes the page at a sane size for recognition, or `null` if it is unreadable. */

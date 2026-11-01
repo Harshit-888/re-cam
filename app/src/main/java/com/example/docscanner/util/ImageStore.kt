@@ -8,6 +8,7 @@ import android.media.ExifInterface
 import android.net.Uri
 import com.example.docscanner.model.ScannedPage
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.util.UUID
@@ -275,6 +276,16 @@ object ImageStore {
      *
      * @return absolute path of the baked file, or `null` on failure.
      */
+    /**
+     * Persists the editor's bake to a versioned output path.
+     *
+     * Round 70.3 (Arena H004 follow-up): writes to a new, versioned file per bake
+     * (`<pageId>_edited_<timestamp>_<uuid>.<ext>`) via [writeAtomically] and *never*
+     * overwrites the current target in place or deletes the old format file inside
+     * this function. The previous file remains valid until publication succeeds,
+     * after which the old file becomes an unreferenced orphan and is safely swept
+     * by [sweepOrphans] after the 10-minute grace period.
+     */
     fun saveEditedPage(
         context: Context,
         pageId: String,
@@ -282,17 +293,13 @@ object ImageStore {
         quality: Int = JPEG_QUALITY,
         lossless: Boolean = false
     ): String? = try {
-        // Whichever we write, the other format's stale file must go: a later
-        // rebake with the other filter would otherwise leave two candidates on
-        // disk and `imageUri` decides which one wins. Deleted *after* the new file
-        // is written — if the write throws, the previous page must still exist.
-        val stale = if (lossless) editedFile(context, pageId) else editedLosslessFile(context, pageId)
-        val target = if (lossless) editedLosslessFile(context, pageId) else editedFile(context, pageId)
+        val ext = if (lossless) "png" else "jpg"
+        val target = File(
+            pagesDir(context),
+            "${pageId}_edited_${System.currentTimeMillis()}_${java.util.UUID.randomUUID().toString().take(8)}.$ext"
+        )
         if (lossless) writePng(bitmap, target) else writeJpeg(bitmap, target, quality)
-        runCatching { stale.delete() }
-        // The key includes the page's mtime, so this deliberately runs *after* the
-        // write: the old cover is invalidated by the new mtime and a fresh one is
-        // stored under the new key, with no bookkeeping anywhere else.
+        // Store thumbnail under the new file's key immediately
         ThumbnailStore.writeFor(context, target.absolutePath, bitmap)
         target.absolutePath
     } catch (_: Throwable) {
@@ -343,9 +350,17 @@ object ImageStore {
                     throw java.io.IOException("Bitmap compress failed for ${target.name}")
                 }
                 out.flush()
+                // Round 70.3: best-effort fsync on the temp file descriptor
+                runCatching { out.fd.sync() }
             }
             if (!temp.renameTo(target)) {
                 throw java.io.IOException("Could not atomically replace ${target.name}")
+            }
+            // Round 70.3: best-effort directory fsync after rename
+            runCatching {
+                target.parentFile?.let { dir ->
+                    FileInputStream(dir).use { stream -> stream.fd.sync() }
+                }
             }
         } catch (error: Throwable) {
             runCatching { temp.delete() }
@@ -522,24 +537,21 @@ object ImageStore {
 
     /** Deletes both the pristine and edited files for a page. */
     fun deletePageFiles(context: Context, page: ScannedPage) {
-        // Resolve the covers while the files still exist: their keys are derived
-        // from the file's size and mtime, so once it is gone the name is unknown.
-        val thumbKeys = listOfNotNull(
-            ThumbnailStore.key(context, pageFile(context, page.id).absolutePath),
-            ThumbnailStore.key(context, editedFile(context, page.id).absolutePath),
-            ThumbnailStore.key(context, editedLosslessFile(context, page.id).absolutePath)
-        )
-        runCatching { pageFile(context, page.id).delete() }
-        runCatching { editedFile(context, page.id).delete() }
-        runCatching { editedLosslessFile(context, page.id).delete() }
+        val targets = listOfNotNull(
+            page.imageUri,
+            page.originalImageUri,
+            pageFile(context, page.id).absolutePath,
+            editedFile(context, page.id).absolutePath,
+            editedLosslessFile(context, page.id).absolutePath
+        ).distinct()
+        val thumbKeys = targets.mapNotNull { ThumbnailStore.key(context, it) }
+        targets.forEach { path ->
+            runCatching { File(path).delete() }
+            ThumbnailStore.invalidate(path)
+        }
         thumbKeys.forEach { key ->
             runCatching { ThumbnailStore.file(context, key).delete() }
         }
-        // Drop the memoised keys as well: nothing should keep answering for a page
-        // whose files are gone.
-        ThumbnailStore.invalidate(pageFile(context, page.id).absolutePath)
-        ThumbnailStore.invalidate(editedFile(context, page.id).absolutePath)
-        ThumbnailStore.invalidate(editedLosslessFile(context, page.id).absolutePath)
     }
 
     fun deleteDocumentFiles(context: Context, pages: List<ScannedPage>) {
