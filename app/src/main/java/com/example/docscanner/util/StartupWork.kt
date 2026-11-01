@@ -1,6 +1,7 @@
 package com.example.docscanner.util
 
 import android.util.Log
+import com.example.docscanner.BuildConfig
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -129,7 +130,7 @@ object StartupWork {
             val idle = idleMs()
             if (_foreground.value && !scrolling && idle >= quietMs) {
                 if (waited > 0) {
-                    trace("$reason allowed after ${waited + idle} ms idle")
+                    trace("$reason allowed after $idle ms idle (waited $waited ms)")
                 }
                 return
             }
@@ -151,12 +152,8 @@ object StartupWork {
         return true
     }
 
-    /**
-     * Observable launch and background-pass tracing.
-     * Round 70.3 corrective fix: log unconditionally under [TAG] so benchmark builds
-     * produce observable startup and background work timings without being silenced by [PerfTrace].
-     */
+    /** Startup traces are enabled in debug and benchmark, not production release. */
     fun trace(message: String) {
-        Log.i(TAG, "[startup] $message")
+        if (BuildConfig.STARTUP_TRACE_ENABLED) Log.i(TAG, "[startup] $message")
     }
 }

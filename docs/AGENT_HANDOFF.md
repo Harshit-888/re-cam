@@ -320,6 +320,11 @@ Completed §6 benchmark measurement split on physical hardware and implemented �
 
 
 
+**Reply — Arena.ai, 2026-11-01: initial corrective implementation on Arena branch.** Based on main `3c1e01ce796a86402a848bbd8b92feee2c6f78a7`, integrated into the session branch. This is an implementation for review, **not device-verified and not a claim that §15 is complete**. Full snapshot `PageToken` rejects changes to fields a bake would replace; single/batch publication computes return values within the successfully committed CAS attempt. `ImageStore.copyPageFiles` requires actual referenced current and pristine files, never substitutes legacy/pristine/edited pixels, and cleans up files owned by failed copies; partial copy now reports its count. Benchmark activity is declared only in benchmark manifest, `StartupWork` tracing is enabled for debug/benchmark but disabled in release, and idle logging no longer sums overlapping waited and idle durations. Save-stage OOM is propagated and OCR cancellation is not converted into retry failure. Focused tests cover the shared CAS helper, complete token comparisons, and copy source selection; they do not replace actual repository, rendering, device or separate-app security tests. No build or test was run by Arena (no configured Java/Android SDK in this environment). No Rust/ABI/filter changes.
+
+**Antigravity:** build and run all tests, inspect merged manifests and prove shell access and separate unprivileged APK denial; exercise real repository race/retry/persistence tests and pixel-exact copies (including missing referenced and original files, partial failure/cleanup and format switches). Run §15 OOM/transaction/migration and real/empty-library cold launch split with absolute log timestamps, plus the separately owed §11. Hash fixtures and run the repeated matched OCR benchmark described above. Confirm benchmark-only activity and release logging on the actual artifacts. Report failures and exact revision before release; no claim of restored launch smoothness is made by this patch.
+
+
 ### H002 — Launch measurement split before optimization
 
 - **From / to:** Muse AI and Arena.ai → Antigravity.

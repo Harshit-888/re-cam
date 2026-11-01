@@ -15,11 +15,11 @@ import kotlinx.coroutines.launch
  *
  * Round 70.3 corrective fix (Arena H004 review): isolates the benchmark runner from the normal
  * user launcher flow and prevents third-party apps from triggering expensive CPU/ML
- * work. Declared in AndroidManifest.xml with `android:exported="true"` and protected by
+ * work. Declared only in the benchmark manifest with `android:exported="true"` and protected by
  * `android:permission="android.permission.DUMP"`. On Android 12+, `exported="false"` blocks
  * adb shell starts on non-debuggable benchmark builds because run-as is disabled; `DUMP`
  * provides a strict permission boundary that grants access to adb shell (UID 2000) while
- * denying unprivileged third-party applications with a SecurityException.
+ * expected to deny unprivileged callers. This boundary still requires a separate-app device test.
  *
  * Invoked via adb:
  * `adb shell am start -n com.example.docscanner/.util.BenchmarkAuditActivity`

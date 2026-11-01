@@ -215,70 +215,61 @@ object ImageStore {
      * The signature overlay is deliberately **shared**: signature files are keyed by
      * signature id and [deletePageFiles] never touches them, so one copy is correct.
      *
-     * @return the new page, or `null` if the pristine capture could not be copied.
+     * @return the new page, or `null` if either referenced file cannot be copied.
      */
     fun copyPageFiles(
         context: Context,
         source: ScannedPage,
         newPageId: String
     ): ScannedPage? {
-        val pristine = (source.originalImageUri?.let { resolveFile(context, it) }
-            ?: resolveFile(context, source.imageUri))
-            ?: return null
+        val sources = resolvePageCopySources(source) { resolveFile(context, it) } ?: return null
+        val current = sources.current
+        val pristine = sources.pristine
+        val isEdited = sources.isEdited
         val pristineTarget = pageFile(context, newPageId)
-        return runCatching {
-            pristine.parentFile?.let { if (!it.exists()) it.mkdirs() }
+        val editedTarget = if (isEdited) {
+            val ext = if (current.extension.equals("png", true)) "png" else "jpg"
+            File(pagesDir(context), "${newPageId}_edited_${System.currentTimeMillis()}_${java.util.UUID.randomUUID().toString().take(8)}.$ext")
+        } else null
+
+        // Never overwrite another page's files. If a copy fails, clean up only files
+        // created by this attempt; no page record is returned until both copies exist.
+        var ownsPristine = false
+        var ownsEdited = false
+        var completed = false
+        return try {
+            ownsPristine = pristineTarget.createNewFile()
+            if (!ownsPristine) return null
+            if (editedTarget != null) {
+                ownsEdited = editedTarget.createNewFile()
+                if (!ownsEdited) return null
+            }
             pristine.copyTo(pristineTarget, overwrite = true)
             pristineTarget.setLastModified(nextStamp())
-        }.mapCatching {
-            // Round 70.3 corrective fix (Arena H004 follow-up):
-            // Check if the source page is edited. If so, copy the current referenced
-            // pixels (which in Round 70.3 uses a versioned path `<pageId>_edited_<ts>_<uuid>.<ext>`),
-            // falling back to legacy fixed names (`_edited.jpg` / `_edited.png`) if present.
-            // If the baked file is absent (a page never edited), the new page starts
-            // from its pristine capture with originalImageUri = null.
-            val isEdited = (source.originalImageUri != null && source.imageUri != source.originalImageUri) ||
-                source.imageUri.contains("_edited")
-            val edited = if (isEdited) {
-                resolveFile(context, source.imageUri)
-                    ?: listOf(editedFile(context, source.id), editedLosslessFile(context, source.id)).firstOrNull { it.isFile }
-            } else {
-                null
+            if (editedTarget != null) {
+                current.copyTo(editedTarget, overwrite = true)
+                editedTarget.setLastModified(nextStamp())
             }
-            var newUri = pristineTarget.absolutePath
-            var newOriginalUri: String? = null
-            var revision = 0
-            if (edited != null && edited.isFile) {
-                val ext = if (edited.extension.equals("png", true)) "png" else "jpg"
-                val target = File(
-                    pagesDir(context),
-                    "${newPageId}_edited_${System.currentTimeMillis()}_${java.util.UUID.randomUUID().toString().take(8)}.$ext"
-                )
-                edited.copyTo(target, overwrite = true)
-                target.setLastModified(nextStamp())
-                newUri = target.absolutePath
-                newOriginalUri = pristineTarget.absolutePath
-                revision = source.revision
-            }
-            // A fresh cover for the fresh page: the source's thumbnail key belongs to
-            // the source file's size and mtime, so it cannot be reused.
-            //
-            // Read it from [newUri], *not* from the pristine copy. When the page has an
-            // edited bake, `newUri` is that bake — and a cover drawn from the pristine
-            // file would show the unfiltered capture while the page's own record still
-            // said `filterType = MAGIC_COLOR`, i.e. a copied page whose filter looked
-            // like it had been stripped. The thumbnail has to be rebuilt from the same
-            // pixels the page will show.
+            val newUri = (editedTarget ?: pristineTarget).absolutePath
             loadBitmap(context, newUri, ThumbnailStore.LONG_EDGE)?.let { bitmap ->
                 ThumbnailStore.writeFor(context, newUri, bitmap)
             }
-            source.copy(
+            val copy = source.copy(
                 id = newPageId,
                 imageUri = newUri,
-                originalImageUri = newOriginalUri,
-                revision = revision
+                originalImageUri = if (editedTarget != null) pristineTarget.absolutePath else null,
+                revision = if (editedTarget != null) source.revision else 0
             )
-        }.getOrNull()
+            completed = true
+            copy
+        } catch (error: Exception) {
+            null
+        } finally {
+            if (!completed) {
+                if (ownsPristine) pristineTarget.delete()
+                if (ownsEdited) editedTarget?.delete()
+            }
+        }
     }
 
     // ---------------------------------------------------------------- saving
@@ -315,7 +306,9 @@ object ImageStore {
         // Store thumbnail under the new file's key immediately
         ThumbnailStore.writeFor(context, target.absolutePath, bitmap)
         target.absolutePath
-    } catch (_: Throwable) {
+    } catch (error: OutOfMemoryError) {
+        throw error
+    } catch (_: Exception) {
         null
     }
 

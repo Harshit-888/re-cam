@@ -7,6 +7,7 @@ import com.google.android.gms.tasks.Task
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -68,7 +69,7 @@ internal object OcrEngine {
      *
      * Round 70.3 (Arena H004 follow-up): distinguishes [OcrResult.Success] from
      * [OcrResult.NoText] (page decoded and recognised, but blank) and [OcrResult.Failure]
-     * (image could not be decoded or recognition threw). Never throws.
+     * (image could not be decoded or recognition threw). Cancellation propagates.
      */
     suspend fun readPageResult(imagePath: String): OcrResult = withContext(Dispatchers.Default) {
         val bitmap = decode(imagePath) ?: return@withContext OcrResult.Failure("DecodeFailed")
@@ -80,6 +81,8 @@ internal object OcrEngine {
             } else {
                 OcrResult.NoText
             }
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Throwable) {
             Log.i(TAG, "OCR failure for ${imagePath.substringAfterLast('/')}: ${error.javaClass.simpleName}")
             OcrResult.Failure(error.javaClass.simpleName)

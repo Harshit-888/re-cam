@@ -15,9 +15,13 @@ android {
         targetSdk = 36
         versionCode = 10
         versionName = "1.9"
+        buildConfigField("boolean", "STARTUP_TRACE_ENABLED", "false")
     }
 
     buildTypes {
+        getByName("debug") {
+            buildConfigField("boolean", "STARTUP_TRACE_ENABLED", "true")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -44,6 +48,7 @@ android {
             // type, not the container.
             initWith(android.buildTypes.getByName("release"))
             isDebuggable = false
+            buildConfigField("boolean", "STARTUP_TRACE_ENABLED", "true")
             matchingFallbacks += listOf("release")
             // `findByName`, not `getByName`: this must never be able to break
             // `assembleDebug` on a machine without a debug keystore configured yet.
@@ -57,7 +62,7 @@ android {
     buildFeatures {
       compose = true
       aidl = false
-      buildConfig = false
+      buildConfig = true
       shaders = false
     }
 

@@ -442,10 +442,11 @@ fun DocumentDetailScreen(
             selectedPageIds = emptySet()
             Toast.makeText(
                 context,
-                if (copies.isEmpty()) {
-                    "Could not copy those pages"
-                } else {
-                    if (copies.size == 1) "Page copied" else "${copies.size} pages copied"
+                when {
+                    copies.isEmpty() -> "Could not copy those pages"
+                    copies.size < ids.size -> "Copied ${copies.size} of ${ids.size} pages. Some pages could not be copied."
+                    copies.size == 1 -> "Page copied"
+                    else -> "${copies.size} pages copied"
                 },
                 Toast.LENGTH_SHORT
             ).show()

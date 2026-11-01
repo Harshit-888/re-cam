@@ -225,44 +225,13 @@ data class ScannedPage(
     val revision: Int = 0
 )
 
-/**
- * Snapshot token representing the exact state of a [ScannedPage] when a bake or edit was started.
- *
- * Round 70.3 corrective fix (Arena H004 follow-up): prevents stale bakes or concurrent metadata
- * edits from silently overwriting newer page state across single-page and batch callers.
- */
+/** Snapshot of the entire page which a bake will replace on publication. */
 @Immutable
-data class PageToken(
-    val pageId: String,
-    val revision: Int,
-    val imageUri: String,
-    val rotationDegrees: Float = 0f,
-    val corners: QuadCorners = QuadCorners(),
-    val markup: List<MarkupStroke> = emptyList(),
-    val signatureOverlayUri: String? = null
-) {
-    /** Checks whether [current] matches this snapshot token. */
-    fun matches(current: ScannedPage): Boolean {
-        if (current.id != pageId) return false
-        if (current.revision != revision) return false
-        if (current.imageUri != imageUri) return false
-        if (current.rotationDegrees != rotationDegrees) return false
-        if (current.corners != corners) return false
-        if (current.markup != markup) return false
-        if (current.signatureOverlayUri != signatureOverlayUri) return false
-        return true
-    }
+data class PageToken private constructor(private val snapshot: ScannedPage) {
+    fun matches(current: ScannedPage): Boolean = snapshot == current
 
     companion object {
-        fun of(page: ScannedPage) = PageToken(
-            pageId = page.id,
-            revision = page.revision,
-            imageUri = page.imageUri,
-            rotationDegrees = page.rotationDegrees,
-            corners = page.corners,
-            markup = page.markup,
-            signatureOverlayUri = page.signatureOverlayUri
-        )
+        fun of(page: ScannedPage): PageToken = PageToken(page)
     }
 }
 

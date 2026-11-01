@@ -326,25 +326,16 @@ class ScannerRepository(
         expectedToken: PageToken? = null,
         update: (ScannedPage) -> ScannedPage
     ): Boolean {
-        var published = false
-        _documents.update { docs ->
-            docs.map { doc ->
+        return atomicStateUpdate(_documents) { docs ->
+            var published = false
+            val updated = docs.map { doc ->
                 if (doc.id != docId) return@map doc
                 var changed = false
                 val pages = doc.pages.map { page ->
-                    if (page.id != pageId) {
-                        page
-                    } else if (expectedRevision != null && page.revision != expectedRevision) {
-                        android.util.Log.i(
-                            "DocScannerPerf",
-                            "[publish] Discarding stale bake for page $pageId: current rev ${page.revision} != expected $expectedRevision"
-                        )
-                        page
-                    } else if (expectedToken != null && !expectedToken.matches(page)) {
-                        android.util.Log.i(
-                            "DocScannerPerf",
-                            "[publish] Discarding stale bake for page $pageId: current state does not match expected token"
-                        )
+                    if (page.id != pageId ||
+                        (expectedRevision != null && page.revision != expectedRevision) ||
+                        (expectedToken != null && !expectedToken.matches(page))
+                    ) {
                         page
                     } else {
                         val next = update(page)
@@ -353,14 +344,10 @@ class ScannerRepository(
                         next
                     }
                 }
-                if (changed) {
-                    doc.copy(pages = pages, modifiedDate = System.currentTimeMillis())
-                } else {
-                    doc
-                }
+                if (changed) doc.copy(pages = pages, modifiedDate = System.currentTimeMillis()) else doc
             }
+            updated to published
         }
-        return published
     }
 
     /**
@@ -390,32 +377,32 @@ class ScannerRepository(
         expectedTokens: Map<String, PageToken> = emptyMap()
     ): BatchUpdateResult {
         if (replacements.isEmpty()) return BatchUpdateResult(emptySet(), emptySet())
-        val published = mutableSetOf<String>()
-        val rejected = mutableSetOf<String>()
-        rewritePages(docId) { page ->
-            val replacement = replacements[page.id] ?: return@rewritePages page
-            val expRev = expectedRevisions[page.id]
-            val expToken = expectedTokens[page.id]
-            val isStale = (expRev != null && page.revision != expRev) ||
-                (expToken != null && !expToken.matches(page))
-            if (isStale) {
-                android.util.Log.i(
-                    "DocScannerPerf",
-                    "[publish] Discarding stale bake for page ${page.id}: current rev ${page.revision}, matchesToken=${expToken?.matches(page)}"
-                )
-                rejected.add(page.id)
-                page
-            } else {
-                published.add(page.id)
-                replacement
+        return atomicStateUpdate(_documents) { docs ->
+            val published = mutableSetOf<String>()
+            val rejected = mutableSetOf<String>()
+            val updated = docs.map { doc ->
+                if (doc.id != docId) return@map doc
+                var changed = false
+                val pages = doc.pages.map pageMap@ { page ->
+                    val replacement = replacements[page.id] ?: return@pageMap page
+                    val expRev = expectedRevisions[page.id]
+                    val expToken = expectedTokens[page.id]
+                    if ((expRev != null && page.revision != expRev) ||
+                        (expToken != null && !expToken.matches(page))
+                    ) {
+                        rejected.add(page.id)
+                        page
+                    } else {
+                        published.add(page.id)
+                        if (replacement != page) changed = true
+                        replacement
+                    }
+                }
+                if (changed) doc.copy(pages = pages, modifiedDate = System.currentTimeMillis()) else doc
             }
+            rejected.addAll(replacements.keys - published - rejected)
+            updated to BatchUpdateResult(published, rejected)
         }
-        replacements.keys.forEach { id ->
-            if (!published.contains(id) && !rejected.contains(id)) {
-                rejected.add(id)
-            }
-        }
-        return BatchUpdateResult(published, rejected)
     }
 
     /** Applies [transform] to every page of one document, in one emission. */

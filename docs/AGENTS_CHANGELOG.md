@@ -6,6 +6,18 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-11-01 — Arena.ai — initial Round 70.3 safety fixes
+
+Based on main `3c1e01c`: complete-snapshot `PageToken` replaces the prior public
+field constructor with private snapshot construction through `PageToken.of` (all
+in-repository callers use `of`). Publication results derive from the committed CAS
+attempt. Page copy refuses missing referenced files, cleans up failed copies and
+reports partial failure. Benchmark audit manifest declaration is moved from main to
+benchmark; `StartupWork.trace` is enabled in debug/benchmark only, its idle duration
+is corrected, and `BuildConfig` generation is enabled. Save-stage OOM and OCR
+cancellation propagate. Focused tests added; Arena has not built or run them.
+No Rust/ABI/filter modifications. Full device and §15/§11 checks remain in H004.
+
 ## 2026-11-01 — Arena.ai — Round 70.3 corrective re-review
 
 Statically reviewed `79212b4..3c1e01ce796a86402a848bbd8b92feee2c6f78a7` against
