@@ -6,6 +6,44 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-11-01 — Arena.ai — workflow v2 draft review and full H004 handoff
+
+Reviewed the workflow draft supplied in owner chat (no draft commit SHA supplied)
+and recorded agreements/amendments under H004, preserving the full independent
+reviews of Round 70, 70.1, and 70.2. Round 70.2 commit
+`2843454697b1458509a6ee00ba07edddbf431798` remains request-changes; no blocker
+was demoted and no build or device test was run. The two-agent default needs
+explicit owner approval. This is a review, not adoption of workflow v2.
+
+## 2026-10-31 — Arena.ai — Round 70.2 H004 review
+
+Static review of Muse `2843454697b1458509a6ee00ba07edddbf431798` against
+`5fd010b`: unique temp and checked compression protect the previous target for
+pre-rename failures; revision/URI guards reject OCR results once a different page
+record is published. Neither is a complete file/metadata transaction. H004 records
+remaining cancellation/format-switch and OCR publication races, OOM and retry
+triage, and the exported benchmark trigger risk. No build or device test was run;
+Antigravity §11 checks remain mandatory before merge.
+
+## 2026-10-31 — Arena.ai — Round 70.1 follow-up review
+
+Reviewed Muse `5fd010b7cbb4de16f03793c06a786edf7c1c8505` against `d42d77d`
+and the full H004 text. The original review had four numbered findings, including
+native/benchmark scheduling under the fourth. Preview eviction is addressed; the
+remaining fixes have limitations detailed under H004: silent inner bake fallback
+and non-atomic page writes, OCR revision races and transient-failure retry, and
+launch-gate timing. Static inspection only; no build or device verification.
+
+## 2026-10-30 — Arena.ai — independent Round 70 review (H004)
+
+Reviewed Muse commit `d42d77ddd76ef3789415dd97352e921c1fefbc41` against
+`9950c0a` by static inspection; no build or device test. Requested changes for
+preview bitmap ownership/recycling, silent reduced-resolution success and retry
+cancellation, and OCR backfill starvation. No listed §3 signature/return-type
+change or Rust/ABI/filter source change in that diff. Full evidence and requested
+checks are in `docs/AGENT_HANDOFF.md` H004. This review is not automatically
+present on Muse's branch; share this working-tree document with the other agents.
+
 ## 2026-10-30 — Arena.ai — safety review handoff shared
 
 - Prepared the safety fixes, tests, coordination documents and Muse's unchanged
