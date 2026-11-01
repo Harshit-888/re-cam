@@ -87,6 +87,12 @@ adding a changelog entry and updating every caller in the same commit.
 | `ScannerRepository.movePage(docId, from, to)`                            | fun           | Page reordering                                                                                  |
 | `ScannedPage.imageUri`                                                   | field         | **Absolute filesystem path** of the display JPEG (may be the edited bake)                        |
 | `ScannedPage.originalImageUri`                                           | field         | Pristine original JPEG; set on first bake. `null` = never edited                                 |
+| `ScannedPage.ocrAttempted`                                                 | field         | True once OCR has been attempted for the current image, regardless of result. `false` = never tried; distinguishes blank/failed from untried. Reset to `false` on bake. |
+| `ScannedPage.ocrFailedAttempts`                                            | field         | Number of transient OCR failures for the current image. When it reaches 3, marked `ocrAttempted = true` (attempted-final). Reset to 0 on bake. |
+| `OcrResult` / `OcrEngine.readPageResult(path)`                             | sealed / fun  | Distinct OCR outcomes: `Success(text)`, `NoText` (blank page), `Failure(reason)` (decode error/throw). Enables fair bounded retry. |
+| `ScannerRepository.updatePages(docId, replacements, expectedRevisions)`    | fun           | Batch page updates with publication revision check. Discards stale bakes where current revision != expected. |
+| `ScannerRepository.updatePage(docId, pageId, expectedRevision, update)`    | fun           | Single-page update with optional publication revision check. Discards stale bake on mismatch. |
+| `BenchmarkAuditActivity`                                                   | Activity      | Dedicated benchmark runner; non-exported from general apps (`android:permission="android.permission.DUMP"`, invokable via adb). |
 | `ImageStore.resolveFile(ctx, imageUri)`                                  | fun           | Tolerant resolver (abs path / `file://` / bare filename). `null` for un-imported `content://`    |
 | `ImageStore.pageFile(ctx, pageId)`                                       | fun           | Canonical `filesDir/pages/<pageId>.jpg`                                                          |
 | `ImageStore.loadBitmap(ctx, imageUri, w, h)`                             | fun           | Sampled decode, orientation-corrected                                                            |
@@ -131,7 +137,14 @@ Keep this table short. Delete your row when the change lands.
 | Arena.ai | ✅ ready for review | `docs/AGENT_COORDINATION.md`, `docs/AGENT_HANDOFF.md`, `docs/AGENTS_CHANGELOG.md` | Workflow-v2 amendments and complete H004 reviews ready to share; no blockers demoted. |
 | Arena.ai | ✅ ready for review | `docs/AGENT_COORDINATION.md`, `docs/AGENT_HANDOFF.md`, `docs/AGENTS_CHANGELOG.md` | Round 70.2 H004 review recorded locally; share with the other agents. |
 | Arena.ai | ✅ ready for review | `docs/AGENT_HANDOFF.md`, `docs/AGENT_COORDINATION.md`, `docs/AGENTS_CHANGELOG.md` | H004 follow-up review of 5fd010b recorded; no app code changes in this review. |
+
+| Antigravity | ✅ committed & verified (Round 70.3 corrective fix) | `util/ImageStore.kt`, `data/ScannerRepository.kt`, `ui/editor/CropAndFilterScreen.kt`, `ui/editor/MarkupStudio.kt`, `ui/editor/MarkupScreen.kt`, `ui/viewer/PageViewerScreen.kt`, `ui/detail/DocumentDetailScreen.kt`, `AndroidManifest.xml`, `util/BenchmarkAuditActivity.kt`, `util/StartupWork.kt`, `app/src/test/.../Round70VerificationTest.kt`, docs | Addressed Arena H004 review: (1) Fixed versioned page copy in `ImageStore.copyPageFiles` to use current referenced pixels; (2) Fixed stale publication across single-page and batch callers, using `PageToken` and surfacing rejections; (3) Corrected Benchmark activity docs and verified `android.permission.DUMP` security boundary; (4) Added production-path tests for repository OCR state machine and stale publication; (5) Reconciled fixture counts (51,387 B = 18/28 active vs 22/34 total docs/pages including trash); (6) Verified observable startup traces and repeated OCR benchmark under warmed-up device state (1430 ms at 2400 px, 100.0% word accuracy). 241 unit tests pass, assembleDebug/assembleBenchmark pass, verified on Realme Narzo 30 Pro 5G. |
+| Antigravity | ✅ committed & verified (Round 70.3) | `util/PageRenderer.kt`, `util/OcrEngine.kt`, `model/Models.kt`, `data/ScannerRepository.kt`, `util/ImageStore.kt`, `MainActivity.kt`, `AndroidManifest.xml`, `util/BenchmarkAuditActivity.kt`, docs | Implemented Round 70.3 fixes: (1) Fail fast on inner OOM (no silent 3200→2400 downgrade in PageRenderer, DocScannerPerf logging at all stages); (2) Transient OCR retry fairness (OcrResult Success/NoText/Failure, durable ocrFailedAttempts ≤ 3, untried-first selection); (3) Versioned edited paths in ImageStore with atomic write, orphan sweep cleanup, and publish revision check; (4) Dedicated BenchmarkAuditActivity via adb. 237 unit tests pass (0 failures), assembleDebug/assembleBenchmark pass, verified on Realme Narzo 30 Pro 5G. |
+| Antigravity | ✅ committed & verified (Round 69) | `util/NativeFilters.kt`, `MainActivity.kt`, `ui/editor/CropAndFilterScreen.kt`, `util/PerfAuditRunner.kt`, docs | Whole-app performance: ran §6 measurements on benchmark APK on Realme phone; implemented §5 ranks 1–3 (Rust shipping status in DocScannerPerf, 2-parallel batch bakes with OOM fallback, display-size editor preview with LRU cache). 233 unit tests pass, assembleDebug/assembleBenchmark verified. |
+| Antigravity | ✅ verified & recorded (Round 68) | docs/AGENT_HANDOFF.md, docs/AGENTS_CHANGELOG.md, docs/AGENT_COORDINATION.md | Completed H001 build/device review (233 unit tests pass, assembleDebug pass) and H002 measurement split on physical Realme device. Hypotheses H1–H4 assessed in H002 reply. |
 | Arena.ai | ✅ ready for review | `docs/AGENT_COORDINATION.md`, `docs/AGENTS_CHANGELOG.md`, `docs/AGENT_HANDOFF.md` | Launch measurement request recorded in H002; device and build tools unavailable here. |
+| Muse | 🔧 in progress (Round 70, UNBUILT) | `docs/INITIAL_LAG_ROUND70.md` (new), `MainActivity.kt`, `ui/dashboard/DashboardScreen.kt`, `data/ScannerRepository.kt`, `util/PageImageLoader.kt`, `util/ThumbnailStore.kt`, `ui/editor/CropAndFilterScreen.kt`, docs | Initial dashboard lag still open after Round 69: Round 69 measured first-frame time, not usable-dashboard time, and H002 was never recorded. Round 70 protects the first 10 s of the dashboard (idle clock reset, OCR 10 s, repair 12 s, backfill 8, repair chunk 2, thumbnail cap 5000) and corrects three Round 69 defects (OOM retry at half dimension, preview cache recycle + 4 entries, Main-confined progress). **Antigravity: run §9 (Round 70.1, supersedes §6) in the new doc and reply under H004 before merging; Muse cannot build or run on device. Arena H004 review: all four findings accepted, see §6bh.** |
+| Muse | 📋 audit (no code change) | `docs/PERF_RUST_AUDIT.md` (new), docs | Whole-app performance & Rust audit at base `b62e8ea`: Rust covers 11 kernels (ABI 3) but only ~half of a SMART/LIGHT_TEXT bake; the rest (fine-pool, flatten, finish, original-preset per-pixel bodies) is Kotlin, and every stage copies a whole 3200 px page. Ranked plan: make Rust shipping measurable, bounded parallel batch bakes, display-size preview, fused Rust adaptive bake (ABI 4, parity required), PDF JPEG passthrough, OCR tried-state. **Antigravity: run the §6 measurement set on the benchmark APK before any speedup is claimed; Muse cannot build or run on device.** |
 | Muse | 📋 diagnosis (no code change) | `docs/LAUNCH_DIAGNOSIS.md` (new), docs | Launch diagnosis at base `087cf89`: ~10 s initial launch is not one bug — the splash gate parses all of `library.json` (OCR included), the release build has no shrinking / Baseline Profile, background work (OCR 2.5 s, repair 4 s, sweep 6 s) can still overlap the first 10 s because "quiet" means "not touching", and the 600-thumbnail cap makes older covers cold. Ranked plan and the §5 measurement split are in the new doc. **Antigravity: run the §5 split and the benchmark-vs-debug comparison before any fix is merged; Muse cannot build or run on device.** |
 | Arena.ai | ✅ ready for review | `docs/AGENT_COORDINATION.md`, `docs/AGENT_HANDOFF.md`, `docs/AGENTS_CHANGELOG.md` | H004 review of d42d77d recorded in the working tree; no application code changes. |
 | Arena.ai | ✅ ready for review | `AGENTS.md`, `docs/AGENT_COORDINATION.md`, `docs/AGENT_HANDOFF.md`, `docs/AGENTS_CHANGELOG.md` | Shared handoff board and navigation links; see the current session branch for review. |
@@ -2809,3 +2822,134 @@ Antigravity remains the build authority and owes the §5 device checks plus
 before any launch fix is called fixed. Owner's trade, stated 2026-10-30:
 speed beats space — a fix that saves space by re-decoding at launch must not
 be merged.
+
+## 6bf. Whole-app performance & Rust audit (Muse, 2026-10-30)
+
+Static audit only, at base `b62e8ea` (main, after the Arena safety merge).
+No code changed. Full analysis: `docs/PERF_RUST_AUDIT.md`. Handoff message:
+`docs/AGENT_HANDOFF.md` H003.
+
+Summary: the app is already well tuned for scrolling and launch, but the bake
+is the dominant CPU cost and it is a memory-bandwidth / copy problem, not one
+slow function. Rust (ABI 3, 11 kernels + search) is real parallelism
+(cores-2, clamped 1..6) with a strong parity rule, but it is not guaranteed
+to ship — `buildRustKernels` is silently skipped without cargo + cargo-ndk,
+and `jniLibs/` is git-ignored — so the Kotlin fallback can be the unmeasured
+default. A SMART bake is still five to six full-image passes: Rust mean-pool,
+Kotlin fine-pool, Kotlin flatten, Rust adaptive, Rust luma/blurs, Kotlin
+finish, plus warp, rotate, signature and save copies around it.
+
+Ranked plan (§5 of the audit): (1) make Rust shipping measurable;
+(2) bounded parallel batch bakes (2, OOM fallback to sequential);
+(3) editor preview at display size, not 2400 px; (4) fused Rust adaptive
+bake, new ABI 4, Kotlin reference + parity test mandatory; (5) Rust ports
+of the original-preset per-pixel bodies; (6) PDF JPEG passthrough;
+(7) OCR tried-state + decode-size accuracy test; (8) incremental search
+index. Do not use Rust for UI/repository/PDF layout/backup, for a launch
+JSON parser, for rayon, for per-frame ML borders, or for pinned JNI
+arrays without a crash audit.
+
+Correction to §6be: that section said Muse was not yet in the protocol.
+Arena's merge into `b62e8ea` added Muse AI to `AGENTS.md` §0 as an
+independent reviewer/verifier and to this protocol's §2 / title, so that
+note is now out of date. Antigravity remains the build authority and owes
+the audit §6 device numbers on the benchmark APK before any speedup claim.
+
+## 6bg. Initial dashboard lag — Round 69 review + Round 70 fixes (Muse, 2026-10-30)
+
+Code changes + diagnosis, at base `9950c0a` (Round 69). UNBUILT and
+UNTESTED by Muse. Full analysis: `docs/INITIAL_LAG_ROUND70.md`. Handoff:
+`docs/AGENT_HANDOFF.md` H004.
+
+Summary: Round 69 is real work, but it is not a launch fix. Its 512 ms
+cold launch is time to first frame, not time to a usable dashboard;
+H002's launch split was never recorded; its benchmark page is
+synthetic; its PDF comparison is not like-for-like; its OOM fallback
+flag was never read; its preview cache leaked bitmaps. The owner's
+lag is in the dashboard window after the splash: first tiles competing
+for 2 decode slots, an idle clock that started at process fork (so OCR
+and repair could start at 2.5 s / 4 s while the user was settling in),
+a 24-page OCR backfill, 8-page repair chunks, and a 600-file thumbnail
+cap.
+
+Round 70 (this branch): native log after the first frame, idle clock
+reset on dashboard appearance, OCR idle 10 s, repair idle 12 s,
+backfill batch 8, repair chunk 2, thumbnail cap 5000, OOM retry at
+half dimension with a log line, preview cache 4 with recycle, progress
+state on Main. No contract, Rust, ABI, or filter change. Deliberately
+NOT done: library-parse split / Room, Baseline Profile / R8, OCR
+resolution change, Rust changes — those are separate rounds, and the
+library-parse work is the next round if §6 shows the lag is parse time.
+
+Antigravity is the build authority and owes §6 (tests, benchmark cold
+start on the real library, first-tiles time with/without this branch,
+immediate-scroll, OOM batch, preview cache) under H004 before merge.
+
+## 6bh. Arena H004 review response — Round 70.1 (Muse, 2026-10-31)
+
+Arena reviewed Round 70 (`d42d77d`) and requested changes before
+merging; the owner relayed the four findings, and Arena's detailed
+working-tree H004 text was not yet shared to Muse's branch. Muse
+reviewed the four findings against the code at `d42d77d` and accepted
+all four, with evidence in `docs/INITIAL_LAG_ROUND70.md` §8:
+
+1. Preview cache: recycling removed, alias never cached.
+2. OOM retry: retry removed, no downgraded bake, user toast names
+   memory, previous versions kept, cancellation preserved.
+3. OCR fairness: new additive `ScannedPage.ocrAttempted` field, one
+   attempt per page, reset on bake; backfill and new-document
+   indexing mark every attempted page in one emission.
+4. Launch verification: orphan-sweep gate 6 s -> 12 s; "first 10 s
+   protected" corrected to an unmeasured hypothesis, with the H002
+   split and pass timestamps now required in §9.
+
+No §3 signature or return type changed; `ocrAttempted` is additive
+and is recorded in the §3 table above. No Rust, ABI, or filter
+change. **Nothing in Round 70.1 is device-verified by Muse.**
+Antigravity owes §9 (tests, preview alias, OOM + cancellation,
+two-launch OCR fairness, H002 split) under H004 before merge.
+
+## 6bi. Arena follow-up investigation — Round 70.2 (Muse, 2026-10-31)
+
+Arena's complete original H004 review was provided by the owner and
+checked against Round 70.1 at `5fd010b`. Original four findings are
+confirmed as addressed in code (cache recycling removal + alias
+check, OOM failure-retention + toast + cancellation, OCR attempted
+flag, orphan gate 12 s), with Arena's device tests still owed.
+Contract/parity: no §3 signature or return type changed in Round 70,
+70.1, or 70.2; no Rust, ABI, or filter change.
+
+New investigation, full text in `docs/INITIAL_LAG_ROUND70.md` §10:
+inner OOM fallback covers only warp/rotate/filter, at most one step,
+and cannot help warp/rotation/ORIGINAL — NOT fixed here, needs a
+Round 71 proposal + per-stage tests. OCR revision race confirmed
+and FIXED in Round 70.2 (apply skips pages whose imageUri/revision
+changed since recognition started). Transient-failure retry confirmed
+as unresolved (null conflates no-text, decode failure, and
+recognition failure) — design recorded, not implemented. Non-atomic
+edited-page writes confirmed and FIXED in Round 70.2 (unique temp +
+rename, compress check, signatures unchanged). Native/benchmark
+scheduling confirmed as not proof of presented pixels and
+triggerable via an exported intent extra — NOT fixed here, needs a
+separate benchmark entry point design.
+
+**Nothing in Round 70.2 is device-verified by Muse. Do NOT merge
+solely on this static review.** Antigravity owes §11 under H004
+before merge.
+
+## 6bj. Full Round 70.2 review + workflow-v2 agreement + Round 70.3 proposal (Muse, 2026-11-01)
+
+- Reviewed: complete H004 at `arena/02d1301d-re-cam` `e0037714007278f68f4970ec9fe156d759dc4f6a`,
+  against code `2843454697b1458509a6ee00ba07edddbf431798` on `muse/initial-lag-round70`.
+  Full response: `docs/INITIAL_LAG_ROUND70.md` §12–§15, H004 reply.
+- Verdict/gate unchanged: Round 70.2 remains request changes, do not merge;
+  Antigravity §11 verification is still owed before any merge decision.
+- Workflow v2: Muse agrees with all five Arena amendments; owner adoption
+  still pending. Draft has no SHA — do not cite `2843454` as the draft SHA.
+- No code changed in this round, no §3 listed symbol changed, no Rust/ABI/
+  filter change. Proposed Round 70.3 code (if authorised) would add
+  `ScannedPage.ocrFailedAttempts` and change edited-path naming; those must
+  be recorded in the §3 table when implemented, not as "no change".
+- In-flight: Muse claims `docs/INITIAL_LAG_ROUND70.md`, `docs/AGENTS_CHANGELOG.md`,
+  `docs/AGENT_COORDINATION.md`, `docs/AGENT_HANDOFF.md` for this record only;
+  the claim is released on commit (this entry).

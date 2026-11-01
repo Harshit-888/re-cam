@@ -38,8 +38,13 @@ object PageRenderer {
         maxDimension: Int = DocumentFilters.MAX_PROCESS_DIMENSION
     ): ScannedPage? {
         val pristinePath = page.originalImageUri ?: page.imageUri
-        val source = ImageStore.loadBitmap(context, pristinePath, ImageStore.MAX_CAPTURE_DIMENSION)
-            ?: return null
+        val source = try {
+            ImageStore.loadBitmap(context, pristinePath, ImageStore.MAX_CAPTURE_DIMENSION)
+                ?: return null
+        } catch (error: OutOfMemoryError) {
+            android.util.Log.w("DocScannerPerf", "[bake] OutOfMemoryError in decode stage for page ${page.id}: ${error.message}")
+            throw error
+        }
 
         var result: Bitmap = source
         try {
@@ -47,12 +52,22 @@ object PageRenderer {
 
             val signaturePath = page.signatureOverlayUri
             if (!signaturePath.isNullOrBlank()) {
-                val signature = ImageStore.loadBitmap(context, signaturePath, SIGNATURE_MAX_DIMENSION)
+                val signature = try {
+                    ImageStore.loadBitmap(context, signaturePath, SIGNATURE_MAX_DIMENSION)
+                } catch (error: OutOfMemoryError) {
+                    android.util.Log.w("DocScannerPerf", "[bake] OutOfMemoryError in signature-decode stage for page ${page.id}: ${error.message}")
+                    throw error
+                }
                 if (signature == null) {
                     throw IllegalStateException("Signature image is unavailable")
                 }
                 try {
-                    val composited = ImageProcessingUtils.drawSignatureOverlay(result, signature)
+                    val composited = try {
+                        ImageProcessingUtils.drawSignatureOverlay(result, signature)
+                    } catch (error: OutOfMemoryError) {
+                        android.util.Log.w("DocScannerPerf", "[bake] OutOfMemoryError in signature-composite stage for page ${page.id}: ${error.message}")
+                        throw error
+                    }
                     if (result !== source) result.recycle()
                     result = composited
                 } finally {
@@ -72,7 +87,12 @@ object PageRenderer {
                     // `applyEnhancements` may hand back a bitmap it considers
                     // immutable (or one shared with `source`); the caller's `finally`
                     // still recycles whatever `result` ends up being.
-                    val mutable = result.copy(Bitmap.Config.ARGB_8888, true)
+                    val mutable = try {
+                        result.copy(Bitmap.Config.ARGB_8888, true)
+                    } catch (error: OutOfMemoryError) {
+                        android.util.Log.w("DocScannerPerf", "[bake] OutOfMemoryError in markup-copy stage for page ${page.id}: ${error.message}")
+                        throw error
+                    }
                     if (mutable != null) {
                         if (result !== source) result.recycle()
                         mutable
@@ -83,21 +103,29 @@ object PageRenderer {
                 MarkupRenderer.draw(result, page.markup)
             }
 
-            val savedPath = ImageStore.saveEditedPage(
-                context = context,
-                pageId = page.id,
-                bitmap = result,
-                quality = jpegQuality,
-                lossless = savesLosslessly(page.filterType)
-            ) ?: return null
+            val savedPath = try {
+                ImageStore.saveEditedPage(
+                    context = context,
+                    pageId = page.id,
+                    bitmap = result,
+                    quality = jpegQuality,
+                    lossless = savesLosslessly(page.filterType)
+                ) ?: return null
+            } catch (error: OutOfMemoryError) {
+                android.util.Log.w("DocScannerPerf", "[bake] OutOfMemoryError in output/save stage for page ${page.id}: ${error.message}")
+                throw error
+            }
             // `revision` is what tells every viewer, tile and cache that the file
             // behind this same path has changed. Without it a re-bake rewrites
-            // `_edited.jpg` in place and the screen keeps showing the old bitmap —
-            // rotate did nothing visible, and the fix was invisible too.
+            // in place and the screen keeps showing the old bitmap.
             return page.copy(
                 imageUri = savedPath,
                 originalImageUri = pristinePath,
-                revision = page.revision + 1
+                revision = page.revision + 1,
+                // Round 70.1 / 70.3: the pixels just changed, so previous verdicts
+                // belong to the old image. Reset both attempted and failed attempts.
+                ocrAttempted = false,
+                ocrFailedAttempts = 0
             )
         } finally {
             if (result !== source) result.recycle()
@@ -106,30 +134,29 @@ object PageRenderer {
     }
 
     /**
-     * Applies the page's transform, falling back to a smaller working resolution
-     * only if the full one runs out of memory.
+     * Applies the page's transform at [maxDimension].
      *
-     * 3200 px needs about 95 MB of planes at peak. A device that cannot give it
-     * should still save the page — at 2400 px (~225 DPI on A4) rather than at
-     * 300 DPI — instead of failing the save, which is what an uncaught
-     * `OutOfMemoryError` inside the filter would otherwise do.
+     * Round 70.3 (Arena H004 follow-up): fail fast on inner OOM. The silent 3200->2400
+     * step-down loop is removed because it produced downgraded saves published as ordinary
+     * success, and did not cover decode, warp, rotation, signature, markup, or output.
+     * On OOM, logs to DocScannerPerf and throws so the caller keeps previous good output.
      */
     private fun renderEnhanced(source: Bitmap, page: ScannedPage, maxDimension: Int): Bitmap {
-        var dimension = maxDimension
-        while (true) {
-            try {
-                return ImageProcessingUtils.applyEnhancements(
-                    src = source,
-                    filterType = page.filterType,
-                    rotationDegrees = page.rotationDegrees,
-                    corners = page.corners,
-                    maxDimension = dimension,
-                    failOnFilterError = true
-                )
-            } catch (error: OutOfMemoryError) {
-                if (dimension <= FALLBACK_MIN_DIMENSION) throw error
-                dimension = maxOf(FALLBACK_MIN_DIMENSION, (dimension * 3) / 4)
-            }
+        try {
+            return ImageProcessingUtils.applyEnhancements(
+                src = source,
+                filterType = page.filterType,
+                rotationDegrees = page.rotationDegrees,
+                corners = page.corners,
+                maxDimension = maxDimension,
+                failOnFilterError = true
+            )
+        } catch (error: OutOfMemoryError) {
+            android.util.Log.w(
+                "DocScannerPerf",
+                "[bake] OutOfMemoryError in filter/enhancement stage (filter: ${page.filterType}, maxDim: $maxDimension) for page ${page.id}: ${error.message}"
+            )
+            throw error
         }
     }
 
@@ -177,6 +204,4 @@ object PageRenderer {
 
     private const val SIGNATURE_MAX_DIMENSION = 1200
 
-    /** Lowest working resolution the memory fallback will step down to (~225 DPI on A4). */
-    private const val FALLBACK_MIN_DIMENSION = 2400
 }

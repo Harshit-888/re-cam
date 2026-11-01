@@ -8,6 +8,7 @@ import android.media.ExifInterface
 import android.net.Uri
 import com.example.docscanner.model.ScannedPage
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.util.UUID
@@ -221,7 +222,8 @@ object ImageStore {
         source: ScannedPage,
         newPageId: String
     ): ScannedPage? {
-        val pristine = resolveFile(context, source.originalImageUri ?: source.imageUri)
+        val pristine = (source.originalImageUri?.let { resolveFile(context, it) }
+            ?: resolveFile(context, source.imageUri))
             ?: return null
         val pristineTarget = pageFile(context, newPageId)
         return runCatching {
@@ -229,21 +231,33 @@ object ImageStore {
             pristine.copyTo(pristineTarget, overwrite = true)
             pristineTarget.setLastModified(nextStamp())
         }.mapCatching {
-            // The baked file may be absent (a page never edited) — then there is
-            // nothing to copy and the new page starts from its pristine capture.
-            val edited = listOf(editedFile(context, source.id), editedLosslessFile(context, source.id))
-                .firstOrNull { it.isFile }
+            // Round 70.3 corrective fix (Arena H004 follow-up):
+            // Check if the source page is edited. If so, copy the current referenced
+            // pixels (which in Round 70.3 uses a versioned path `<pageId>_edited_<ts>_<uuid>.<ext>`),
+            // falling back to legacy fixed names (`_edited.jpg` / `_edited.png`) if present.
+            // If the baked file is absent (a page never edited), the new page starts
+            // from its pristine capture with originalImageUri = null.
+            val isEdited = (source.originalImageUri != null && source.imageUri != source.originalImageUri) ||
+                source.imageUri.contains("_edited")
+            val edited = if (isEdited) {
+                resolveFile(context, source.imageUri)
+                    ?: listOf(editedFile(context, source.id), editedLosslessFile(context, source.id)).firstOrNull { it.isFile }
+            } else {
+                null
+            }
             var newUri = pristineTarget.absolutePath
+            var newOriginalUri: String? = null
             var revision = 0
-            if (edited != null) {
-                val target = if (edited.extension.equals("png", true)) {
-                    editedLosslessFile(context, newPageId)
-                } else {
-                    editedFile(context, newPageId)
-                }
+            if (edited != null && edited.isFile) {
+                val ext = if (edited.extension.equals("png", true)) "png" else "jpg"
+                val target = File(
+                    pagesDir(context),
+                    "${newPageId}_edited_${System.currentTimeMillis()}_${java.util.UUID.randomUUID().toString().take(8)}.$ext"
+                )
                 edited.copyTo(target, overwrite = true)
                 target.setLastModified(nextStamp())
                 newUri = target.absolutePath
+                newOriginalUri = pristineTarget.absolutePath
                 revision = source.revision
             }
             // A fresh cover for the fresh page: the source's thumbnail key belongs to
@@ -261,7 +275,7 @@ object ImageStore {
             source.copy(
                 id = newPageId,
                 imageUri = newUri,
-                originalImageUri = pristineTarget.absolutePath,
+                originalImageUri = newOriginalUri,
                 revision = revision
             )
         }.getOrNull()
@@ -275,6 +289,16 @@ object ImageStore {
      *
      * @return absolute path of the baked file, or `null` on failure.
      */
+    /**
+     * Persists the editor's bake to a versioned output path.
+     *
+     * Round 70.3 (Arena H004 follow-up): writes to a new, versioned file per bake
+     * (`<pageId>_edited_<timestamp>_<uuid>.<ext>`) via [writeAtomically] and *never*
+     * overwrites the current target in place or deletes the old format file inside
+     * this function. The previous file remains valid until publication succeeds,
+     * after which the old file becomes an unreferenced orphan and is safely swept
+     * by [sweepOrphans] after the 10-minute grace period.
+     */
     fun saveEditedPage(
         context: Context,
         pageId: String,
@@ -282,17 +306,13 @@ object ImageStore {
         quality: Int = JPEG_QUALITY,
         lossless: Boolean = false
     ): String? = try {
-        // Whichever we write, the other format's stale file must go: a later
-        // rebake with the other filter would otherwise leave two candidates on
-        // disk and `imageUri` decides which one wins. Deleted *after* the new file
-        // is written — if the write throws, the previous page must still exist.
-        val stale = if (lossless) editedFile(context, pageId) else editedLosslessFile(context, pageId)
-        val target = if (lossless) editedLosslessFile(context, pageId) else editedFile(context, pageId)
+        val ext = if (lossless) "png" else "jpg"
+        val target = File(
+            pagesDir(context),
+            "${pageId}_edited_${System.currentTimeMillis()}_${java.util.UUID.randomUUID().toString().take(8)}.$ext"
+        )
         if (lossless) writePng(bitmap, target) else writeJpeg(bitmap, target, quality)
-        runCatching { stale.delete() }
-        // The key includes the page's mtime, so this deliberately runs *after* the
-        // write: the old cover is invalidated by the new mtime and a fresh one is
-        // stored under the new key, with no bookkeeping anywhere else.
+        // Store thumbnail under the new file's key immediately
         ThumbnailStore.writeFor(context, target.absolutePath, bitmap)
         target.absolutePath
     } catch (_: Throwable) {
@@ -305,15 +325,67 @@ object ImageStore {
      * For *Clear B&W* and *Grayscale* this is both more faithful and smaller than a
      * JPEG: binary glyphs are exactly what DEFLATE is good at, and it cannot ring.
      */
-    fun writePng(bitmap: Bitmap, target: File) {
+    /**
+     * Writes [bitmap] to [target] atomically, via a uniquely-named temp
+     * file in the same directory followed by a rename.
+     *
+     * Round 70.2 (Arena H004 follow-up): the old code wrote directly to
+     * [target] with `FileOutputStream(target)`. That is NOT atomic: a
+     * kill, a crash, an OOM, or a failed `compress` mid-write left the
+     * target truncated, and for an edited page that target is the file
+     * the repository already points at — so a failed re-bake corrupted
+     * the previous good output, even though `saveEditedPage` returned
+     * `null` and the caller treated the page as "failed, previous kept".
+     * The previous file was NOT kept; it was already truncated.
+     * This is inconsistent with the codebase's own rule, which
+     * `LibraryStore` and `ThumbnailStore` both follow (temp + rename,
+     * never truncate the live file).
+     *
+     * Two details matter here, not just "use a temp file":
+     *  * The temp name is unique per write (UUID), not a fixed
+     *    `<name>.tmp`. Two concurrent bakes for the same page would
+     *    otherwise interleave in the same temp file and rename a
+     *    mixture — the exact bug `LibraryStore`'s writeLock exists to
+     *    prevent for `library.json`. With unique temps, the last
+     *    rename wins and the file is always one complete bake, never
+     *    a mixture.
+     *  * `compress` returning `false` is treated as failure: the temp
+     *    is deleted and an exception is thrown, instead of renaming a
+     *    partial file into place. The old code ignored that return
+     *    value and reported success for a partial file.
+     */
+    private fun writeAtomically(bitmap: Bitmap, target: File, format: Bitmap.CompressFormat, quality: Int) {
         target.parentFile?.let { if (!it.exists()) it.mkdirs() }
-        FileOutputStream(target).use { out ->
-            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-            out.flush()
+        val temp = File(target.parentFile, target.name + ".tmp." + java.util.UUID.randomUUID())
+        try {
+            FileOutputStream(temp).use { out ->
+                if (!bitmap.compress(format, quality, out)) {
+                    throw java.io.IOException("Bitmap compress failed for ${target.name}")
+                }
+                out.flush()
+                // Round 70.3: best-effort fsync on the temp file descriptor
+                runCatching { out.fd.sync() }
+            }
+            if (!temp.renameTo(target)) {
+                throw java.io.IOException("Could not atomically replace ${target.name}")
+            }
+            // Round 70.3: best-effort directory fsync after rename
+            runCatching {
+                target.parentFile?.let { dir ->
+                    FileInputStream(dir).use { stream -> stream.fd.sync() }
+                }
+            }
+        } catch (error: Throwable) {
+            runCatching { temp.delete() }
+            throw error
         }
         // Bitmap and thumbnail cache keys include the file's mtime; make sure it
         // strictly advances (see [nextStamp]).
         target.setLastModified(nextStamp())
+    }
+
+    fun writePng(bitmap: Bitmap, target: File) {
+        writeAtomically(bitmap, target, Bitmap.CompressFormat.PNG, 100)
     }
 
     /**
@@ -324,14 +396,11 @@ object ImageStore {
      * the new bytes happen to be identical.
      */
     fun writeJpeg(bitmap: Bitmap, target: File, quality: Int = JPEG_QUALITY) {
-        target.parentFile?.let { if (!it.exists()) it.mkdirs() }
-        FileOutputStream(target).use { out ->
-            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
-            out.flush()
-        }
-        // Bitmap and thumbnail cache keys include the file's mtime; make sure it
-        // strictly advances (see [nextStamp]).
-        target.setLastModified(nextStamp())
+        // Same atomic rule as writePng above: never truncate the live
+        // file. For imports this writes a new page file (low risk), but
+        // for edited pages it overwrites a previous good bake, so the
+        // same temp + rename + compress-check applies.
+        writeAtomically(bitmap, target, Bitmap.CompressFormat.JPEG, quality)
     }
 
     /**
@@ -481,24 +550,21 @@ object ImageStore {
 
     /** Deletes both the pristine and edited files for a page. */
     fun deletePageFiles(context: Context, page: ScannedPage) {
-        // Resolve the covers while the files still exist: their keys are derived
-        // from the file's size and mtime, so once it is gone the name is unknown.
-        val thumbKeys = listOfNotNull(
-            ThumbnailStore.key(context, pageFile(context, page.id).absolutePath),
-            ThumbnailStore.key(context, editedFile(context, page.id).absolutePath),
-            ThumbnailStore.key(context, editedLosslessFile(context, page.id).absolutePath)
-        )
-        runCatching { pageFile(context, page.id).delete() }
-        runCatching { editedFile(context, page.id).delete() }
-        runCatching { editedLosslessFile(context, page.id).delete() }
+        val targets = listOfNotNull(
+            page.imageUri,
+            page.originalImageUri,
+            pageFile(context, page.id).absolutePath,
+            editedFile(context, page.id).absolutePath,
+            editedLosslessFile(context, page.id).absolutePath
+        ).distinct()
+        val thumbKeys = targets.mapNotNull { ThumbnailStore.key(context, it) }
+        targets.forEach { path ->
+            runCatching { File(path).delete() }
+            ThumbnailStore.invalidate(path)
+        }
         thumbKeys.forEach { key ->
             runCatching { ThumbnailStore.file(context, key).delete() }
         }
-        // Drop the memoised keys as well: nothing should keep answering for a page
-        // whose files are gone.
-        ThumbnailStore.invalidate(pageFile(context, page.id).absolutePath)
-        ThumbnailStore.invalidate(editedFile(context, page.id).absolutePath)
-        ThumbnailStore.invalidate(editedLosslessFile(context, page.id).absolutePath)
     }
 
     fun deleteDocumentFiles(context: Context, pages: List<ScannedPage>) {

@@ -213,11 +213,19 @@ private fun MarkupEditor(
             // its pixels, never the drawing: the next re-bake (a crop, a filter, a
             // rotate) replays them. Saying so is the difference between "my
             // annotation vanished" and "try again in a moment".
+            val token = latest?.let { com.example.docscanner.model.PageToken.of(it) }
             val baked = latest?.let {
                 runCatching { PageRenderer.bake(context, it) }.getOrNull()
             }
-            if (baked != null) {
-                repository.updatePage(docId, target.id) { baked }
+            if (baked != null && token != null) {
+                val published = repository.updatePage(docId, target.id, expectedToken = token) { baked }
+                if (!published) {
+                    Toast.makeText(
+                        context,
+                        "Annotation saved as data; re-render rejected due to concurrent modification",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             } else {
                 Toast.makeText(
                     context,

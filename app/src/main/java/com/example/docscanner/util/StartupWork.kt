@@ -151,8 +151,12 @@ object StartupWork {
         return true
     }
 
-    /** Debug-build logging only: [PerfTrace] is a no-op in release. */
+    /**
+     * Observable launch and background-pass tracing.
+     * Round 70.3 corrective fix: log unconditionally under [TAG] so benchmark builds
+     * produce observable startup and background work timings without being silenced by [PerfTrace].
+     */
     fun trace(message: String) {
-        if (PerfTrace.isEnabled) Log.i(TAG, "[startup] $message")
+        Log.i(TAG, "[startup] $message")
     }
 }

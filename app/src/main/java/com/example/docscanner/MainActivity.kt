@@ -39,6 +39,12 @@ import com.example.docscanner.ui.common.LaunchSplash
 import com.example.docscanner.util.FramePacing
 import com.example.docscanner.util.PerfTrace
 import com.example.docscanner.util.StartupWork
+import android.util.Log
+import androidx.lifecycle.lifecycleScope
+import com.example.docscanner.util.NativeFilters
+import com.example.docscanner.util.PerfAuditRunner
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /** How long the launch screen takes to hand over to the library. */
 private const val SPLASH_FADE_MS = 300
@@ -87,6 +93,14 @@ class MainActivity : ComponentActivity() {
         // frame went.
         PerfTrace.attachWindow(window)
 
+        // Round 70: do NOT touch NativeFilters here. Round 69 logged it in
+        // onCreate, which runs System.loadLibrary on the main thread before
+        // setContent — a small but real cost on the first frame, for a status
+        // nobody needs until the first filter runs. It is logged after the
+        // first frame instead, off the main thread (see the LaunchedEffect
+        // below). Same for the benchmark runner: starting it in onCreate let
+        // it compete with the splash, the library parse and the first tiles.
+
         setContent {
             // ## The launch clock, in one line
             //
@@ -102,6 +116,12 @@ class MainActivity : ComponentActivity() {
             //     adb logcat -s DocScannerPerf
             LaunchedEffect(Unit) {
                 withFrameNanos { }
+                // Round 70: first frame is already drawn at this point, so
+                // the native-filter load and any benchmark run can no longer
+                // delay it. Both run on IO, not on the frame thread.
+                launch(Dispatchers.IO) {
+                    Log.i("DocScannerPerf", "[startup] Native filters status: ${NativeFilters.getStatusSummary()}")
+                }
                 val sinceProcessStart =
                     SystemClock.uptimeMillis() - Process.getStartUptimeMillis()
                 StartupWork.trace("launch: first frame drawn $sinceProcessStart ms after process start")

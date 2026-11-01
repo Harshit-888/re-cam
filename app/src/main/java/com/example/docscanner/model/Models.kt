@@ -181,6 +181,31 @@ data class ScannedPage(
     val rotationDegrees: Float = 0f,
     val corners: QuadCorners = QuadCorners(),
     val ocrText: String = "",
+    /**
+     * True once text recognition has been attempted for the current
+     * image, regardless of the result. This is what separates "never
+     * tried" from "tried and blank / failed" — `ocrText` alone cannot,
+     * because a blank page and a failed recognition both leave it
+     * blank. Round 70.1 (Arena H004): without this, the backfill
+     * queue re-selected the same blank/failing front pages on every
+     * launch and starved later pages, and Round 70's batch cut from
+     * 24 to 8 made that starvation worse. Pages loaded from an older
+     * library.json get the default `false`; pages with non-blank
+     * `ocrText` are still skipped by the backfill filter, so no
+     * already-recognised page is re-attempted on upgrade. Reset to
+     * `false` on bake (see `PageRenderer.bakeBlocking`), so a page
+     * whose pixels changed gets another chance.
+     */
+    val ocrAttempted: Boolean = false,
+    /**
+     * Number of times text recognition has failed transiently for the current image.
+     * Round 70.3 (Arena H004 follow-up): bounded transient OCR retry. 0 = untried
+     * or reset on bake. Increments on OcrResult.Failure; when it reaches 3,
+     * [ocrAttempted] is marked true as attempted-final so a persistently failing
+     * page cannot starve the queue forever. Reset to 0 on bake alongside [ocrAttempted].
+     * Old library.json files default to 0.
+     */
+    val ocrFailedAttempts: Int = 0,
     val watermarkText: String? = null,
     val signatureOverlayUri: String? = null,
     /**
@@ -199,6 +224,47 @@ data class ScannedPage(
      */
     val revision: Int = 0
 )
+
+/**
+ * Snapshot token representing the exact state of a [ScannedPage] when a bake or edit was started.
+ *
+ * Round 70.3 corrective fix (Arena H004 follow-up): prevents stale bakes or concurrent metadata
+ * edits from silently overwriting newer page state across single-page and batch callers.
+ */
+@Immutable
+data class PageToken(
+    val pageId: String,
+    val revision: Int,
+    val imageUri: String,
+    val rotationDegrees: Float = 0f,
+    val corners: QuadCorners = QuadCorners(),
+    val markup: List<MarkupStroke> = emptyList(),
+    val signatureOverlayUri: String? = null
+) {
+    /** Checks whether [current] matches this snapshot token. */
+    fun matches(current: ScannedPage): Boolean {
+        if (current.id != pageId) return false
+        if (current.revision != revision) return false
+        if (current.imageUri != imageUri) return false
+        if (current.rotationDegrees != rotationDegrees) return false
+        if (current.corners != corners) return false
+        if (current.markup != markup) return false
+        if (current.signatureOverlayUri != signatureOverlayUri) return false
+        return true
+    }
+
+    companion object {
+        fun of(page: ScannedPage) = PageToken(
+            pageId = page.id,
+            revision = page.revision,
+            imageUri = page.imageUri,
+            rotationDegrees = page.rotationDegrees,
+            corners = page.corners,
+            markup = page.markup,
+            signatureOverlayUri = page.signatureOverlayUri
+        )
+    }
+}
 
 @Immutable
 @Serializable

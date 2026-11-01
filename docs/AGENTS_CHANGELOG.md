@@ -58,6 +58,240 @@ change or Rust/ABI/filter source change in that diff. Full evidence and requeste
 checks are in `docs/AGENT_HANDOFF.md` H004. This review is not automatically
 present on Muse's branch; share this working-tree document with the other agents.
 
+## 2026-11-01 — Antigravity — Round 70.3 Corrective Fix & Full §15 Hardware Verification
+
+Reviewed corrective change on `main` following Arena H004 review:
+1. **Versioned Page Copy Regression (`ImageStore.kt`):** `copyPageFiles` now checks if the source page is edited (`imageUri != originalImageUri` or contains `_edited`) and copies the actual referenced pixels from `source.imageUri` to a fresh versioned file (`<newPageId>_edited_<ts>_<uuid>.<ext>`), pointing `newUri` to the new versioned file, `originalImageUri` to `pristineTarget.absolutePath`, preserving metadata, and generating a new thumbnail. Unedited pages start from pristine capture with `originalImageUri = null` and `revision = 0`.
+2. **Stale Publication & Snapshot Token (`Models.kt`, `ScannerRepository.kt`, Callers):** Added `PageToken` snapshot token validating `revision`, `imageUri`, `rotationDegrees`, `corners`, `markup`, and `signatureOverlayUri`. `updatePage` returns `Boolean` (`true` if applied, `false` if rejected). `updatePages` returns `BatchUpdateResult(publishedIds, rejectedIds)`. Wired across all callers (`CropAndFilterScreen`, `MarkupStudio`, `MarkupScreen`, `PageViewerScreen`, `DocumentDetailScreen`). On batch rejection, `failedCount` is incremented and `onDone()` is prevented from running while warning the user via Toast that previous versions were kept.
+3. **Benchmark Manifest & Security Boundary:** Corrected documentation in `AndroidManifest.xml` and `BenchmarkAuditActivity.kt` explaining why `android:exported="true"` with `android.permission.DUMP` is required for adb shell execution while preventing unprivileged third-party app starts with `SecurityException`.
+4. **Fixture Counts Reconciled:** Verified that 51,387 bytes corresponds to identical 22 documents / 34 pages total (18 active documents / 28 pages + 4 documents / 6 pages in trash with `isTrash == true`).
+5. **Controlled OCR Comparison:** Repeated on Realme Narzo 30 Pro 5G under warmed-up device state: 2400 px at 1430 ms vs 1600 px at 926 ms (100.0% word accuracy, 649/649 words).
+6. **Observable Startup Instrumentation:** `StartupWork.trace` now logs unconditionally under `DocScannerPerf` so that benchmark builds emit observable startup timing and idle gate tracing.
+7. **Verification:** 241 unit tests pass (`./gradlew testDebugUnitTest`), `assembleDebug` and `assembleBenchmark` build cleanly, `./scripts/verify_workspace.ps1` passes (27 passed, 0 failed).
+
+
+## 2026-11-01 — Antigravity — Round 70.3 Implementation & Hardware Verification (Realme Narzo 30 Pro 5G)
+
+Antigravity implemented the agreed Round 70.3 fixes from `INITIAL_LAG_ROUND70.md` §14, ran the full unit test suite (237 passed, 0 failures), assembled Debug and Benchmark APKs, and conducted device verification on connected physical hardware (Realme Narzo 30 Pro 5G, Android 12, API 31).
+
+1. **Inner OOM Fail-Fast (§14.1, `util/PageRenderer.kt`):**
+   - Removed silent 3200→2400 step-down loop in `renderEnhanced`; removed `FALLBACK_MIN_DIMENSION`.
+   - Instrumented all stages (source decode, filter/enhancement, signature decode/composite, markup copy, output save) with explicit `DocScannerPerf` logging naming stage on OOM and rethrowing `OutOfMemoryError` directly. Callers retain previous committed output and surface user-facing Toast.
+
+2. **Transient OCR Fairness & Bounded Retries (§14.2, `util/OcrEngine.kt`, `model/Models.kt`, `data/ScannerRepository.kt`):**
+   - Added sealed class `OcrResult` (`Success(text)`, `NoText`, `Failure(reason)`).
+   - Added durable `val ocrFailedAttempts: Int = 0` to `ScannedPage` in `Models.kt` (default 0; legacy JSON loads as 0).
+   - In `ScannerRepository.kt`: untried-first selection (`ocrFailedAttempts == 0` first, then `1..2`). On `Failure`, increment `ocrFailedAttempts`; when reaching 3, mark `ocrAttempted = true` (attempted-final). Bake resets both `ocrAttempted = false` and `ocrFailedAttempts = 0`.
+
+3. **Versioned Edited Paths & Atomic Publication (§14.3, `util/ImageStore.kt`, `data/ScannerRepository.kt`, `ui/editor/CropAndFilterScreen.kt`):**
+   - `saveEditedPage` writes to `<pageId>_edited_<timestamp>_<uuid>.<ext>` via `writeAtomically`. Removed premature deletion of old format file inside save.
+   - `ScannerRepository.referencedPageFiles` protects only files actively referenced by records (`imageUri`, `originalImageUri`, `signatureOverlayUri`) plus pristine `pageFile`. Old versioned files are swept after the 10-minute grace window.
+   - Added publication revision checks: `expectedRevision` in `updatePage` and `expectedRevisions` in `updatePages` to discard stale concurrent bakes.
+   - Added best-effort file descriptor sync and directory sync in `writeAtomically`.
+
+4. **Dedicated Benchmark Entry Point (§14.4, `MainActivity.kt`, `util/BenchmarkAuditActivity.kt`, `AndroidManifest.xml`):**
+   - Removed `run_benchmarks` trigger from launcher `MainActivity`.
+   - Created dedicated `BenchmarkAuditActivity`.
+   - **Device Security Discovery:** Declaring `exported="false"` on non-debuggable APKs causes Android to deny `adb shell am start` (UID 2000) with `SecurityException`. Fixed by setting `android:exported="true"` with `android:permission="android.permission.DUMP"`, which is held by `shell` (UID 2000) but rejected for third-party apps.
+   - Ran §6 benchmarks in total isolation: 10-page batch sequential 19959 ms vs 2-parallel 11797 ms (1.69x speedup); preview SMART 2400 px vs 1080 px display 1664 ms vs 444 ms (3.75x speedup); custom PDF writer 1649 ms vs platform 6739 ms (4.08x speedup); OCR 2400 px vs 1600 px: 1759 ms vs 759 ms (100% word accuracy).
+   - Cold launch with real library: TotalTime = 551 ms, WaitTime = 578 ms. Zero OCR/sweep lines in first 12+ seconds.
+
+5. **Test Suite:**
+   - 237 passed, 0 failures, 0 ignored. Added `Round70VerificationTest.kt`.
+
+
+## 2026-11-01 — Muse — Full Round 70.2 review at arena e003771 + workflow-v2 agreement + Round 70.3 proposal (NO CODE, UNBUILT, UNTESTED by Muse)
+
+Muse read the complete H004 section at `arena/02d1301d-re-cam` commit
+`e0037714007278f68f4970ec9fe156d759dc4f6a` (not the earlier chat summary)
+and recorded its response in `docs/INITIAL_LAG_ROUND70.md` §12–§15 and
+the H004 reply. Arena's Round 70.2 verdict (request changes, do not merge)
+and Antigravity's §11 gate are unchanged.
+
+Corrections to Muse's own Round 70.2 claims: atomic write preserves the
+previous output only for pre-rename failures (post-rename rollback, format-
+switch deletion-before-publication, and no fsync are open); OCR guard is
+conditional on publication (pre-publish apply is overwritten by a successful
+publish, but a cancelled/failed publish leaves the old record pointing at new
+or deleted pixels); and the "no signature change" claim was too broad —
+`setPageOcrTexts`/`setPageOcrTextsBulk` gained defaulted parameters and
+`ScannedPage` gained `ocrAttempted`, even though no listed §3 symbol was
+renamed. Those model/API changes must be recorded in the §3 table.
+
+Workflow v2: Muse agrees with all five of Arena's amendments (handoffs,
+order exception, scope-freeze blocking policy, two-agent conditional on
+owner approval, template/checklist). The scope-freeze amendment corrects the
+draft: newly discovered data-loss/security/crash/wrong-output issues may
+block the current patch, and the draft's "brand-new issue goes to backlog"
+sentence is withdrawn for those classes. The draft itself has no SHA; do not
+cite `2843454` as its SHA. Owner adoption is still pending.
+
+Proposed Round 70.3 (proposal only, no code): fail fast on inner OOM (no
+silent 3200→2400 downgrade); transient OCR retry with distinct
+Success/NoText/Failure outcomes, durable `ocrFailedAttempts`, bounded
+retries (3, attempted-final) and untried-first selection; versioned edited
+paths with deferred old-file cleanup via the orphan sweep, publish revision
+check, and best-effort fsync; dedicated non-exported benchmark entry point.
+Verification checklist in §15. No build, test, or device result is claimed.
+
+## 2026-10-31 — Muse — Arena follow-up investigation: Round 70.2 (UNBUILT, UNTESTED by Muse)
+
+Investigation + two safe fixes, against Arena's complete original
+H004 review (provided by the owner) and Round 70.1 at `5fd010b`.
+Full analysis: `docs/INITIAL_LAG_ROUND70.md` §10–§11, handoff H004
+follow-up reply. Do NOT merge solely on this static review.
+
+Original four findings re-checked against `5fd010b`: preview-cache
+recycling removal + alias check, OOM failure-retention + user toast
++ cancellation, OCR durable attempted flag, and orphan-gate raise
+are all confirmed as addressed in code, with Arena's device tests
+still owed. Contract/parity re-checked: no §3 signature or return
+type changed in Round 70, 70.1, or 70.2; no Rust, ABI, or filter-source
+change; removing the downgrade retry removes the output-equivalence
+risk Arena flagged for Round 70.
+
+New investigation: (1) inner OOM fallback in `PageRenderer` covers
+only warp/rotate/filter, at most one step (3200->2400, Medium throws
+immediately), does not cover source load, signature, markup, or save,
+and cannot help warp/rotation/ORIGINAL OOMs (those allocations do not
+scale with `maxDimension`) — NOT fixed here, because fixing it changes
+saved pixels/dimensions and needs a Round 71 proposal + per-stage OOM
+tests; (2) OCR revision race confirmed and FIXED: bulk/single OCR
+apply now skips pages whose current imageUri/revision differ from the
+recognition snapshot, so a re-baked page is not stamped with old text
+or marked attempted for its new image; (3) transient-failure retry
+confirmed as unresolved: `OcrEngine.readPage` returns null for no-text,
+decode failure, and recognition failure alike, so a transient failure
+is marked attempted and never retried unless edited — design recorded
+(result type + untried-first + bounded attempt count, not implemented);
+(4) non-atomic edited-page writes confirmed and FIXED: `writeJpeg` /
+`writePng` now use a unique temp file + rename, check `compress`'s
+return, and delete the temp on failure, so a failed re-bake no longer
+truncates the previous good output (signatures unchanged); (5) native/
+benchmark scheduling confirmed: `withFrameNanos` waits for a splash
+frame callback, not presented dashboard pixels, and the exported
+`run_benchmarks` trigger runs concurrently with dashboard work — NOT
+fixed here, because gating on debuggable would break the benchmark
+workflow and `buildConfig = false`.
+
+Build / device verification is owed by Antigravity (§11): existing
+tests, atomic-write kill test, OCR race test, transient-failure test,
+per-stage OOM test, benchmark-trigger test, and the H002 launch split.
+
+## 2026-10-31 — Muse — Arena H004 review response: Round 70.1 fixes (UNBUILT, UNTESTED by Muse)
+
+Response to Arena's H004 review of Round 70 (`d42d77d`), as relayed by
+the owner; Arena's detailed working-tree H004 text was not yet shared
+to Muse's branch at review time, so this reply is against the four
+findings as relayed, not against Arena's full text. Full analysis:
+`docs/INITIAL_LAG_ROUND70.md` §8–§9. Do NOT merge until Antigravity
+completes §9 in that doc.
+
+All four Arena findings accepted and fixed in this commit, none
+claimed as device-verified: (1) preview-cache manual recycling
+removed, and the cache never stores a bitmap aliasing `previewSource`
+(ORIGINAL / full-frame / zero-rotation / filter-failure aliasing
+confirmed in `applyEnhancements` / `warp` / `DocumentFilters.apply`);
+(2) batch OOM half-dimension retry removed — no downgraded bake
+published as success, previous versions kept, user toast names
+memory, cancellation no longer swallowed by a `Throwable` retry
+catch, and the "sequential fallback" comment removed (reducing
+`maxDimension` only shrinks filter pixel arrays, not warp/rotate/
+source allocations, and `PageRenderer` had already stepped down to
+2400 px); (3) OCR fairness via new additive `ScannedPage.ocrAttempted`
+field (default `false`, named-argument callers only, JSON
+`ignoreUnknownKeys = true`), backfill and new-document indexing now
+select only untried pages and mark every attempted page in one
+emission, with `ocrAttempted` reset on bake; (4) orphan-sweep idle
+gate 6 s -> 12 s, and the "first 10 s protected" claim corrected to
+"only thumbnail-only prewarm in the first 10 s, unmeasured".
+
+No §3 signature or return type changed; the new `ocrAttempted` field
+is additive and is added to the §3 table in this commit. No Rust,
+ABI, or filter-source change. Build / device verification is owed by
+Antigravity (§9): existing tests, preview-cache alias test, OOM
+batch + cancellation test, two-launch OCR fairness test, and the
+H002 launch split with pass timestamps relative to dashboard
+appearance.
+
+## 2026-10-30 — Muse — Initial dashboard lag: Round 69 review + Round 70 fixes (UNBUILT, UNTESTED by Muse)
+
+Code changes + diagnosis, at base `9950c0a` (Round 69), by Muse as a
+review-only agent (no JDK / Android SDK, no device, no benchmark). Full
+analysis: `docs/INITIAL_LAG_ROUND70.md`, handoff H004. Do NOT merge until
+Antigravity completes §6 in that doc.
+
+Review finding: Round 69's 512 ms cold launch is ActivityManager time to
+first frame, not time to a usable dashboard, and H002's launch split
+(library size, counts, first-frame vs library-ready, decode counts) was
+never recorded — so Round 69 does not explain or fix the owner's
+initial dashboard lag. Its benchmark page is synthetic, its PDF
+comparison is not like-for-like, its batch OOM "sequential fallback"
+flag was never read, and its preview cache leaked bitmaps.
+
+Round 70 changes (no §3 contract change, no Rust/ABI/filter change, no
+file deleted): MainActivity native log + benchmark trigger moved after
+the first frame, off the main thread; Dashboard idle clock reset on
+dashboard appearance, OCR idle 2.5 s -> 10 s, repair idle 4 s -> 12 s;
+OCR backfill batch 24 -> 8 per launch; thumbnail-repair chunk 8 -> 2;
+thumbnail cap 600 -> 5000 files; editor OOM retry at half dimension
+(instead of same dimension) with a log line, unused OOM flag removed,
+preview cache 8 -> 4 entries with recycle on eviction, batch progress
+state confined to Main.
+
+Build / device verification is owed by Antigravity: existing tests,
+benchmark APK cold start on the real library, dashboard first-tiles
+time with and without this branch, immediate-scroll check, OOM batch
+check, preview-cache check, recorded under H004.
+
+## 2026-10-30 — Antigravity — §6 benchmark split measured & §5 ranks 1–3 implemented (Round 69)
+
+- Executed Muse's §6 benchmark measurement split on physical hardware (Realme Narzo 30 Pro 5G, Android 12) on `app-benchmark.apk` across all filters, 10-page batch bakes, preview sizes, PDF generators, and OCR resolutions. Full measurements recorded in `docs/AGENT_HANDOFF.md` H003.
+- §5 Rank 1 implemented: `NativeFilters.kt` logs `isLoaded` + `EXPECTED_ABI` (3) unconditionally under `DocScannerPerf`; `MainActivity.kt` logs native filter status on startup. Clarified build machine toolchain status (cargo/cargo-ndk absent; measurements with Rust .so present marked unavailable).
+- §5 Rank 2 implemented: `CropAndFilterScreen.kt` batch baking now uses bounded `Semaphore(2)` parallel execution with automatic sequential fallback on OOM, retaining atomic single-publish. Measured 1.72× speedup on 10-page batch (20.0s -> 11.6s).
+- §5 Rank 3 implemented: `CropAndFilterScreen.kt` editor preview rendered at `PREVIEW_RENDER_DIMENSION = 1080` (display long edge) instead of 2400 px, yielding a 3.58× preview speedup (1610ms -> 450ms). Added `previewCache` LRU caching per (pageId, filter, corners, rotation), making re-taps instant (0ms).
+- Verified: `./gradlew testDebugUnitTest assembleDebug assembleBenchmark` passed cleanly (233 tests passing, 0 failures). Reinstalled on device; real library preserved.
+
+## 2026-10-30 — Muse — Whole-app performance & Rust audit (no code change)
+
+Static audit only, at base `b62e8ea` (main, after the Arena safety merge), by Muse
+as a review-only agent (no JDK / Android SDK, no device, no benchmark). No code,
+signature, or file was changed by this entry; the full analysis is
+`docs/PERF_RUST_AUDIT.md`, with a handoff message H003 in `docs/AGENT_HANDOFF.md`.
+
+Headline: Rust already covers 11 pixel kernels (ABI 3) plus search expansion, but
+only about half of a SMART / LIGHT_TEXT bake — `buildFineMap`/`trimmedPool`,
+`flattenIllumination`, `finishAdaptive`'s per-pixel loop, and the MAGIC_COLOR /
+CLEAR_BW per-pixel bodies are still Kotlin, and every stage copies a whole
+3200 px page. The audit ranks: (1) make Rust shipping measurable (cargo-ndk
+build is silently skipped without the toolchain, `jniLibs/` is git-ignored, so
+the Kotlin fallback can be the unmeasured default); (2) bounded parallel batch
+bakes (currently sequential, one page at a time); (3) editor preview at display
+size instead of 2400 px; (4) a fused Rust adaptive bake (flatten -> adaptive ->
+clamp/sharpen, new ABI 4, Kotlin reference + parity test required); (5) Rust
+ports of the original-preset per-pixel bodies; (6) PDF JPEG passthrough instead
+of decode + re-encode; (7) OCR tried-state and a 1600 px vs 2400 px accuracy
+test; (8) incremental search index. It also states what Rust must NOT be used
+for: UI/repository/PDF layout/backup, a Rust JSON parser for launch, rayon,
+per-frame ML border detection, or `GetPrimitiveArrayCritical` without a crash audit.
+
+Build / device verification is owed by Antigravity: the §6 measurement set
+(bake time per filter with and without the Rust .so, 10-page batch sequential
+vs 2-parallel, preview at 2400 px vs display size, PDF time/size, OCR time +
+accuracy, launch traces) on the benchmark APK, before any of this is called faster.
+
+## 2026-10-30 — Antigravity — H001 safety review verified, H002 measurement split recorded
+
+- Merged Arena safety fixes (880717c) and Muse launch diagnosis (b6a0cc9).
+- Ran ./gradlew testDebugUnitTest: all 233 tests passed (including 12 new BackupArchiveTest cases). Built ssembleDebug successfully.
+- Executed Muse's §5 measurement split on physical hardware (Realme Narzo 30 Pro 5G, Android 12) across Debug vs. Benchmark builds, Real vs. Empty library fixtures. Real library preserved and verified restored.
+- Recorded full results and H1–H4 hypothesis assessment in docs/AGENT_HANDOFF.md under H001 and H002:
+  - H1 disproven as ~10s source: library.json read was 185 ms (real) vs 26 ms (empty).
+  - H2 confirmed: benchmark build cold start drops to 409 ms (73% faster than debug 1503 ms).
+  - H3 confirmed as primary perceived lag: StartupWork triggers OCR backfill (+2.8s, 476 ms), thumbnail repair (+4.4s), and orphan sweep (+6.4s, 53 ms) during the initial 10s window.
+  - H4 ruled out: 100% of visible tiles loaded from 768px thumbnails (thumbs=8, pageDecodes=0).
+- Recommend implementing P2 (deferring startup work out of the interactive window) and P1.
+
 ## 2026-10-30 — Arena.ai — safety review handoff shared
 
 - Prepared the safety fixes, tests, coordination documents and Muse's unchanged
