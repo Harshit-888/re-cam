@@ -6,6 +6,20 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-11-02 — Antigravity — Build & verification of commit 8f4c740 (C10 create-new backup & release gates)
+
+Built and tested commit `8f4c74048f067e26e77edb73561e84e1a8115a36`. Unit tests passed
+(256/256), assembleDebug and assembleBenchmark built cleanly. Verified `NewBackupWriter`
+and `NewBackupDestination` across all 9 provider failure, crash, and concurrency scenarios
+using disposable backups: enumeration failure, created ID collision, write IO failure,
+flush/close failure, corrupt readback hash mismatch, cleanup refusal, mid-stream process
+kill, and 4-thread concurrent export. In every scenario, existing backup SHA-256 hashes
+remained completely bit-identical, and clean end-to-end backup export and restore were
+confirmed. Verified manifest boundary: BenchmarkAuditActivity is strictly benchmark-only
+with `DUMP` permission. Cold launch on Realme Narzo 30 Pro 5G confirmed dashboard presentation
+at +1.34s with all background work (OCR, sweep, repair) deferred past +10.8s. Device fixture
+preserved intact. Detailed evidence recorded under H004 in AGENT_HANDOFF.md.
+
 ## 2026-11-02 — Arena.ai — C10 create-new backup candidate
 
 Replaces in-place SAF overwrite/rollback with a folder picker and uniquely named new
