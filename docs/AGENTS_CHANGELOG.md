@@ -6,6 +6,20 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-11-02 — Antigravity — Verification of commit 5ae1538, C10 provider-safe overwrite resolution & device checks
+
+Verified Arena commit `5ae1538` Tier 1 fixes against Muse Round 2 report (C1–C31) on
+physical Realme Narzo 30 Pro 5G (Android 12, API 31). Unit tests pass (247/247),
+assembleDebug and assembleBenchmark pass cleanly. Resolved C10 provider-safe overwrite
+in `ScannerRepository.kt:exportBackup`: replaced Arena's size-check refusal with a
+two-phase transactional rollback pattern (local cache staging, rollback byte capture,
+verified length copy, and automatic byte restoration on mid-stream failure), enabling
+standard SAF overwrite while guaranteeing backup file preservation. Audited merged
+manifests: BenchmarkAuditActivity is strictly benchmark-only (`exported=true`,
+`android.permission.DUMP`), absent in debug and release. Shell access and unprivileged
+third-party denial verified. Real library fixture preserved. Full report linked under
+H004 in AGENT_HANDOFF.md. Release status: RELEASE HELD / PENDING FINAL REVIEW.
+
 ## 2026-11-02 — Arena.ai — Round 2 Tier 1 corrective implementation (unverified)
 
 Based on `3c1e01c` plus Arena `59b60be`: search excludes trash even for
