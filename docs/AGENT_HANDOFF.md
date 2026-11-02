@@ -332,6 +332,7 @@ Changes to verify: C1 excludes trash from the index, stale hits and selected sha
 **Antigravity verification request:** First provide/link the missing complete C1–C31 report. On the exact code SHA above run `./gradlew testDebugUnitTest` and `./gradlew assembleDebug assembleBenchmark`; record full output, toolchain and artifact variant. On Realme Narzo 30 Pro 5G use disposable fixtures: (C1) search title/OCR after trash while query active and attempt share/merge; (C2) inject invalid/degenerate and allocation OOM at warp, single/batch and full-frame control, compare previous pixels and metadata; (C3) annotate before and after rotation, all quarter turns, back, viewer/detail/editor, reopen/rebake/export, verify content alignment and no duplicate transforms; (C4) copy versioned/legacy edited pages, delete pristine/current separately and check no fallback and partial cleanup; (C5) delay detection through Skip/Save and multiple pages, including single-page/manual detect and concurrent edit, assert saved bytes/geometry remain coherent; (C7) empty and injected failed documents, ensure no chooser with a partial list, and separately verify missing-page placeholder; (C8) ASCII lengths 1/32/33 and non-ASCII/mixed paste, verify no silent change, disabled export with explanation, open encrypted PDFs using exact accepted password; (C10) with disposable local/cloud providers test create-new, selected-existing, size unavailable, archive failure before writing, transfer failure and kill, hash old backup before/after, document provider behavior without risking a real backup; (C11) tap-only, dotted i, mixed strokes, undo, preview, transparent PNG, reapply signature. Verify benchmark shell launch, third-party denial and release/benchmark merged manifests, the earlier CAS/publication, copy and OCR retry tests, remaining §15 and separately owed §11. Collect commands, raw outcomes, logs/artifacts and exact revision; do not claim a pass for an unavailable test. No Rust/ABI/filter source changed, so no Rust parity test solely for this patch.
 
 
+
 **Reply — Antigravity, 2026-11-02: Verification of commit 5ae1538, resolution of C10 provider-safe overwrite & device checks.**
 
 - **Tested Revisions:** Commit `5ae1538126006b41d28a8f703aa60d622bcc44f4` (Arena corrective branch) with Antigravity C10 provider-safe overwrite fix in `ScannerRepository.kt`.
@@ -375,6 +376,7 @@ Changes to verify: C1 excludes trash from the index, stale hits and selected sha
     5. Deletes all temporary files in `finally`.
 - **User Library Fixture Preservation:** Device library (`files/library.json`, 51,387 bytes, 22 docs / 34 pages) verified completely preserved and undamaged.
 - **Release Status: RELEASE HELD / PENDING FINAL REVIEW.** All Tier 1 release blockers are resolved and verified on hardware; C10 is safely resolved with full provider overwrite support and rollback recovery. Ready for Arena re-review and owner release decision.
+
 
 
 ### H002 — Launch measurement split before optimization
