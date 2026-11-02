@@ -313,7 +313,7 @@ fun DashboardScreen(
     var searchIndex by remember { mutableStateOf<DocumentSearch.Index?>(null) }
     LaunchedEffect(documents, queryActive) {
         if (!queryActive) return@LaunchedEffect
-        searchIndex = withContext(Dispatchers.Default) { DocumentSearch.Index(documents) }
+        searchIndex = withContext(Dispatchers.Default) { DocumentSearch.Index(documents.filterNot { it.isTrash }) }
     }
 
     // Ranking runs off the composition, after a debounce.
@@ -379,7 +379,8 @@ fun DashboardScreen(
         } else {
             // Relevance order is the point of a search; the sort control does not
             // get to re-alphabetise the results.
-            searchHits.map { it.document }
+            val currentById = documents.filterNot { it.isTrash }.associateBy { it.id }
+            searchHits.mapNotNull { currentById[it.document.id] }
         }
         inFolder
             .filter { doc -> selectedFolderId == null || doc.folderId == selectedFolderId }
@@ -826,7 +827,7 @@ fun DashboardScreen(
                     shareEnabled = selection.isNotEmpty() && !isSharing,
                     mergeEnabled = selection.size >= 2 && !isSharing,
                     onShare = {
-                        val byId = documents.associateBy { it.id }
+                        val byId = documents.filterNot { it.isTrash }.associateBy { it.id }
                         val docs = selection.mapNotNull { byId[it] }
                         if (docs.isEmpty()) {
                             endSelection()
@@ -845,7 +846,7 @@ fun DashboardScreen(
                                 if (shared == 0) {
                                     Toast.makeText(
                                         context,
-                                        "Nothing to share — those documents have no pages",
+                                        "Could not prepare every selected document. Nothing was shared; please retry.",
                                         Toast.LENGTH_LONG
                                     ).show()
                                 } else {
@@ -858,7 +859,7 @@ fun DashboardScreen(
                         // Pruned above, so this can only fail if the library changed
                         // between the tap and this line. Order follows the tap order,
                         // which is the order the pages land in the merged PDF.
-                        val byId = documents.associateBy { it.id }
+                        val byId = documents.filterNot { it.isTrash }.associateBy { it.id }
                         val docs = selection.mapNotNull { byId[it] }
                         if (docs.size >= 2) {
                             mergeRequest = docs

@@ -1,5 +1,6 @@
 package com.example.docscanner.ui.editor
 
+import com.example.docscanner.util.withRotationAndMarkup
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.widget.Toast
@@ -267,6 +268,7 @@ fun CropAndFilterScreen(
     var pan by remember { mutableStateOf(Offset.Zero) }
     var grabbedCorner by remember { mutableStateOf<Int?>(null) }
     var isSaving by remember { mutableStateOf(false) }
+    var autoDetectionEnabled by remember(docId) { mutableStateOf(true) }
     var isAutoDetecting by remember { mutableStateOf(false) }
     var detectionFailed by remember { mutableStateOf(false) }
     // How many of the four borders were real edges. "Nothing found" and "three of
@@ -408,13 +410,15 @@ fun CropAndFilterScreen(
         // Auto-detect only for pages the user has never cropped. A page that
         // already has corners keeps them: re-entering the editor must not silently
         // re-crop a page the user was happy with.
-        if (current.corners.isFullFrame) {
+        if (current.corners.isFullFrame && autoDetectionEnabled) {
             isAutoDetecting = true
             val detection = withContext(Dispatchers.Default) { DocumentDetector.detect(decoded, context) }
             isAutoDetecting = false
-            corners = detection.corners
-            detectionFailed = !detection.confident
-            sidesFound = detection.sidesFound
+            if (autoDetectionEnabled && !cornersEdited && !isSaving) {
+                corners = detection.corners
+                detectionFailed = !detection.confident
+                sidesFound = detection.sidesFound
+            }
         } else {
             detectionFailed = false
             sidesFound = 4
@@ -438,8 +442,8 @@ fun CropAndFilterScreen(
      * as part of loading (see above) and writing it from here would race with the
      * user's hands.
      */
-    LaunchedEffect(docId, reviewMode) {
-        if (!reviewMode) return@LaunchedEffect
+    LaunchedEffect(docId, reviewMode, autoDetectionEnabled) {
+        if (!reviewMode || !autoDetectionEnabled) return@LaunchedEffect
         // The first page's preview and its filter swatches are what the user is
         // looking at; this pass starts only once they have had the CPU to appear.
         delay(AUTO_DETECT_START_DELAY_MS)
@@ -478,7 +482,7 @@ fun CropAndFilterScreen(
             isDetectingAll = false
         }
 
-        if (found.isEmpty()) return@LaunchedEffect
+        if (!autoDetectionEnabled || found.isEmpty()) return@LaunchedEffect
 
         // Only pages that are *still* un-cropped get written: the user may have
         // started adjusting one of them while this ran.
@@ -490,7 +494,9 @@ fun CropAndFilterScreen(
         autoBorders.putAll(found.filterKeys { it in stillUntouched })
         repository.setPageCorners(
             docId,
-            stillUntouched.associateWith { id -> found.getValue(id).corners }
+            stillUntouched.associateWith { id -> found.getValue(id).corners },
+            onlyWhereUncropped = true,
+            expectedTokens = targets.associate { it.id to PageToken.of(it) }
         )
         // Only the confident ones are signed off. An unconfident detection still
         // gives the page a usable quad (so a batch bake always has one), but it is
@@ -637,10 +643,12 @@ fun CropAndFilterScreen(
         scope.launch {
             isAutoDetecting = true
             val detection = withContext(Dispatchers.Default) { DocumentDetector.detect(source, context) }
-            corners = detection.corners
-            cornersEdited = false
-            detectionFailed = !detection.confident
-            sidesFound = detection.sidesFound
+            if (autoDetectionEnabled && !isSaving) {
+                corners = detection.corners
+                cornersEdited = false
+                detectionFailed = !detection.confident
+                sidesFound = detection.sidesFound
+            }
             isAutoDetecting = false
         }
     }
@@ -655,7 +663,7 @@ fun CropAndFilterScreen(
      */
     fun persistGeometry() {
         repository.updatePage(docId, activePageId) {
-            it.copy(corners = corners, rotationDegrees = rotation)
+            it.withRotationAndMarkup(rotation).copy(corners = corners)
         }
         borderedPages[activePageId] = true
     }
@@ -680,7 +688,7 @@ fun CropAndFilterScreen(
                 // the session's state map on the way out buys nothing and is the one
                 // write here that does not need to happen.
                 repository.updatePage(docId, activePageId) {
-                    it.copy(corners = corners, rotationDegrees = rotation)
+                    it.withRotationAndMarkup(rotation).copy(corners = corners)
                 }
             }
         }
@@ -717,6 +725,7 @@ fun CropAndFilterScreen(
         if (isSaving || targets.isEmpty()) return
         // The visible page may carry un-persisted crop/rotation (the single-page
         // path never switches pages, so nothing else saves it).
+        autoDetectionEnabled = false
         persistGeometry()
         isSaving = true
         scope.launch {

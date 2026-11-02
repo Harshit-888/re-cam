@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -126,7 +127,9 @@ fun SignaturePadDialog(
         }
 
         strokes.forEach { points ->
-            if (points.size > 1) {
+            if (points.size == 1) {
+                canvas.drawCircle(points[0].x, points[0].y, strokeWidth / 2f, Paint(paint).apply { style = Paint.Style.FILL })
+            } else if (points.size > 1) {
                 val path = Path().apply {
                     moveTo(points.first().x, points.first().y)
                     for (i in 1 until points.size) {
@@ -199,6 +202,9 @@ fun SignaturePadDialog(
                             .fillMaxSize()
                             .onSizeChanged { canvasSize = it }
                             .pointerInput(Unit) {
+                                detectTapGestures { point -> strokes.add(listOf(point)) }
+                            }
+                            .pointerInput(Unit) {
                                 detectDragGestures(
                                     onDragStart = { offset ->
                                         currentStroke.clear()
@@ -241,7 +247,11 @@ fun SignaturePadDialog(
                         )
 
                         fun drawSmooth(points: List<Offset>) {
-                            if (points.size < 2) return
+                            if (points.size == 1) {
+                                drawCircle(color = Color(selectedInkColor), radius = strokeWidth / 2f, center = points[0])
+                                return
+                            }
+                            if (points.isEmpty()) return
                             val path = ComposePath().apply {
                                 moveTo(points.first().x, points.first().y)
                                 // Quadratic smoothing through segment midpoints.

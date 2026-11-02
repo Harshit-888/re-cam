@@ -205,7 +205,8 @@ fun PdfExportSheet(
     val safeName = remember(fileName) {
         PdfGenerator.sanitiseFileName(fileName).take(80).ifBlank { "document" }
     }
-    val passwordReady = !protect || password.isNotBlank()
+    val passwordValid = password.length <= 32 && password.all { it.code in 32..126 }
+    val passwordReady = !protect || (password.isNotBlank() && passwordValid)
     val canExport = !isGenerating && totalPages > 0 && passwordReady
     // The one line that explains the *chosen* size, instead of four lines that
     // explain all of them at once.
@@ -484,13 +485,12 @@ fun PdfExportSheet(
                             OutlinedTextField(
                                 value = password,
                                 onValueChange = { typed ->
-                                    // Printable ASCII only: revision-3 passwords are
-                                    // compared as raw bytes, and the sheet must not
-                                    // accept a character the crypto cannot represent.
-                                    password = typed.filter { it.code in 32..126 }.take(64)
+                                    password = typed
                                 },
                                 singleLine = true,
                                 label = { Text("Password") },
+                                isError = password.isNotEmpty() && !passwordValid,
+                                supportingText = { Text("Use up to 32 printable ASCII characters.") },
                                 shape = DocShapes.field,
                                 textStyle = MaterialTheme.typography.bodyMedium,
                                 visualTransformation = if (passwordVisible) {
@@ -608,7 +608,7 @@ fun PdfExportSheet(
                 caption = when {
                     isGenerating -> "Keep this screen open until it finishes"
                     totalPages == 0 -> "Nothing to export yet"
-                    !passwordReady -> "Add a password to continue"
+                    !passwordReady -> "Enter 1–32 printable ASCII characters"
                     mergeSources.size > 1 -> "$totalPages pages from ${mergeSources.size} documents"
                     else -> "$totalPages pages · ${selectedPaperSize.shortLabel} · " +
                         compression.label

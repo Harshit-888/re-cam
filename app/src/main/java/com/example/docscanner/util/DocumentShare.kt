@@ -67,7 +67,7 @@ object DocumentShare {
             val name = PdfGenerator.sanitiseFileName(
                 document.title.ifBlank { "document" }
             ).take(60).ifBlank { "document" }
-            val written = runCatching {
+            val written = try {
                 PdfGenerator.generatePdf(
                     context = context,
                     // One file per document, so the title has to be the document's
@@ -76,21 +76,29 @@ object DocumentShare {
                     pages = document.pages,
                     config = config
                 )
-            }.getOrNull()
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
             if (written != null) files.add(written)
         }
-        if (files.isEmpty()) return@withContext 0
+        // Never open a chooser with an incomplete selection.
+        if (files.size != documents.size) {
+            files.forEach { it.delete() }
+            return@withContext 0
+        }
 
-        withContext(Dispatchers.Main) {
+        val shared = withContext(Dispatchers.Main) {
             runCatching { share(context, files) }.onFailure { error ->
                 Toast.makeText(
                     context,
                     "Sharing unavailable: ${error.message}",
                     Toast.LENGTH_LONG
                 ).show()
-            }
+            }.isSuccess
         }
-        files.size
+        if (shared) files.size else 0
     }
 
     /** [Intent.ACTION_SEND_MULTIPLE] — several PDFs in one sheet, not several sheets. */

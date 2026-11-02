@@ -28,9 +28,13 @@ object PerspectiveWarp {
      * Warps [src] so the quadrilateral described by [corners] fills the frame.
      *
      * @return a new bitmap, or [src] itself when the quad is already the full
-     *   frame or is degenerate. The caller owns the result.
+     *   frame or, in non-strict mode, is degenerate. The caller owns the result.
      */
-    fun warp(src: Bitmap, corners: QuadCorners): Bitmap {
+    fun warp(src: Bitmap, corners: QuadCorners, failOnError: Boolean = false): Bitmap {
+        fun invalid(): Bitmap {
+            if (failOnError) throw IllegalArgumentException("Cannot crop this page: invalid corners")
+            return src
+        }
         if (corners.isFullFrame) return src
 
         val width = src.width.toFloat()
@@ -50,9 +54,9 @@ object PerspectiveWarp {
         val outWidth = max(distance(tlX, tlY, trX, trY), distance(blX, blY, brX, brY))
         val outHeight = max(distance(tlX, tlY, blX, blY), distance(trX, trY, brX, brY))
 
-        if (outWidth < MIN_OUTPUT_EDGE || outHeight < MIN_OUTPUT_EDGE) return src
+        if (outWidth < MIN_OUTPUT_EDGE || outHeight < MIN_OUTPUT_EDGE) return invalid()
         if (quadArea(tlX, tlY, trX, trY, brX, brY, blX, blY) < MIN_OUTPUT_EDGE * MIN_OUTPUT_EDGE) {
-            return src
+            return invalid()
         }
 
         val source = floatArrayOf(tlX, tlY, trX, trY, brX, brY, blX, blY)
@@ -64,7 +68,7 @@ object PerspectiveWarp {
         )
 
         val matrix = Matrix()
-        if (!matrix.setPolyToPoly(source, 0, destination, 0, 4)) return src
+        if (!matrix.setPolyToPoly(source, 0, destination, 0, 4)) return invalid()
 
         val output = try {
             Bitmap.createBitmap(
@@ -72,7 +76,8 @@ object PerspectiveWarp {
                 outHeight.roundToInt().coerceAtLeast(MIN_OUTPUT_EDGE),
                 Bitmap.Config.ARGB_8888
             )
-        } catch (_: OutOfMemoryError) {
+        } catch (error: OutOfMemoryError) {
+            if (failOnError) throw error
             return src
         }
 

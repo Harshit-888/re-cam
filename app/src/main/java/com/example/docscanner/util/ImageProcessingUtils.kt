@@ -33,7 +33,7 @@ object ImageProcessingUtils {
         maxDimension: Int = DocumentFilters.MAX_PROCESS_DIMENSION,
         failOnFilterError: Boolean = false
     ): Bitmap {
-        var current = if (corners != null) PerspectiveWarp.warp(src, corners) else src
+        var current = if (corners != null) PerspectiveWarp.warp(src, corners, failOnError = failOnFilterError) else src
 
         val normalizedRotation = normalizeRotation(rotationDegrees)
         if (normalizedRotation != 0f) {

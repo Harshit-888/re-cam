@@ -1,5 +1,6 @@
 package com.example.docscanner.ui.detail
 
+import com.example.docscanner.util.withRotationAndMarkup
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -384,7 +385,7 @@ fun DocumentDetailScreen(
             val token = com.example.docscanner.model.PageToken.of(current)
             val baked = PageRenderer.bake(
                 context,
-                current.copy(rotationDegrees = (current.rotationDegrees + 90f) % 360f)
+                current.withRotationAndMarkup((current.rotationDegrees + 90f) % 360f)
             ) ?: return@withContext null
             Pair(baked, token)
         }

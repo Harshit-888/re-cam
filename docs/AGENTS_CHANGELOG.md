@@ -6,6 +6,20 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-11-02 — Arena.ai — Round 2 Tier 1 corrective implementation (unverified)
+
+Based on `3c1e01c` plus Arena `59b60be`: search excludes trash even for
+stale hits; strict bake warp failure; rotate page-space markup on each rotation;
+reject late review border results; all-or-nothing multi-document share; explicitly
+validate PDF passwords (1–32 printable ASCII, no silent stripping); signature-pad
+taps/dots; backup staging and refusal of known nonempty/unknown-size destinations.
+C4 strict copy handling from `59b60be` is retained. `PerspectiveWarp.warp` adds a
+`failOnError` defaulted parameter; `ScannerRepository.setPageCorners` adds a
+defaulted `expectedTokens` parameter; all in-tree callers updated. **C10 is not
+fully closed:** SAF providers may truncate during create/replace before the app can
+inspect the URI and do not guarantee atomic transfer. Verify provider behavior and
+resolve the overwrite policy before release. No build or device test run by Arena.
+
 ## 2026-11-01 — Arena.ai — initial Round 70.3 safety fixes
 
 Based on main `3c1e01c`: complete-snapshot `PageToken` replaces the prior public

@@ -661,7 +661,8 @@ class ScannerRepository(
          * The check has to be inside the update to be worth anything — comparing
          * against a snapshot taken before the pass would have the same race.
          */
-        onlyWhereUncropped: Boolean = false
+        onlyWhereUncropped: Boolean = false,
+        expectedTokens: Map<String, PageToken> = emptyMap()
     ) {
         if (cornersByPage.isEmpty()) return
         _documents.update { docs ->
@@ -674,6 +675,7 @@ class ScannerRepository(
                         val replacement = cornersByPage[page.id]
                         when {
                             replacement == null -> page
+                            expectedTokens[page.id]?.matches(page) == false -> page
                             onlyWhereUncropped && !page.corners.isFullFrame -> page
                             replacement == page.corners -> page
                             else -> {
@@ -1159,16 +1161,34 @@ class ScannerRepository(
      * swallows an exception.
      */
     suspend fun exportBackup(uri: Uri): BackupArchive.Summary = withContext(Dispatchers.IO) {
-        val snapshot = snapshotNow()
-        val out = appContext.contentResolver.openOutputStream(uri)
-            ?: throw IOException("Could not open the chosen file for writing")
-        out.use { stream ->
-            BackupArchive.create(
-                output = stream,
-                snapshot = snapshot,
-                pagesDir = ImageStore.pagesDir(appContext),
-                signaturesDir = ImageStore.signaturesDir(appContext)
-            )
+        // Build the archive before touching the provider. SAF providers do not
+        // promise atomic replace, so refuse a destination that is non-empty or
+        // whose size cannot be established; the user must choose a new file.
+        val staged = File.createTempFile("backup-", ".zip", appContext.cacheDir)
+        try {
+            val summary = staged.outputStream().use { stream ->
+                BackupArchive.create(
+                    output = stream,
+                    snapshot = snapshotNow(),
+                    pagesDir = ImageStore.pagesDir(appContext),
+                    signaturesDir = ImageStore.signaturesDir(appContext)
+                )
+            }
+            val size = appContext.contentResolver.query(
+                uri, arrayOf(android.provider.OpenableColumns.SIZE), null, null, null
+            )?.use { cursor ->
+                val index = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                if (index >= 0 && cursor.moveToFirst() && !cursor.isNull(index)) cursor.getLong(index) else null
+            }
+            if (size == null || size != 0L) {
+                throw IOException("Choose a new empty backup file; existing or unverifiable files cannot be safely replaced")
+            }
+            val out = appContext.contentResolver.openOutputStream(uri, "w")
+                ?: throw IOException("Could not open the chosen file for writing")
+            out.use { stream -> staged.inputStream().use { it.copyTo(stream) } }
+            summary
+        } finally {
+            staged.delete()
         }
     }
 

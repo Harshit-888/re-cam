@@ -1,5 +1,6 @@
 package com.example.docscanner.ui.viewer
 
+import com.example.docscanner.util.withRotationAndMarkup
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -385,7 +386,7 @@ fun PageViewerScreen(
                     val baked = runCatching {
                         PageRenderer.bake(
                             context,
-                            latest.copy(rotationDegrees = (latest.rotationDegrees + 90f) % 360f)
+                            latest.withRotationAndMarkup((latest.rotationDegrees + 90f) % 360f)
                         )
                     }.getOrNull()
                     if (baked != null) {
