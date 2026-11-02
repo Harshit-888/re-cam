@@ -1153,17 +1153,13 @@ class ScannerRepository(
     )
 
     /**
-     * Writes the library to [uri] as a `.zip` (see [BackupArchive]).
-     *
-     * Runs on IO; the caller is a coroutine started from the Settings screen. A
-     * failure throws — the UI turns it into a message. Writing a *partial* archive
-     * and reporting success is the one outcome that must not happen, so nothing here
-     * swallows an exception.
+     * Creates a new uniquely named backup in the user-selected SAF folder [uri].
+     * Existing backups are never intentionally opened for writing. Providers must
+     * support child listing, creation and readback; otherwise export fails closed.
+     * A kill can leave a partial new file, so this is not an atomic SAF transaction.
      */
     suspend fun exportBackup(uri: Uri): BackupArchive.Summary = withContext(Dispatchers.IO) {
-        // C10 provider-safe export:
-        // 1. Build the archive completely in a local cache file first, so archive
-        //    generation errors (OOM, missing page, db error) never touch or truncate the destination.
+        val destination = DocumentsTreeBackupDestination(appContext.contentResolver, uri)
         val staged = File.createTempFile("backup-", ".zip", appContext.cacheDir)
         try {
             val summary = staged.outputStream().use { stream ->
@@ -1174,54 +1170,14 @@ class ScannerRepository(
                     signaturesDir = ImageStore.signaturesDir(appContext)
                 )
             }
-
-            // 2. Before truncating an existing destination file, capture its existing bytes
-            //    into a rollback cache file. If the transfer fails midway, the original
-            //    backup is safely restored rather than left corrupted.
-            val rollback = File.createTempFile("backup-rollback-", ".zip", appContext.cacheDir)
-            var hasPreviousData = false
+            val name = "docscanner-backup-${System.currentTimeMillis()}-${UUID.randomUUID()}.zip"
             try {
-                appContext.contentResolver.openInputStream(uri)?.use { input ->
-                    val copied = rollback.outputStream().use { output -> input.copyTo(output) }
-                    hasPreviousData = copied > 0L
-                }
-            } catch (_: Throwable) {
-                hasPreviousData = false
+                writeNewBackup(staged, destination, name)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                throw IOException("Backup failed; a partial new file may remain in the chosen folder. ${error.message}", error)
             }
-
-            // 3. Open output stream and transfer the staged archive.
-            try {
-                val out = runCatching {
-                    appContext.contentResolver.openOutputStream(uri, "wt")
-                }.getOrNull() ?: appContext.contentResolver.openOutputStream(uri, "w")
-                    ?: throw IOException("Could not open the chosen destination for writing")
-
-                out.use { stream ->
-                    val transferred = staged.inputStream().use { input -> input.copyTo(stream) }
-                    stream.flush()
-                    if (transferred != staged.length()) {
-                        throw IOException("Incomplete backup transfer: wrote $transferred of ${staged.length()} bytes")
-                    }
-                }
-            } catch (transferError: Throwable) {
-                // Roll back to the original backup data if previously present
-                if (hasPreviousData && rollback.length() > 0L) {
-                    try {
-                        val restoreOut = appContext.contentResolver.openOutputStream(uri, "wt")
-                            ?: appContext.contentResolver.openOutputStream(uri, "w")
-                        restoreOut?.use { stream ->
-                            rollback.inputStream().use { it.copyTo(stream) }
-                            stream.flush()
-                        }
-                    } catch (_: Throwable) {
-                        // Best-effort rollback
-                    }
-                }
-                throw IOException("Failed to write backup to destination: ${transferError.message}", transferError)
-            } finally {
-                rollback.delete()
-            }
-
             summary
         } finally {
             staged.delete()

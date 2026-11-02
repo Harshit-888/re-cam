@@ -73,8 +73,6 @@ import com.example.docscanner.model.PaperSize
 import com.example.docscanner.model.ThemeMode
 import com.example.docscanner.util.NativeSearch
 import com.example.docscanner.util.PerfTrace
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.launch
 
@@ -97,7 +95,7 @@ fun SettingsScreen(
     settings: AppSettings,
     onSettingsChange: ((AppSettings) -> AppSettings) -> Unit,
     onNavigateBack: () -> Unit,
-    /** Writes a backup to [Uri] and returns the message to show. */
+    /** Creates a new backup in the selected folder [Uri] and returns a message. */
     onExportBackup: suspend (Uri) -> String = { "Backup is unavailable in this build." },
     /** Restores the backup at [Uri] and returns the message to show. */
     onImportBackup: suspend (Uri) -> String = { "Restore is unavailable in this build." }
@@ -135,7 +133,7 @@ fun SettingsScreen(
     }
 
     val exportLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/zip")
+        contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri -> if (uri != null) runTransfer(uri, restore = false) }
 
     val importLauncher = rememberLauncherForActivityResult(
@@ -329,14 +327,13 @@ fun SettingsScreen(
                     title = "Back up library",
                     subtitle = when {
                         backupBusy -> "Working…"
-                        else -> "One .zip: every document, page and signature"
+                        else -> "Choose a folder; each backup is a new ZIP file"
                     },
                     onClick = if (backupBusy) {
                         null
                     } else {
                         {
-                            val stamp = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-                            exportLauncher.launch("docscanner-backup-$stamp.zip")
+                            exportLauncher.launch(null)
                         }
                     }
                 )

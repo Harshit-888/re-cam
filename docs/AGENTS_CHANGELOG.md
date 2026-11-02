@@ -6,6 +6,19 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-11-02 — Arena.ai — C10 create-new backup candidate
+
+Replaces in-place SAF overwrite/rollback with a folder picker and uniquely named new
+ZIP document. `exportBackup(Uri)` now expects a SAF tree URI rather than a file URI;
+the single in-tree caller is updated. `NewBackupWriter` enumerates existing IDs,
+refuses returned existing IDs, writes only the newly created document, and compares
+SHA-256 readback before success. It attempts to delete a failed new file; it never
+intentionally deletes or opens an existing backup for writing. Providers lacking tree
+listing/create/readback fail closed. This is **not** an atomic provider transaction:
+process death can leave a partial new document and nonconforming providers can break
+their contracts. Unit tests added but not run; physical provider verification and
+§15/§11 still required. No other release blocker was reclassified by this change.
+
 ## 2026-11-02 — Arena.ai — review of Antigravity C10 and verification
 
 Statically reviewed `24a1d30..0d343397d32309044cd1d73987119de4d4f57f44`.
