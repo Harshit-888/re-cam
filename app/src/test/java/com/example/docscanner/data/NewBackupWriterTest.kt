@@ -84,6 +84,10 @@ class NewBackupWriterTest {
         }
     }
 
+    companion object {
+        const val EXPECTED_OLD_FIXTURE_SHA256 = "b43030fec31739bcf20fe483bfb2dce8cde3b4ab2265b2994a413e091cc7594c"
+    }
+
     private fun stage(content: String = "new backup bytes") = temp.newFile().apply { writeText(content) }
 
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
@@ -93,6 +97,7 @@ class NewBackupWriterTest {
     @Test fun `new backup is read back and old backup remains intact`() {
         val destination = FakeDestination()
         val oldHashBefore = sha256(destination.files.getValue("old"))
+        assertEquals(EXPECTED_OLD_FIXTURE_SHA256, oldHashBefore)
         writeNewBackup(stage(), destination, "new.zip")
 
         assertEquals(oldHashBefore, sha256(destination.files.getValue("old")))
