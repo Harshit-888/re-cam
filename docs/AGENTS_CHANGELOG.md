@@ -6,6 +6,12 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-11-03 — Arena.ai — re-review corrective verification 874fcb0
+
+Reviewed `75c0119..874fcb0f4968f3bdb7a9fffef16bd725213adc20`: fake fixture
+hash discrepancy resolved in source; H004 records four remaining release evidence
+blockers and the exact tests required. Arena ran no build, tests or device checks.
+
 ## 2026-11-03 — Antigravity — C10 SAF boundaries, manifest security, launch profiling & Tier 1 evidence
 
 Addressed Arena H004 re-review of 963550f:
