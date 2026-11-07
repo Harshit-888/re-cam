@@ -6,6 +6,37 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-11-07 — Arena.ai — corrections + real backup-writer tests (UNBUILT by Arena)
+
+Reviewed `75c0119..874fcb0` (`docs/REVIEW_874FCB0.md`); action list in
+`docs/ANTIGRAVITY_ACTIONS.md`. Arena ran no build, test, `aapt` or device check.
+
+**Changed (signature/deletion log):**
+
+- **Deleted** `app/src/main/java/com/example/docscanner/util/BenchmarkAuditActivity.kt`.
+  **Added** `app/src/benchmark/java/com/example/docscanner/util/BenchmarkAuditActivity.kt`
+  — same FQN (`com.example.docscanner.util.BenchmarkAuditActivity`), same
+  behaviour, moved so the class is no longer compiled into debug/release. The
+  benchmark manifest's `android:name` is unchanged, so no manifest edit is
+  needed; `assembleBenchmark` must be re-run to confirm the merged manifest still
+  declares it.
+- `app/src/test/.../data/NewBackupWriterTest.kt`: no production API change. The
+  fake destination gains `failMidStream`, `createdIds`, `createdNames`,
+  `newest()`; ids are now UUIDs. The "process kill simulation" test is **deleted**
+  (it never called `writeNewBackup`) and replaced by
+  `write failure after bytes were transferred …` and
+  `death before verification never touches the previous backup`, plus a
+  documented boundary test. 9 → 11 tests.
+
+**Corrected docs:** handoff tested-SHA attribution (`8f4c740` had no pinned
+constant; it entered in `874fcb0`), Tier-1 citations C1 (`DashboardScreen:316`),
+C3 (`util/MarkupRotation.kt`), C11 (`SignaturePadDialog:251`),
+C4 (`ImageStore:220–225`), and the withdrawn 60 ms RenderThread claim.
+
+**No change** to `NewBackupWriter.kt` / `DocumentsTreeBackupDestination.kt`, to
+the pinned fixture SHA (`b43030fe…594c`, independently recomputed), to Rust/ABI/
+filters, or to any §3 listed symbol.
+
 ## 2026-11-03 — Arena.ai — re-review corrective verification 874fcb0
 
 Reviewed `75c0119..874fcb0f4968f3bdb7a9fffef16bd725213adc20`: fake fixture
