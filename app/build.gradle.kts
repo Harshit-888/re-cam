@@ -202,6 +202,10 @@ dependencies {
   // See util/OcrEngine.kt and docs/AGENT_COORDINATION.md §6i.
   implementation(libs.mlkit.text.recognition)
 
+  // EXIF orientation for captures and gallery imports (androidx, not the
+  // platform android.media.ExifInterface: HEIF support and consistent behaviour).
+  implementation(libs.androidx.exifinterface)
+
   // JSON persistence for the document library
   implementation(libs.kotlinx.serialization.json)
 

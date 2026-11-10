@@ -6,6 +6,48 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-11-07 — Arena.ai — bulk page verbs, ExifInterface, dead code (UNBUILT by Arena)
+
+Three items triaged from Android Studio's report (`docs/TRIAGE_ANDROID_STUDIO_REPORT.md`).
+Arena has no JDK/SDK: **nothing here was compiled or run.**
+
+**New API (additive, §3 callers unaffected):**
+
+- `ScannerRepository.addPagesToDocument(docId, pages: List<ScannedPage>)` (new).
+- `ScannerRepository.deletePages(docId, pageIds: Collection<String>)` (new).
+- `addPageToDocument` / `deletePage` **kept**, same signature, now thin delegates.
+  No §3 listed symbol renamed, re-signed or removed.
+- `data/PageMutations.kt` (new, internal): `appendTo` / `removeFrom`, pure state
+  transforms so the last-page rule is JVM-testable without a `Context`.
+- `data/PageMutationsTest.kt` (new, 9 tests): last page deletes the document,
+  partial delete renumbers, no-match is identity, all-at-once empties, input is
+  never mutated.
+
+**Behaviour:** `ScannerCameraScreen.commitScan` and `DocumentDetailScreen`'s bulk
+delete each now emit **one** library state instead of one per page. The disk write
+was already coalesced (`LibraryStore` debounce + `collectLatest`), so this is a
+recomposition fix, not a write fix.
+
+**Deleted:**
+
+- `ImageStore.createPageFromUri` — 0 call sites.
+- `ImageStore.readExifOrientation(stream: InputStream)` — 0 call sites. The
+  `ByteArray` overload is **kept**: it has two live callers
+  (`ImageStore.kt:132`, `:169`). A "remove dead code" sweep that took both would
+  bring back the sideways-capture bug.
+
+**Changed:**
+
+- `ImageStore` now imports `androidx.exifinterface.media.ExifInterface` instead of
+  `android.media.ExifInterface`; new dependency
+  `androidx.exifinterface:exifinterface:1.4.1` (catalog entry
+  `androidxExifInterface`). API-compatible for the constants used; gains HEIF.
+
+**Deliberately NOT deleted:** `ScannerRepository.renameFolder` / `deleteFolder` —
+both have no call site, but deleting an entity that owns documents is a policy
+decision (fallback folder) and belongs with a UI that offers it. A comment at the
+declarations records this so the warnings are expected rather than "fixed".
+
 ## 2026-11-07 — Arena.ai — corrections + real backup-writer tests (UNBUILT by Arena)
 
 Reviewed `75c0119..874fcb0` (`docs/REVIEW_874FCB0.md`); action list in

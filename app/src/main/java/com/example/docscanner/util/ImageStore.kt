@@ -4,13 +4,12 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
-import android.media.ExifInterface
+import androidx.exifinterface.media.ExifInterface
 import android.net.Uri
 import com.example.docscanner.model.ScannedPage
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.io.InputStream
 import java.util.UUID
 
 /**
@@ -183,25 +182,6 @@ object ImageStore {
         null
     } finally {
         runCatching { sourceFile.delete() }
-    }
-
-    /** Convenience: import a picked URI straight into a new [ScannedPage]. */
-    fun createPageFromUri(
-        context: Context,
-        uri: Uri,
-        documentId: String,
-        pageIndex: Int,
-        maxDimension: Int = MAX_CAPTURE_DIMENSION,
-        quality: Int = JPEG_QUALITY
-    ): ScannedPage? {
-        val pageId = UUID.randomUUID().toString()
-        val path = importFromUri(context, uri, pageId, maxDimension, quality) ?: return null
-        return ScannedPage(
-            id = pageId,
-            documentId = documentId,
-            pageIndex = pageIndex,
-            imageUri = path
-        )
     }
 
     /**
@@ -495,15 +475,6 @@ object ImageStore {
 
     fun readExifOrientation(bytes: ByteArray): Int = try {
         ExifInterface(bytes.inputStream()).getAttributeInt(
-            ExifInterface.TAG_ORIENTATION,
-            ExifInterface.ORIENTATION_NORMAL
-        )
-    } catch (_: Throwable) {
-        ExifInterface.ORIENTATION_NORMAL
-    }
-
-    fun readExifOrientation(stream: InputStream): Int = try {
-        ExifInterface(stream).getAttributeInt(
             ExifInterface.TAG_ORIENTATION,
             ExifInterface.ORIENTATION_NORMAL
         )

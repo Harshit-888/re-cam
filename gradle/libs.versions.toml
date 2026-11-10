@@ -16,6 +16,7 @@ cameraX = "1.4.2"
 kotlinxSerializationJson = "1.9.0"
 lifecycleViewmodelNav3 = "2.10.0"
 mlkitTextRecognition = "16.0.1"
+androidxExifInterface = "1.4.1"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
@@ -56,6 +57,12 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 
 # TensorFlow Lite for real auto border detection matching the original app
 tensorflow-lite = { module = "org.tensorflow:tensorflow-lite", version = "2.16.1" }
+
+# EXIF orientation, read by ImageStore for camera captures and gallery imports.
+# The Jetpack build replaces android.media.ExifInterface: it also handles HEIF,
+# which is what many gallery exports are, and it does not change behaviour across
+# OEM forks.
+androidx-exifinterface = { module = "androidx.exifinterface:exifinterface", version.ref = "androidxExifInterface" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }

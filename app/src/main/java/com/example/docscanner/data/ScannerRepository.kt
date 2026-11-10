@@ -436,48 +436,66 @@ class ScannerRepository(
     }
 
     fun addPageToDocument(docId: String, page: ScannedPage) {
-        _documents.update { docs ->
+        addPagesToDocument(docId, listOf(page))
+    }
+
+    /**
+     * Appends several pages in **one** state emission.
+     *
+     * A batch commit used to call [addPageToDocument] in a `forEach`, which emitted
+     * one library state per captured page and made every observer recompose once
+     * per page. The write itself was already coalesced ([LibraryStore] debounces
+     * and uses `collectLatest`), so this is a recomposition/emission fix rather
+     * than a disk one.
+     */
+    fun addPagesToDocument(docId: String, pages: List<ScannedPage>) {
+        if (pages.isEmpty()) return
+        val now = System.currentTimeMillis()
+        atomicStateUpdate(_documents) { docs ->
             docs.map { doc ->
-                if (doc.id == docId) {
-                    doc.copy(
-                        pages = doc.pages + page.copy(
-                            documentId = docId,
-                            pageIndex = doc.pages.size
-                        ),
-                        modifiedDate = System.currentTimeMillis()
-                    )
-                } else {
-                    doc
-                }
-            }
+                PageMutations.appendTo(doc, docId, pages)
+                    ?.let { if (it === doc) doc else it.copy(modifiedDate = now) }
+                    ?: doc
+            } to Unit
         }
     }
 
     fun deletePage(docId: String, pageId: String) {
-        var deleted: ScannedPage? = null
-        _documents.update { docs ->
-            docs.mapNotNull { doc ->
-                if (doc.id != docId) return@mapNotNull doc
-                val page = doc.pages.find { it.id == pageId }
-                if (page != null) deleted = page
-                val remaining = doc.pages
-                    .filterNot { it.id == pageId }
-                    .mapIndexed { index, p -> p.copy(pageIndex = index) }
-                // Deleting the last page used to leave the document behind with an
-                // empty page list: a husk that still took a card in the library, had
-                // no cover, could not be exported to PDF, and could only be removed
-                // by trashing it by hand. A document is its pages, so it goes too.
-                if (remaining.isEmpty()) {
-                    null
+        deletePages(docId, listOf(pageId))
+    }
+
+    /**
+     * Removes several pages in **one** state emission.
+     *
+     * The removed pages come back from the transform rather than out of a captured
+     * `var`, so the pixels deleted below are the ones belonging to the state that
+     * actually won the CAS. See [PageMutations.removeFrom].
+     *
+     * Deleting the last page deletes the document — that rule lives in
+     * [PageMutations] and is covered by `PageMutationsTest`.
+     */
+    fun deletePages(docId: String, pageIds: Collection<String>) {
+        if (pageIds.isEmpty()) return
+        val targets = pageIds.toSet()
+        val removal = atomicStateUpdate(_documents) { docs ->
+            val removed = mutableListOf<ScannedPage>()
+            val updated = docs.mapNotNull { doc ->
+                val result = PageMutations.removeFrom(doc, docId, targets) ?: return@mapNotNull doc
+                removed += result.removed
+                if (result.removed.isEmpty()) {
+                    doc
                 } else {
-                    doc.copy(pages = remaining, modifiedDate = System.currentTimeMillis())
+                    result.document?.copy(modifiedDate = System.currentTimeMillis())
                 }
             }
+            updated to removed
         }
         // `deletePageFiles` removes all three names a page can occupy (capture,
         // JPEG bake, lossless bake), so an emptied document has nothing left to
         // clean up beyond the record this update already removed.
-        deleted?.let { page -> scope.launch { ImageStore.deletePageFiles(appContext, page) } }
+        if (removal.isNotEmpty()) {
+            scope.launch { removal.forEach { ImageStore.deletePageFiles(appContext, it) } }
+        }
     }
 
     /**
@@ -1087,6 +1105,12 @@ class ScannerRepository(
         _folders.update { it + folder }
     }
 
+    // `renameFolder` and `deleteFolder` have no call site today: the dashboard can
+    // create a folder but offers no way to rename or remove one. They are kept
+    // deliberately rather than deleted as dead code -- deleting an entity that owns
+    // documents is a policy decision (which folder do the documents fall back to?),
+    // and the answer belongs with the UI that would ask for it, not here. A static
+    // "unused function" warning is expected.
     fun renameFolder(folderId: String, name: String) {
         _folders.update { folders ->
             folders.map { if (it.id == folderId) it.copy(name = name) else it }

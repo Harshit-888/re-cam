@@ -1076,7 +1076,9 @@ fun DocumentDetailScreen(
                         // Selection first: the bar must not spend a frame offering
                         // verbs for pages that are about to stop existing.
                         selectedPageIds = emptySet()
-                        doomed.forEach { repository.deletePage(docId, it.id) }
+                        // One emission, and the last-page rule (delete the document
+                        // with it) is applied by the repository, as before.
+                        repository.deletePages(docId, doomed.map { it.id })
                     }
                 ) {
                     Text("Delete", color = MaterialTheme.colorScheme.error)

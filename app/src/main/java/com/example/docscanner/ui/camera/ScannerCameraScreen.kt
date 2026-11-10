@@ -431,7 +431,9 @@ fun ScannerCameraScreen(
     fun commitScan() {
         if (capturedPages.isEmpty()) return
         val docId = if (targetDocId != null) {
-            capturedPages.forEach { repository.addPageToDocument(targetDocId, it) }
+            // One emission for the whole batch: a forEach here emitted one library
+            // state per captured page and recomposed every observer per page.
+            repository.addPagesToDocument(targetDocId, capturedPages.toList())
             targetDocId
         } else {
             // NOTE: DocumentNaming quotes the literal "Scan". Passing a bare
