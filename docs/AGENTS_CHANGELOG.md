@@ -6,6 +6,35 @@ Newest entry at the top.
 
 Current requests and replies: [Agent handoff board](AGENT_HANDOFF.md).
 
+## 2026-11-11 — Arena.ai — Standalone build authority + offline RE toolkit (no app code touched)
+
+Adds the two things that let work continue without Antigravity in the loop.
+**Nothing in `app/`, `gradle/` or the test sources was modified**, and the
+read-only corpora (`adobe-scan/`, `indymobile/`, `docs/original_apk_binaries/`)
+were opened for reading only.
+
+1. **`.github/workflows/android.yml` (new)** — the second build authority. Runs
+   `testDebugUnitTest`, `assembleDebug`, `assembleBenchmark` on JDK 17 (pinned to
+   match `jvmToolchain(17)`) with platform/build-tools 36 on every push and PR;
+   uploads test reports and APKs; fails if `BenchmarkAuditActivity` appears in a
+   debug APK; writes a step summary. Deliberately does **not** build `release`
+   (no signing config, and no secrets are being routed anywhere).
+2. **`tools/re/re_probe.py` (new)** — one command over `androguard`, `capstone`
+   and `pyelftools`: `apk` (binary manifest without `aapt`; `--grep` exits non-zero
+   when a component is absent), `so` (dynsyms, JNI exports, imports, ARM64
+   disassembly at an address), `dex` (class inventory, package histogram,
+   substring search), `strings` (endpoints/keys). Verified against
+   `adobe-scan/base.apk`, `indymobile/native_libs/libimageproc.so`,
+   `libnms.so` and `docs/original_apk_binaries/classes.dex`.
+3. **`docs/ARENA_STANDALONE.md` (new)** — measured capability matrix, the honest
+   RE coverage table (manifest/DEX/ELF/disassembly replaced; jadx-quality Java,
+   apktool resources and Ghidra decompilation still unavailable), how to read CI
+   from the sandbox with `gh run`, and the residual risk that the workflow has not
+   run yet.
+
+No dependencies added to the app. `pip install --break-system-packages androguard
+capstone pyelftools` is a sandbox-side action, not a repository one.
+
 ## 2026-11-01 — Antigravity — Round 70.3 Corrective Fix & Full §15 Hardware Verification
 
 Reviewed corrective change on `main` following Arena H004 review:
