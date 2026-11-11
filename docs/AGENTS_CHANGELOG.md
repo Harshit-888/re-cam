@@ -32,6 +32,19 @@ were opened for reading only.
    from the sandbox with `gh run`, and the residual risk that the workflow has not
    run yet.
 
+4. **`tools/ci/check_audit_guard.py` (new)** + fixtures — `BenchmarkAuditActivity`
+   is `android:exported="true"` in `app/src/main/AndroidManifest.xml`, so it ships
+   in *every* build type behind `android.permission.DUMP`. Nothing enforced that
+   guard. This reads each APK's merged manifest with `aapt2` and fails the build
+   if any exported copy lacks it.
+5. **`gradlew` 100644 → 100755** — the file mode was unset (repo developed on
+   Windows), so `./gradlew` exited 126 on any Unix checkout. No content change.
+
+**Verified in CI, not asserted.** Run `43035647862` (commit `1b9c981`) is green:
+**241 unit tests, 0 failures**, `assembleDebug` **82 MB**, `assembleBenchmark`
+**75 MB**, DUMP guard passed on both APKs. Note this corrects the "265 tests"
+figure predicted in earlier docs — 241 is the measured baseline.
+
 No dependencies added to the app. `pip install --break-system-packages androguard
 capstone pyelftools` is a sandbox-side action, not a repository one.
 
