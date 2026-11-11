@@ -111,20 +111,25 @@ jobs:
           set -o pipefail
           ./gradlew --no-daemon --stacktrace assembleBenchmark 2>&1 | tee gradle-benchmark.log
 
-      - name: APK sizes and manifest sanity
+      # The audit activity ships in every build type (it lives in src/main), so the
+      # real invariant is not "benchmark-only": it is that its android:permission
+      # guard survives. Without DUMP it is an exported activity any installed app
+      # could start. The check reads the *merged* manifest out of each APK, i.e.
+      # what ships, not what the source says.
+      - name: APK sizes
         run: |
           set -euo pipefail
           for apk in app/build/outputs/apk/*/*.apk; do
             [ -f "$apk" ] || continue
             printf '%s  %s\n' "$(du -h "$apk" | cut -f1)" "$apk"
           done
-          # The benchmark audit activity must exist ONLY in the benchmark APK
-          # (docs/REVIEW_874FCB0.md §3). A debug leak is a security finding, so
-          # fail the build rather than print a warning.
-          f=app/build/outputs/apk/debug/app-debug.apk
-          if [ -f "$f" ] && unzip -p "$f" 'classes*.dex' | strings | grep -q BenchmarkAuditActivity; then
-            echo "::error::BenchmarkAuditActivity leaked into the debug APK"; exit 1
-          fi
+
+      - name: Exported audit activity is DUMP-guarded
+        run: |
+          set -euo pipefail
+          python3 tools/ci/check_audit_guard.py \
+            --aapt2 "$ANDROID_SDK_ROOT/build-tools/36.0.0/aapt2" \
+            app/build/outputs/apk/*/*.apk
 
       - name: Upload test report
         if: always()

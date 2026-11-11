@@ -1,0 +1,6 @@
+N: android=http://schemas.android.com/apk/res/android
+  E: manifest (line=2)
+      E: application (line=8)
+          E: activity (line=30)
+            A: http://schemas.android.com/apk/res/android:name(0x01010003)="com.example.docscanner.MainActivity"
+            A: http://schemas.android.com/apk/res/android:exported(0x01010010)=(type 0x12)0xffffffff

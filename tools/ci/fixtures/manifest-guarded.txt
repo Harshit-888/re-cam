@@ -1,0 +1,12 @@
+N: android=http://schemas.android.com/apk/res/android
+  E: manifest (line=2)
+    A: http://schemas.android.com/apk/res/android:versionCode(0x0101021b)=(type 0x10)0x6
+      E: application (line=8)
+        A: http://schemas.android.com/apk/res/android:label(0x01010001)="DocScanner"
+          E: activity (line=54)
+            A: http://schemas.android.com/apk/res/android:name(0x01010003)="com.example.docscanner.util.BenchmarkAuditActivity" (Raw: ".util.BenchmarkAuditActivity")
+            A: http://schemas.android.com/apk/res/android:exported(0x01010010)=(type 0x12)0xffffffff
+            A: http://schemas.android.com/apk/res/android:permission(0x01010006)="android.permission.DUMP"
+          E: activity (line=30)
+            A: http://schemas.android.com/apk/res/android:name(0x01010003)="com.example.docscanner.MainActivity"
+            A: http://schemas.android.com/apk/res/android:exported(0x01010010)=(type 0x12)0xffffffff
