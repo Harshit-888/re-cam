@@ -96,6 +96,27 @@ jobs:
           set -o pipefail
           ./gradlew --no-daemon --stacktrace testDebugUnitTest 2>&1 | tee gradle-tests.log
 
+      # Test totals as a *notice* annotation. Arena's sandbox cannot download run
+      # logs (results-receiver.actions.githubusercontent.com) or artifacts (Azure
+      # blob), but it can read check-run annotations through api.github.com — so
+      # that is where the evidence has to be published, or "265 tests pass" stays
+      # an unverifiable claim in a Markdown file.
+      - name: Publish test totals
+        if: always()
+        run: |
+          shopt -s nullglob
+          totals=$(python3 - <<'PYEOF'
+          import glob, xml.etree.ElementTree as ET
+          t = f = e = s = 0
+          for path in glob.glob("app/build/test-results/testDebugUnitTest/*.xml"):
+              r = ET.parse(path).getroot()
+              t += int(r.get("tests", 0)); f += int(r.get("failures", 0))
+              e += int(r.get("errors", 0)); s += int(r.get("skipped", 0))
+          print(f"{t} tests, {f} failures, {e} errors, {s} skipped")
+          PYEOF
+          )
+          echo "::notice::unit tests: ${totals}"
+
       - name: Assemble debug
         id: debug
         run: |
@@ -117,12 +138,16 @@ jobs:
       # could start. The check reads the *merged* manifest out of each APK, i.e.
       # what ships, not what the source says.
       - name: APK sizes
+        id: sizes
         run: |
           set -euo pipefail
+          shopt -s nullglob
           for apk in app/build/outputs/apk/*/*.apk; do
-            [ -f "$apk" ] || continue
-            printf '%s  %s\n' "$(du -h "$apk" | cut -f1)" "$apk"
+            size=$(du -h "$apk" | cut -f1)
+            names="$names $size:$(basename "$(dirname "$apk")")"
+            printf '%s  %s\n' "$size" "$apk"
           done
+          echo "::notice::APKs:${names:- none}"
 
       - name: Exported audit activity is DUMP-guarded
         run: |
