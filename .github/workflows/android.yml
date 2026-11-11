@@ -142,6 +142,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
+          names=""
           for apk in app/build/outputs/apk/*/*.apk; do
             size=$(du -h "$apk" | cut -f1)
             names="$names $size:$(basename "$(dirname "$apk")")"
