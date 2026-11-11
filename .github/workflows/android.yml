@@ -13,8 +13,14 @@ name: Android
 # asks for "BUILD SUCCESSFUL" as evidence; this is the cheapest honest source.
 #
 # It also settles a real ambiguity: the wrapper pins Gradle 9.1.0 while Android
-# Studio was observed building with 9.6.0 (see docs/TRIAGE_ANDROID_STUDIO_REPORT.md
+# Studio was observed building with 9.6.0 (docs/TRIAGE_ANDROID_STUDIO_REPORT.md
 # §2). CI uses ./gradlew, i.e. the wrapper, so "the build passes" gets one meaning.
+#
+# DESIGN NOTE — why the failure-reporting step exists:
+# raw log download goes to results-receiver.actions.githubusercontent.com, which
+# the Arena sandbox cannot reach. So the logs are also written to files and the
+# failing lines are re-emitted as `::error::` annotations on failure: annotations
+# *are* readable through api.github.com. Without this, a red run is a number.
 
 on:
   push:
@@ -31,6 +37,11 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Trust the wrapper alone: no sdkmanager auto-downloads, no license prompts.
+  ANDROID_SDK_ROOT: ${{ github.workspace }}/.android-sdk
+  ANDROID_HOME: ${{ github.workspace }}/.android-sdk
+
 jobs:
   build:
     name: test + assemble
@@ -43,18 +54,30 @@ jobs:
       # JDK does not match the toolchain, Gradle tries to download one, which adds a
       # failure mode for no benefit. Pin the toolchain, not a newer JDK.
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
+      # Installed directly rather than through a third-party action: one fewer
+      # moving part, and a failure here names the URL that failed.
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        run: |
+          set -euo pipefail
+          url=https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          curl -fsSL -o /tmp/clt.zip "$url"
+          unzip -q /tmp/clt.zip -d /tmp/clt
+          mv /tmp/clt/cmdline-tools "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
 
       - name: Install platform and build tools
         run: |
-          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+          set -euo pipefail
           yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+          sdkmanager --list_installed
 
       - name: Gradle cache
         uses: actions/cache@v4
@@ -65,39 +88,43 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
-      # `--no-daemon` because a fresh runner has nothing to reuse, and the daemon
-      # only adds startup cost. `--stacktrace` because a failure report without it
-      # is exactly the "unverifiable claim" the protocol forbids.
+      # Each Gradle step tees to its own log so the reporting step can quote it.
+      # `pipefail` keeps the step's real exit code rather than tee's.
       - name: Unit tests
         id: tests
-        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace testDebugUnitTest 2>&1 | tee gradle-tests.log
 
       - name: Assemble debug
         id: debug
-        run: ./gradlew --no-daemon --stacktrace assembleDebug
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee gradle-debug.log
 
       # `release` is deliberately not built: it has no signing config in this repo,
       # and the benchmark type runs the same code non-debuggable. Add assembleRelease
       # here the day a keystore exists (docs/PROJECT_CONTEXT_AND_ROADMAP.md F8).
       - name: Assemble benchmark (non-debuggable, for perf numbers)
         id: bench
-        run: ./gradlew --no-daemon --stacktrace assembleBenchmark
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace assembleBenchmark 2>&1 | tee gradle-benchmark.log
 
       - name: APK sizes and manifest sanity
         run: |
+          set -euo pipefail
           for apk in app/build/outputs/apk/*/*.apk; do
+            [ -f "$apk" ] || continue
             printf '%s  %s\n' "$(du -h "$apk" | cut -f1)" "$apk"
           done
           # The benchmark audit activity must exist ONLY in the benchmark APK
-          # (docs/REVIEW_874FCB0.md §3). A release/debug leak is a security finding,
-          # so fail the build rather than print a warning.
-          for v in debug release; do
-            f="app/build/outputs/apk/$v/app-$v.apk"
-            [ -f "$f" ] || continue
-            if unzip -p "$f" classes*.dex 2>/dev/null | strings | grep -q BenchmarkAuditActivity; then
-              echo "::error::BenchmarkAuditActivity leaked into $v APK"; exit 1
-            fi
-          done
+          # (docs/REVIEW_874FCB0.md §3). A debug leak is a security finding, so
+          # fail the build rather than print a warning.
+          f=app/build/outputs/apk/debug/app-debug.apk
+          if [ -f "$f" ] && unzip -p "$f" 'classes*.dex' | strings | grep -q BenchmarkAuditActivity; then
+            echo "::error::BenchmarkAuditActivity leaked into the debug APK"; exit 1
+          fi
 
       - name: Upload test report
         if: always()
@@ -107,6 +134,7 @@ jobs:
           path: |
             app/build/reports/tests/testDebugUnitTest
             app/build/test-results/testDebugUnitTest
+            gradle-*.log
           retention-days: 14
           if-no-files-found: warn
 
@@ -118,6 +146,18 @@ jobs:
           path: app/build/outputs/apk/**/*.apk
           retention-days: 14
 
+      # The part that makes a red run legible from a sandbox with no log egress.
+      - name: Report failure
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for log in gradle-*.log; do
+            echo "::error::--- $log ---"
+            # Kotlin/Gradle error shapes, in the order they actually appear.
+            grep -E "^e: |^w: .*error|error:|FAILURE:|What went wrong|Caused by|Could not (resolve|find|GET|download)|> Task .* FAILED" "$log" \
+              | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          done
+
       # A one-line summary Arena can quote without downloading anything.
       - name: Summary
         if: always()
@@ -127,7 +167,7 @@ jobs:
             echo ""
             echo "| step | result |"
             echo "| :--- | :--- |"
-            echo "| unit tests | ${{ steps.tests.outcome || 'see log' }} |"
-            echo "| debug APK | ${{ steps.debug.outcome || 'see log' }} |"
-            echo "| benchmark APK | ${{ steps.bench.outcome || 'see log' }} |"
+            echo "| unit tests | ${{ steps.tests.outcome || 'not run' }} |"
+            echo "| debug APK | ${{ steps.debug.outcome || 'not run' }} |"
+            echo "| benchmark APK | ${{ steps.bench.outcome || 'not run' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
